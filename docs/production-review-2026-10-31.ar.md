@@ -91,10 +91,10 @@
 هذا تصميم مقترح بعد الإصلاح، وليس حزمة تم تجهيزها بالفعل. بافتراض أن جهاز العميل Windows:
 
 ```text
-C:\Elrawda\releases\1.0.0\       ملفات إصدار ثابتة ومبنية
-C:\Elrawda\releases\1.0.1\       الإصدار التالي يُجهز قبل التبديل
-C:\ProgramData\Elrawda\data\    بيانات العميل المستمرة
-C:\ProgramData\Elrawda\backups\ نسخ احتياطية خارج مجلد الإصدار
+C:\WhatsApp-ERP\releases\1.0.0\       ملفات إصدار ثابتة ومبنية
+C:\WhatsApp-ERP\releases\1.0.1\       الإصدار التالي يُجهز قبل التبديل
+C:\ProgramData\WhatsApp-ERP\data\    بيانات العميل المستمرة
+C:\ProgramData\WhatsApp-ERP\backups\ نسخ احتياطية خارج مجلد الإصدار
 ```
 
 يُضبط `EMOJI_DATA_DIR` إلى مجلد البيانات الثابت. يحتوي `app.sqlite` ومفتاح `secret.key` وجلسة `whatsapp-auth`؛ الشعار والإعدادات والحسابات ونتائج المعالجة موجودة داخل SQLite. لا تُشحن بيانات جهاز التطوير أو snapshot العميل الحالي أو جلسات واتساب ضمن Release.

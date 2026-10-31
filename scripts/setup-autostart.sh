@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-SERVICE_NAME="elrawda-whatsapp"
+SERVICE_NAME="whatsapp-erp"
 USER_SYSTEMD_DIR="${HOME}/.config/systemd/user"
 mkdir -p "${USER_SYSTEMD_DIR}"
 
@@ -10,7 +10,7 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cat <<EOF > "${USER_SYSTEMD_DIR}/${SERVICE_NAME}.service"
 [Unit]
-Description=ElRawda Customer WhatsApp Operations Service
+Description=WhatsApp-ERP Operations Service
 After=network.target
 
 [Service]

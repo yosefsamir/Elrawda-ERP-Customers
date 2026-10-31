@@ -1,5 +1,5 @@
 [Unit]
-Description=ElRawda Customer WhatsApp Operations Service
+Description=WhatsApp-ERP Operations Service
 After=network.target
 
 [Service]
