@@ -20,7 +20,7 @@ test('installer files and inno setup script integrity', () => {
   // Check version matching
   assert.match(issContent, new RegExp(`#define MyAppVersion "${pkg.version}"`), 'MyAppVersion in .iss must match package.json version');
   assert.match(issContent, /PrivilegesRequired=admin/, 'Installer must require administrative privileges');
-  assert.match(issContent, /PrivilegesRequiredOverridesAllowed=no/, 'Privilege override must be disabled');
+  assert.doesNotMatch(issContent, /PrivilegesRequiredOverridesAllowed\s*=\s*(commandline|dialog)/, 'Privilege override must not be allowed');
   assert.match(issContent, /ArchitecturesAllowed=x64compatible/, 'Must target 64-bit architectures');
   
   // Check PowerShell execution policy bypass scoping

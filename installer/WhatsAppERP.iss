@@ -40,7 +40,6 @@ DisableProgramGroupPage=yes
 DisableDirPage=yes
 DisableReadyPage=no
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputBaseFilename=WhatsAppERP-Setup-{#MyAppVersion}
