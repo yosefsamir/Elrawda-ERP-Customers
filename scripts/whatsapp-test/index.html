@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="local-test-token" content="__LOCAL_TEST_TOKEN__">
+  <title>تجربة واتساب — الروضة</title><link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body><main>
+  <header><span class="eyebrow">الروضة · اختبار محلي</span><h1>نجرب وصلة واتساب</h1>
+    <p>اربط رقم الاختبار، اختار جروب، وجرب إضافة رقم واحد يدويًا.</p></header>
+  <section class="card">
+    <div class="row"><h2>١. ربط الحساب</h2><span id="status" role="status">جاري التشغيل…</span></div>
+    <p id="connection-help">تجهيز المتصفح وواتساب ويب…</p>
+    <img id="qr" alt="امسح QR من تطبيق واتساب لربط حساب الاختبار" hidden>
+    <p id="account" hidden></p><p id="connection-error" class="error" hidden></p>
+    <button id="restart" class="secondary" hidden>إعادة محاولة الاتصال</button>
+  </section>
+  <section class="card">
+    <div class="row"><h2>٢. جروب ورقم الاختبار</h2><button id="refresh" disabled class="secondary">تحميل الجروبات</button></div>
+    <p id="group-status" class="hint" role="status">قائمة الجروبات هتظهر بعد اكتمال الربط.</p>
+    <label for="group">جروب الاختبار</label><select id="group" disabled><option value="">اربط واتساب الأول</option></select>
+    <label for="phone">موبايل الشخص اللي وافق على التجربة</label>
+    <input id="phone" type="tel" inputmode="tel" dir="ltr" placeholder="01xxxxxxxxx" autocomplete="off" disabled>
+    <button id="check" disabled class="secondary">فحص الرقم والعضوية فقط</button>
+    <label class="consent"><input id="consent" type="checkbox" disabled><span>صاحب الرقم موافق على الإضافة إلى الجروب المختار.</span></label>
+    <button id="add" disabled>إضافة الرقم للجروب</button>
+    <p class="hint">تقدر تعيد الإضافة بعد خروج الرقم أو إزالته؛ كل ضغطة جديدة بتفحص العضوية الحالية. الدعوات الخاصة التلقائية مقفولة.</p>
+    <div id="result" role="status" hidden></div>
+  </section>
+  <footer>whatsapp-web.js · الاتصال بقاعدة ERP غير مفعّل في الاختبار.<br>استخدم رقم اختبار مخصصًا؛ المكتبة غير رسمية وقد يتقيّد الحساب.</footer>
+</main></body></html>

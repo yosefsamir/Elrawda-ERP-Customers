@@ -1,0 +1,35 @@
+param([string]$InstallRoot = 'C:\WhatsApp-ERP', [string]$StateRoot = "$env:ProgramData\WhatsApp-ERP", [int]$Port = 3211)
+. (Join-Path $PSScriptRoot 'common.ps1')
+Assert-Administrator
+$packageRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+Verify-Release $packageRoot
+if (Test-Path (Join-Path $StateRoot 'service.json')) { throw 'Already installed. Use update.ps1 for updates; existing customer data has not been changed.' }
+if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { throw "Port $Port is already in use." }
+$node = (Get-Command node.exe -ErrorAction Stop).Source
+if (Test-Path (Join-Path $StateRoot 'data\app.sqlite')) { throw 'Existing unconfigured data detected. Configure/migrate it explicitly before installation.' }
+$version = (Get-Content (Join-Path $packageRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+$target = Join-Path $InstallRoot "releases\$version"
+if (Test-Path $target) { throw "Release destination already exists: $target" }
+$stage = $target + '.staging-' + [guid]::NewGuid().ToString('N')
+Copy-Release $packageRoot $stage
+New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
+# Customer state contains SQL credentials and WhatsApp authentication. Allow SYSTEM and administrators only.
+& icacls.exe $StateRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not protect the application state directory.' }
+$config = [pscustomobject]@{ ReleasePath=$target; PreviousRelease=''; NodePath=$node; DataDir=(Join-Path $StateRoot 'data'); CacheDir=(Join-Path $StateRoot 'chromium'); Port=$Port; TaskName='WhatsAppERPOperations' }
+Install-Dependencies $stage $node $config.CacheDir
+Move-Item -LiteralPath $stage -Destination $target
+Copy-Item (Join-Path $target 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
+Write-JsonFile (Join-Path $StateRoot 'service.json') $config
+$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -File `"$(Join-Path $StateRoot 'launcher.ps1')`" -StateRoot `"$StateRoot`"" -WorkingDirectory $StateRoot
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount
+Register-ScheduledTask -TaskName $config.TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+Copy-Item (Join-Path $target 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
+$backupAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -File `"$(Join-Path $StateRoot 'scheduled-backup.ps1')`" -StateRoot `"$StateRoot`""
+$backupTrigger = New-ScheduledTaskTrigger -Daily -At '03:00'
+Register-ScheduledTask -TaskName ($config.TaskName + 'Backup') -Action $backupAction -Trigger $backupTrigger -Principal $principal -Settings $settings -Force | Out-Null
+Start-ScheduledTask -TaskName $config.TaskName
+Wait-Ready $config
+Write-Host "Installed $version. Open http://127.0.0.1:$Port on this computer. Create your administrator account. Live processing is disabled initially."

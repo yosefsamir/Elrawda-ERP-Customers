@@ -1,0 +1,16 @@
+[Unit]
+Description=ElRawda Customer WhatsApp Operations Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/run/media/yousef-joe/New Volume/Develobment/elrawda-whatsapp
+ExecStart=/usr/bin/npx tsx apps/server/index.ts
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+Environment=PORT=3211
+
+[Install]
+WantedBy=default.target
+

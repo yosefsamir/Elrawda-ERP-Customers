@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": ".",
+    "outDir": "dist/runtime",
+    "noEmit": false,
+    "sourceMap": false,
+    "declaration": false,
+    "lib": ["ES2022"]
+  },
+  "include": ["apps/server/**/*.ts", "apps/whatsapp-worker/**/*.ts", "packages/**/*.ts", "scripts/maintenance/**/*.ts"],
+  "exclude": ["tests", "node_modules", "dist"]
+}

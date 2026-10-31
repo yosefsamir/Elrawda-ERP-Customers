@@ -1,0 +1,20 @@
+# ERP files contain personal and business data; keep them local.
+/db/
+*.bak
+*.mdf
+*.ldf
+.env
+.env.*
+!.env.example
+/data/
+/node_modules/
+/logs/
+/.wwebjs_auth/
+/.wwebjs_cache/
+
+/dist/
+*.tsbuildinfo
+
+/release/*
+!/release/*.zip
+!/release/*.sha256

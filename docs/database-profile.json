@@ -1,0 +1,360 @@
+{
+  "customer_type_filter": "kindperson.fkindperson = عميل; joined on program+branch+kind",
+  "customers": 6948,
+  "hidden_customers": 0,
+  "fields": {
+    "ftel1": {
+      "nonempty": 6677,
+      "egypt_mobile_shape": 6520
+    },
+    "ftel2": {
+      "nonempty": 9,
+      "egypt_mobile_shape": 8
+    },
+    "ftel3": {
+      "nonempty": 0,
+      "egypt_mobile_shape": 0
+    },
+    "ftel4": {
+      "nonempty": 0,
+      "egypt_mobile_shape": 0
+    }
+  },
+  "customers_with_egypt_mobile_shape": 6520,
+  "unique_egypt_mobile_numbers": 6263,
+  "numbers_shared_by_multiple_customers": 243,
+  "customers_with_multiple_distinct_mobile_numbers": 8,
+  "customers_all_phone_fields_empty": 271,
+  "by_program": {
+    "1": 5,
+    "2": 2,
+    "3": 2,
+    "4": 2,
+    "5": 2,
+    "7": 2,
+    "8": 2,
+    "9": 6919,
+    "10": 2,
+    "11": 2,
+    "12": 2,
+    "13": 2,
+    "14": 2,
+    "15": 2
+  },
+  "by_branch": {
+    "1:1": {
+      "customers": 5,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 5
+    },
+    "2:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "3:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "4:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "5:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "7:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "8:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "9:1": {
+      "customers": 39,
+      "hidden": 0,
+      "with_egypt_mobile": 2,
+      "without_egypt_mobile": 37
+    },
+    "10:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "11:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "12:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "13:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "14:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "15:1": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "9:39": {
+      "customers": 3420,
+      "hidden": 0,
+      "with_egypt_mobile": 3246,
+      "without_egypt_mobile": 174
+    },
+    "9:40": {
+      "customers": 18,
+      "hidden": 0,
+      "with_egypt_mobile": 7,
+      "without_egypt_mobile": 11
+    },
+    "9:41": {
+      "customers": 306,
+      "hidden": 0,
+      "with_egypt_mobile": 294,
+      "without_egypt_mobile": 12
+    },
+    "9:42": {
+      "customers": 1234,
+      "hidden": 0,
+      "with_egypt_mobile": 1190,
+      "without_egypt_mobile": 44
+    },
+    "9:45": {
+      "customers": 22,
+      "hidden": 0,
+      "with_egypt_mobile": 16,
+      "without_egypt_mobile": 6
+    },
+    "9:51": {
+      "customers": 712,
+      "hidden": 0,
+      "with_egypt_mobile": 681,
+      "without_egypt_mobile": 31
+    },
+    "9:56": {
+      "customers": 687,
+      "hidden": 0,
+      "with_egypt_mobile": 650,
+      "without_egypt_mobile": 37
+    },
+    "9:57": {
+      "customers": 254,
+      "hidden": 0,
+      "with_egypt_mobile": 238,
+      "without_egypt_mobile": 16
+    },
+    "9:58": {
+      "customers": 2,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 2
+    },
+    "9:59": {
+      "customers": 5,
+      "hidden": 0,
+      "with_egypt_mobile": 0,
+      "without_egypt_mobile": 5
+    },
+    "9:60": {
+      "customers": 220,
+      "hidden": 0,
+      "with_egypt_mobile": 196,
+      "without_egypt_mobile": 24
+    }
+  },
+  "note": "Shape validation only. Not WhatsApp registration, ownership, consent, or eligibility verification. Phone values were not written to report.",
+  "program_9_profile": {
+    "program_id": 9,
+    "program_name": "Emoji Store",
+    "customers": 6919,
+    "customers_with_egypt_mobile_shape": 6520,
+    "customers_without_egypt_mobile_shape": 399,
+    "customers_all_phone_fields_empty": 242,
+    "unique_egypt_mobile_numbers": 6263,
+    "numbers_shared_by_multiple_customer_rows": 243,
+    "numbers_shared_across_branches": 79,
+    "idperson_values_used_across_multiple_branches": 1234
+  },
+  "inspection": {
+    "method": "Attached a disposable copy to network-isolated SQL Server 2022; set database read-only after recovery/upgrade. Original files not attached.",
+    "source_files": {
+      "db/alrawda.mdf": {
+        "bytes": 188678144
+      },
+      "db/alrawda_log.ldf": {
+        "bytes": 786432
+      }
+    },
+    "customer_primary_key": [
+      "idprogramitems",
+      "idbranch",
+      "idperson"
+    ],
+    "customer_table": "dbo.person",
+    "customer_phone_fields": [
+      "ftel1",
+      "ftel2",
+      "ftel3",
+      "ftel4"
+    ],
+    "customer_table_has_created_or_modified_datetime": false,
+    "customer_table_has_rowversion": false,
+    "change_tracking_enabled_tables": 0,
+    "original_files_unchanged_sha256": {
+      "db/alrawda.mdf": "ac767bc9afa00542aa96914d14577e04e882a13a806af21dac4b783053ba9e41",
+      "db/alrawda_log.ldf": "a2771d34af598cd2ca99d09fb2f506ef835cea2d713d85aaecbe7c49244f7b53"
+    },
+    "validated_base_source_query_rows": 6919,
+    "validated_base_source_query_unique_composite_keys": 6919,
+    "source_query_validation_note": "Executed source query before applying the confirmed branch allowlist: 6919 rows and 6919 unique composite keys. Added the nine-branch allowlist after user confirmation; expected filtered count 6873 is derived from measured per-branch customer counts."
+  },
+  "branch_definitions": [
+    {
+      "idbranch": 1,
+      "fbranch": "المركز الرئيسى",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 39
+    },
+    {
+      "idbranch": 39,
+      "fbranch": "المنصوره",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 3420
+    },
+    {
+      "idbranch": 40,
+      "fbranch": "كفر سعد",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 18
+    },
+    {
+      "idbranch": 41,
+      "fbranch": "عمر افندي",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 306
+    },
+    {
+      "idbranch": 42,
+      "fbranch": "سنتر الجديدة",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 1234
+    },
+    {
+      "idbranch": 44,
+      "fbranch": "المنصورة",
+      "fvis": false,
+      "deleted": false,
+      "customer_count": 0
+    },
+    {
+      "idbranch": 45,
+      "fbranch": "الزرقا",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 22
+    },
+    {
+      "idbranch": 51,
+      "fbranch": "شربين",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 712
+    },
+    {
+      "idbranch": 56,
+      "fbranch": "النخلة",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 687
+    },
+    {
+      "idbranch": 57,
+      "fbranch": "عمر افندي 2",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 254
+    },
+    {
+      "idbranch": 58,
+      "fbranch": "سبينس",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 2
+    },
+    {
+      "idbranch": 59,
+      "fbranch": "اون لاين",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 5
+    },
+    {
+      "idbranch": 60,
+      "fbranch": "فارسكور",
+      "fvis": true,
+      "deleted": false,
+      "customer_count": 220
+    },
+    {
+      "idbranch": 61,
+      "fbranch": "ف",
+      "fvis": true,
+      "deleted": true,
+      "customer_count": 0
+    }
+  ],
+  "confirmed_operating_scope": {
+    "program_id": 9,
+    "branch_ids": [
+      39,
+      40,
+      41,
+      42,
+      45,
+      51,
+      56,
+      57,
+      60
+    ],
+    "customer_rows": 6873,
+    "customers_with_egypt_mobile_shape": 6518,
+    "customers_without_egypt_mobile_shape": 355,
+    "note": "Branch list explicitly confirmed by user. Counts refer to the provided snapshot, not the live ERP."
+  }
+}
