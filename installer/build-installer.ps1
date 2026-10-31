@@ -1,6 +1,10 @@
 # WhatsApp-ERP Inno Setup Installer Build Script
 # Usage: powershell.exe -ExecutionPolicy Bypass -File "installer\build-installer.ps1"
 
+param(
+    [switch]$Force
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -32,10 +36,15 @@ try {
     $manifestPath = Join-Path $releaseDir 'release-manifest.json'
 
     # Run release packaging script to ensure latest build, runtime bundle, manifest, and checksums
-    $env:BUNDLE_RUNTIME = '1'
-    & $nodeCmd.Source (Join-Path $repoRoot 'scripts\release.mjs') --bundle-runtime
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $manifestPath)) {
-        throw "Release packaging pipeline failed (scripts\release.mjs). Check console errors above."
+    if ($Force -or -not (Test-Path $manifestPath)) {
+        Write-Host "Packaging production payload..." -ForegroundColor Cyan
+        $env:BUNDLE_RUNTIME = '1'
+        & $nodeCmd.Source (Join-Path $repoRoot 'scripts\release.mjs') --bundle-runtime
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $manifestPath)) {
+            throw "Release packaging pipeline failed (scripts\release.mjs). Check console errors above."
+        }
+    } else {
+        Write-Host "Verified production payload already present in: $releaseDir" -ForegroundColor Green
     }
     Write-Host "Production payload verified in: $releaseDir" -ForegroundColor Green
 

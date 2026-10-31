@@ -20,7 +20,12 @@ try {
 }
 
 // 2. Resolve Chromium executable path
-const puppeteer = require(require.resolve("puppeteer", { paths: [require.resolve("whatsapp-web.js")] }));
+let puppeteer: any;
+try {
+  puppeteer = require(require.resolve("puppeteer", { paths: [require.resolve("whatsapp-web.js")] }));
+} catch {
+  puppeteer = require("puppeteer");
+}
 
 function findChromiumInDir(dir: string): string | null {
   if (!existsSync(dir)) return null;

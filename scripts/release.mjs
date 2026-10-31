@@ -7,6 +7,7 @@ import {
   downloadNodeRuntime,
   downloadChromiumRuntime,
   bundleProductionNodeModules,
+  verifyPackagedRuntime,
 } from './bundle-runtime.mjs';
 
 const build = spawnSync(process.execPath, ['scripts/build.mjs'], { stdio: 'inherit' });
@@ -48,6 +49,7 @@ if (shouldBundleRuntime) {
   await downloadNodeRuntime(runtimeDir);
   await downloadChromiumRuntime(runtimeDir);
   bundleProductionNodeModules(dir);
+  verifyPackagedRuntime(dir);
 }
 
 // Generate complete SHA-256 manifest

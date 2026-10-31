@@ -11,6 +11,7 @@
 /logs/
 /.wwebjs_auth/
 /.wwebjs_cache/
+/.cache/
 
 /dist/
 *.tsbuildinfo
