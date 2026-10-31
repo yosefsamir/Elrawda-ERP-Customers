@@ -33,11 +33,11 @@ jobs:
       - name: Install dependencies (compile Windows x64 better-sqlite3)
         run: npm ci
 
-      - name: Run test suite
-        run: npm run test:core
-
       - name: Build TypeScript backend and Vite web frontend
         run: npm run build
+
+      - name: Run test suite
+        run: npm run test:core
 
       - name: Package self-contained Windows release payload
         shell: powershell
