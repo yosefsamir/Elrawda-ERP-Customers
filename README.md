@@ -53,45 +53,98 @@ C:\ProgramData\WhatsApp-ERP\       # Persistent state across upgrades
 
 ---
 
-## Windows Production Deployment
+## Windows Customer Deployment & Quick Start Guide
 
-### Prerequisites on the Host Machine
-1. **Windows 10 / 11 (x64)** or **Windows Server 2016+ (x64)**.
-2. **Node.js 22 LTS (22.22.0 or newer 22.x)** installed from [nodejs.org](https://nodejs.org).
-3. Internet access during initial setup to download production NPM dependencies and the Chromium browser binary.
+### Prerequisites
+- **Operating System:** Windows 10, Windows 11, or Windows Server 2016+ (64-bit / x64).
+- **Permissions:** Windows Administrator privileges.
+- **Internet Connection:** Active connection for initial setup (needed to fetch Chromium and runtime packages).
+- **Node.js:** Node.js 22 LTS (x64) is automatically downloaded and installed if not already present.
 
-### Installation Steps
+---
 
-1. Download `whatsapp-erp-windows-1.0.0-rc.1.zip` from the release artifacts.
-2. Extract the archive into a temporary folder on the target machine.
-3. Open **PowerShell as Administrator** and navigate to the extracted directory:
+### Option 1: One-Click Windows Installer (`Setup.exe`) — Recommended
+
+1. **Download & Transfer:**
+   Copy `WhatsAppERP-Setup-1.0.0-rc.1.exe` to the customer machine (via USB or remote transfer).
+2. **Run as Administrator:**
+   Right-click `WhatsAppERP-Setup-1.0.0-rc.1.exe` and select **Run as administrator** (accept the UAC prompt).
+3. **Follow the Setup Wizard:**
+   - Click **Next** and proceed with the default settings (`C:\WhatsApp-ERP`).
+   - The installer verifies the environment, extracts files, installs dependencies, and registers the background services.
+   - On the final screen, keep **"Open WhatsApp-ERP Web Interface"** checked and click **Finish**.
+
+*To run silently without user interaction:*
+```powershell
+.\WhatsAppERP-Setup-1.0.0-rc.1.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+```
+
+---
+
+### Option 2: Standalone ZIP Archive (No Inno Setup Required)
+
+If you are deploying directly using the pre-packaged ZIP archive:
+
+1. **Download & Extract:**
+   Download `whatsapp-erp-windows-1.0.0-rc.1.zip` from the release artifacts and extract it to a temporary folder (e.g. `C:\Temp\whatsapp-erp-windows-1.0.0-rc.1`).
+2. **Open PowerShell as Administrator:**
+   Press `Win + X`, select **Terminal (Admin)** or **PowerShell (Run as administrator)**.
+3. **Run the Automated Installer:**
+   Navigate into the extracted `scripts\windows` directory and execute:
    ```powershell
-   cd "C:\Path\To\Extracted\whatsapp-erp-windows-1.0.0-rc.1"
+   cd "C:\Path\To\Extracted\whatsapp-erp-windows-1.0.0-rc.1\scripts\windows"
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
    ```
-4. Run the automated installer:
-   ```powershell
-   .\scripts\windows\install.ps1
-   ```
-   *Customizable parameters:*
-   ```powershell
-   .\scripts\windows\install.ps1 -InstallRoot 'C:\WhatsApp-ERP' -StateRoot 'C:\ProgramData\WhatsApp-ERP' -Port 3211
-   ```
-5. The installer will:
-   - Validate file checksums against `release-manifest.json` (SHA-256).
-   - Copy files to `C:\WhatsApp-ERP\releases\1.0.0-rc.1`.
-   - Install production-only dependencies (`npm ci --omit=dev`) and Chromium.
-   - Secure `C:\ProgramData\WhatsApp-ERP` with restrictive ACLs.
-   - Register and launch the `WhatsAppERPOperations` Windows Scheduled Task.
-   - Register the daily 03:00 AM backup task (`WhatsAppERPOperationsBackup`).
-6. Open your browser on the server:
-   👉 **`http://127.0.0.1:3211`**
-7. Complete initial onboarding:
-   - Create the administrator username and password.
-   - Create your company profile.
-   - Configure the SQL Server read-only database connection.
-   - Link WhatsApp via the QR code under the **Connections** tab.
-   - Map branches to their respective WhatsApp groups under **Branches & Groups**.
-   - Review your customers in **Preview** mode, then click **Activate Live** when ready.
+
+#### What Happens Automatically in the Background:
+- **Node.js 22 Detection:** If Node.js is missing, the script automatically downloads and silently installs official `Node.js 22 LTS (node-v22.23.4-x64.msi)`.
+- **Target Directories:** Copies release files to immutable `C:\WhatsApp-ERP\releases\1.0.0-rc.1`.
+- **Protected State:** Creates `C:\ProgramData\WhatsApp-ERP` restricted strictly to `SYSTEM` and `Administrators`.
+- **Automated Tasks:** Registers two Windows Scheduled Tasks:
+  - `WhatsAppERPOperations`: Automatically starts at machine boot under `NT AUTHORITY\SYSTEM` and restarts on unexpected exits.
+  - `WhatsAppERPOperationsBackup`: Daily consistent SQLite online backup at 03:00 AM.
+- **Service Verification:** Starts the service immediately and verifies readiness against `http://127.0.0.1:3211/healthz`.
+
+---
+
+### First-Time Onboarding in the Web Interface
+
+Once installation completes, open your browser on the host machine and navigate to:
+👉 **`http://127.0.0.1:3211`**
+
+Perform the following 4 initial configuration steps:
+
+1. **Create Administrator Account:**
+   - Enter your administrator username and secure password on the bootstrap screen.
+2. **Configure ERP Database Connection:**
+   - Navigate to the **Settings / Database** section.
+   - Enter your SQL Server host, port (default `1433`), database name, username, and password.
+   - Click **Test Connection** to confirm connectivity, then save.
+3. **Pair WhatsApp Web:**
+   - Go to the **Connections / WhatsApp** tab.
+   - A QR Code will appear on screen.
+   - On the dedicated business phone, open WhatsApp > **Linked devices** > **Link a device**, and scan the QR code.
+   - Status will transition to **Ready** (Green).
+4. **Link Branches & Activate Live Processing:**
+   - Under **Branches & Groups**, assign each store branch to its corresponding WhatsApp Community Group (or assign to the Unified Global Group).
+   - Review incoming customers in **Preview** mode.
+   - Switch the operating mode from **Preview / Paused** to **Live** to begin automated sync and onboarding.
+
+---
+
+### Verification & Troubleshooting
+
+- **Check Service Status:**
+  ```powershell
+  Get-ScheduledTask -TaskName 'WhatsAppERPOperations', 'WhatsAppERPOperationsBackup'
+  ```
+- **Run Diagnostics:**
+  ```powershell
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\WhatsApp-ERP\releases\1.0.0-rc.1\scripts\windows\diagnose.ps1"
+  ```
+- **Log Locations:**
+  - Installation Transcript: `C:\ProgramData\WhatsApp-ERP\logs\install.log`
+  - Runtime Service Logs: `C:\ProgramData\WhatsApp-ERP\logs\launcher.log`
 
 ---
 
