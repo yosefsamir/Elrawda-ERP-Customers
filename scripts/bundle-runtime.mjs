@@ -76,10 +76,10 @@ export async function downloadChromiumRuntime(targetRuntimeDir) {
   mkdirSync(chromiumTargetDir, { recursive: true });
 
   console.log(`[Runtime] Downloading and packaging Puppeteer-compatible Chromium for win64...`);
-  const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  const puppeteerCli = resolve('node_modules/puppeteer/lib/puppeteer/node/cli.js');
   const installResult = spawnSync(
-    npxCmd,
-    ['puppeteer', 'browsers', 'install', 'chrome', '--platform', 'win64', '--path', chromiumTargetDir],
+    process.execPath,
+    [puppeteerCli, 'browsers', 'install', 'chrome', '--platform', 'win64', '--path', chromiumTargetDir],
     { stdio: 'inherit' }
   );
 
@@ -121,10 +121,11 @@ export function bundleProductionNodeModules(releaseDir) {
     try {
       cpSync('package.json', join(stagingDir, 'package.json'));
       cpSync('package-lock.json', join(stagingDir, 'package-lock.json'));
-      const npmCmd = 'npm.cmd';
+      const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
       const ciResult = spawnSync(npmCmd, ['ci', '--omit=dev', '--no-fund', '--no-audit'], {
         cwd: stagingDir,
         stdio: 'inherit',
+        shell: process.platform === 'win32',
         env: { ...process.env, npm_config_msvs_version: '2022' },
       });
       if (ciResult.status !== 0) {
