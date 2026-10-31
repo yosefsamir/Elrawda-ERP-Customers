@@ -125,6 +125,7 @@ export function bundleProductionNodeModules(releaseDir) {
       const ciResult = spawnSync(npmCmd, ['ci', '--omit=dev', '--no-fund', '--no-audit'], {
         cwd: stagingDir,
         stdio: 'inherit',
+        env: { ...process.env, npm_config_msvs_version: '2022' },
       });
       if (ciResult.status !== 0) {
         throw new Error(`Production dependency installation failed in staging (code ${ciResult.status})`);
