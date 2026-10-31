@@ -1,12 +1,29 @@
 ; WhatsApp-ERP Inno Setup Script
 ; Builds Windows Setup executable: WhatsAppERP-Setup-1.0.0-rc.1.exe
 
+#ifndef MyAppName
 #define MyAppName "WhatsApp-ERP"
+#endif
+
+#ifndef MyAppVersion
 #define MyAppVersion "1.0.0-rc.1"
+#endif
+
+#ifndef MyAppPublisher
 #define MyAppPublisher "WhatsApp-ERP Team"
+#endif
+
+#ifndef MyAppURL
 #define MyAppURL "http://127.0.0.1:3211"
+#endif
+
+#ifndef MyAppId
 #define MyAppId "{8B2F354D-9321-4F2A-A04E-5D345ECB901C}"
-#define MyReleaseDir "..\release\whatsapp-erp-windows-1.0.0-rc.1"
+#endif
+
+#ifndef MyReleaseDir
+#define MyReleaseDir "..\release\whatsapp-erp-windows-" + MyAppVersion
+#endif
 
 [Setup]
 AppId={{#MyAppId}
@@ -46,7 +63,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut to Web Management Interface"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-; Extract release payload into a temporary directory that is automatically purged after install
+; Extract self-contained release payload into a temporary directory automatically purged after installation
 Source: "{#MyReleaseDir}\*"; DestDir: "{tmp}\WhatsAppERP-Payload"; Flags: ignoreversion recursesubdirs createallsubdirs deleteafterinstall
 
 [Icons]
@@ -59,7 +76,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{#MyAppURL}"; Tasks: desktopicon
 Filename: "{#MyAppURL}"; Description: "Open WhatsApp-ERP Web Interface ({#MyAppURL})"; Flags: postinstall shellexec nowait; Check: InstallSucceeded
 
 [UninstallRun]
-; Safely stop and unregister scheduled tasks upon uninstallation without deleting persistent state
+; Safely stop and unregister scheduled tasks upon uninstallation without deleting persistent customer state
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""try { Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'WhatsAppERPOperations' -Confirm:$false -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'WhatsAppERPOperationsBackup' -Confirm:$false -ErrorAction SilentlyContinue } catch {}"""; Flags: runhidden; RunOnceId: "UnregisterScheduledTasks"
 
 [Code]
@@ -73,91 +90,10 @@ begin
   Result := InstallSuccess;
 end;
 
-function CheckNodeVersion(var VersionStr: String): Boolean;
-var
-  TmpFile: String;
-  ResultCode: Integer;
-  Lines: TArrayOfString;
-begin
-  Result := False;
-  VersionStr := '';
-  TmpFile := ExpandConstant('{tmp}\node_check.txt');
-  DeleteFile(TmpFile);
-
-  // Check node.exe in PATH
-  if Exec(ExpandConstant('{cmd}'), '/c node.exe -v > "' + TmpFile + '" 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-  begin
-    if (ResultCode = 0) and FileExists(TmpFile) then
-    begin
-      if LoadStringsFromFile(TmpFile, Lines) and (GetArrayLength(Lines) > 0) then
-      begin
-        VersionStr := Trim(Lines[0]);
-        if Pos('v22.', VersionStr) = 1 then
-        begin
-          Result := True;
-          DeleteFile(TmpFile);
-          Exit;
-        end;
-      end;
-    end;
-  end;
-
-  // Check default 64-bit Program Files location
-  if FileExists(ExpandConstant('{commonpf}\nodejs\node.exe')) then
-  begin
-    if Exec(ExpandConstant('{commonpf}\nodejs\node.exe'), '-v > "' + TmpFile + '" 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    begin
-      if (ResultCode = 0) and FileExists(TmpFile) then
-      begin
-        if LoadStringsFromFile(TmpFile, Lines) and (GetArrayLength(Lines) > 0) then
-        begin
-          VersionStr := Trim(Lines[0]);
-          if Pos('v22.', VersionStr) = 1 then
-            Result := True;
-        end;
-      end;
-    end;
-  end;
-
-  DeleteFile(TmpFile);
-end;
-
-function CheckInternetConnection(): Boolean;
-var
-  ResultCode: Integer;
-begin
-  // Fast probe: ping Cloudflare (1.1.1.1) with 1 echo and 1200ms timeout
-  Result := Exec(
-    ExpandConstant('{sys}\ping.exe'),
-    '1.1.1.1 -n 1 -w 1200',
-    '',
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ResultCode
-  ) and (ResultCode = 0);
-
-  if not Result then
-  begin
-    // Fallback probe: ping Google (8.8.8.8)
-    Result := Exec(
-      ExpandConstant('{sys}\ping.exe'),
-      '8.8.8.8 -n 1 -w 1200',
-      '',
-      SW_HIDE,
-      ewWaitUntilTerminated,
-      ResultCode
-    ) and (ResultCode = 0);
-  end;
-end;
-
 function InitializeSetup(): Boolean;
 var
-  NodeVer: String;
-  HasNode: Boolean;
-  HasInternet: Boolean;
   ServiceJsonPath: String;
   TargetReleaseDir: String;
-  Msg: String;
 begin
   Result := True;
   InstallSuccess := False;
@@ -201,31 +137,6 @@ begin
       end;
     end;
   end;
-
-  // Check Node.js and Internet prerequisites
-  HasNode := CheckNodeVersion(NodeVer);
-  HasInternet := CheckInternetConnection();
-
-  if not HasNode then
-  begin
-    if HasInternet then
-    begin
-      Log('Node.js 22 not found. Internet is available; install.ps1 will automatically download Node.js 22 LTS.');
-    end
-    else
-    begin
-      Msg := 'Prerequisite Warning:' + #13#10#13#10 +
-             'Node.js 22 (x64) is required but was not detected, and an active internet connection could not be verified.' + #13#10#13#10 +
-             'WhatsApp-ERP requires Node.js 22.22+ and internet access to download necessary runtime packages (Chromium).' + #13#10#13#10 +
-             'If this server is offline, please pre-install Node.js 22 x64 before proceeding.' + #13#10#13#10 +
-             'Do you want to continue anyway?';
-      if SuppressibleMsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then
-      begin
-        Result := False;
-        Exit;
-      end;
-    end;
-  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -247,8 +158,8 @@ begin
     LogPath := ExpandConstant('{commonappdata}\WhatsApp-ERP\logs\install.log');
 
     // Update wizard UI to show deployment progress
-    WizardForm.StatusLabel.Caption := 'Executing production deployment script...';
-    WizardForm.FilenameLabel.Caption := 'Installing runtime dependencies, Chromium, and scheduled tasks...';
+    WizardForm.StatusLabel.Caption := 'Executing self-contained production deployment...';
+    WizardForm.FilenameLabel.Caption := 'Configuring runtime, scheduled tasks, and verifying readiness...';
     WizardForm.ProgressGauge.Style := npbstMarquee;
 
     // Check if user requested console visibility via /SHOWCONSOLE or /DEBUG

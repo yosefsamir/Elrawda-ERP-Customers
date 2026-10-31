@@ -36,6 +36,10 @@ test('installer files and inno setup script integrity', () => {
   // Check URL launching
   assert.match(issContent, /http:\/\/127\.0\.0\.1:3211/, 'Must target local web UI port 3211');
   assert.match(issContent, /InstallSucceeded/, 'Web launcher must be conditional on install success');
+
+  // Verify obsolete external checks are removed
+  assert.doesNotMatch(issContent, /CheckNodeVersion/, 'Must not contain obsolete external Node version checks');
+  assert.doesNotMatch(issContent, /CheckInternetConnection/, 'Must not require internet connection checks');
 });
 
 test('build-installer script automation', () => {
@@ -44,6 +48,7 @@ test('build-installer script automation', () => {
   assert.match(buildScript, /release\.mjs/, 'Must invoke release packaging pipeline');
   assert.match(buildScript, /WhatsAppERP-Setup-/, 'Must build WhatsAppERP-Setup executable');
   assert.match(buildScript, /Get-FileHash.*SHA256/, 'Must generate SHA-256 hash file for installer');
+  assert.match(buildScript, /\/DMyAppVersion=/, 'Must pass MyAppVersion dynamically from package.json');
 });
 
 test('install.ps1 enhancements for installer support', () => {
@@ -52,4 +57,18 @@ test('install.ps1 enhancements for installer support', () => {
   assert.match(installPs1, /Start-Transcript/, 'install.ps1 must enable transcript logging');
   assert.match(installPs1, /install\.log/, 'install.ps1 must log to install.log');
   assert.match(installPs1, /update\.ps1/, 'install.ps1 with -Upgrade must invoke update.ps1');
+
+  // Verify that npm ci, winget, and remote downloads are eliminated
+  assert.doesNotMatch(installPs1, /winget\.exe/, 'install.ps1 must never call winget on customer machines');
+  assert.doesNotMatch(installPs1, /Invoke-WebRequest.*nodejs\.org/, 'install.ps1 must never download Node.js installer');
+  assert.match(installPs1, /Get-NodePath/, 'install.ps1 must resolve bundled Node.js path');
+  assert.match(installPs1, /Assert-ReleaseReady/, 'install.ps1 must run preflight readiness checks before activating');
+});
+
+test('common.ps1 self-contained runtime helpers', () => {
+  const commonPs1 = readFileSync(resolve(root, 'scripts/windows/common.ps1'), 'utf8');
+  assert.match(commonPs1, /function Get-NodePath/, 'common.ps1 must define Get-NodePath');
+  assert.match(commonPs1, /function Get-ChromiumPath/, 'common.ps1 must define Get-ChromiumPath');
+  assert.match(commonPs1, /function Assert-ReleaseReady/, 'common.ps1 must define Assert-ReleaseReady');
+  assert.doesNotMatch(commonPs1, /npm ci/, 'common.ps1 must never execute npm ci on customer computers');
 });

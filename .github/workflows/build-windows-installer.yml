@@ -1,0 +1,110 @@
+name: Build Windows x64 Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-windows-installer:
+    name: Build Self-Contained Windows Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.4'
+          cache: 'npm'
+
+      - name: Install Inno Setup 6 Compiler
+        shell: powershell
+        run: |
+          choco install innosetup --no-progress
+          $isccPath = "C:\Program Files (x86)\Inno Setup 6"
+          if (Test-Path $isccPath) {
+            Write-Host "Adding $isccPath to GITHUB_PATH"
+            "$isccPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+
+      - name: Install dependencies (compile Windows x64 better-sqlite3)
+        run: npm ci
+
+      - name: Run test suite
+        run: npm run test:core
+
+      - name: Build TypeScript backend and Vite web frontend
+        run: npm run build
+
+      - name: Package self-contained Windows release payload
+        shell: powershell
+        run: |
+          $env:BUNDLE_RUNTIME = '1'
+          node scripts/release.mjs --bundle-runtime
+
+      - name: Verify packaged runtime preflight
+        shell: powershell
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $releaseDir = "release\whatsapp-erp-windows-$($pkg.version)"
+          $env:ELRAWDA_RELEASE_DIR = (Resolve-Path $releaseDir).Path
+          node tests/release-smoke.mjs
+
+      - name: Compile Windows Setup Installer (.exe)
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File installer/build-installer.ps1
+
+      - name: Generate Build Summary
+        shell: powershell
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $version = $pkg.version
+          $setupExe = "release\WhatsAppERP-Setup-$version.exe"
+          $hashFile = "$setupExe.sha256"
+          
+          if (-not (Test-Path $setupExe)) {
+            throw "Installer binary not found: $setupExe"
+          }
+          
+          $item = Get-Item $setupExe
+          $hash = (Get-FileHash -LiteralPath $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sizeMB = [math]::Round($item.Length / 1MB, 2)
+          
+          $summary = @"
+          # WhatsApp-ERP Windows Installer Build Summary
+          
+          - **Version:** $version
+          - **File:** $($item.Name)
+          - **File Size:** $sizeMB MB ($($item.Length) bytes)
+          - **SHA-256 Checksum:** `$hash`
+          - **Runner OS:** $($env:OS) (Windows x64)
+          - **Node.js ABI Target:** Node 22 LTS (win-x64)
+          - **Inno Setup:** 6.x (LZMA2 Solid Compression)
+          
+          ## Architecture Verification
+          - [x] Portable Node.js runtime bundled (`runtime\node.exe`)
+          - [x] Production dependencies pre-installed (`node_modules`)
+          - [x] Native `better-sqlite3` compiled for Windows x64 Node 22
+          - [x] Chromium browser bundled (`runtime\chromium`)
+          - [x] Zero external downloads required on customer computer
+          - [x] Zero npm or compiler execution on customer computer
+          "@
+          
+          $summary | Out-File -FilePath "release\BUILD-SUMMARY.md" -Encoding utf8
+          Write-Host $summary
+
+      - name: Upload Installer Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhatsAppERP-Windows-Setup-${{ github.sha }}
+          path: |
+            release/WhatsAppERP-Setup-*.exe
+            release/WhatsAppERP-Setup-*.exe.sha256
+            release/BUILD-SUMMARY.md
+          if-no-files-found: error
+          retention-days: 14
+

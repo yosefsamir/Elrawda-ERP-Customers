@@ -1,11 +1,39 @@
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { existsSync, readdirSync, statSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const QRCode = require("qrcode");
 const { createPilotClient } = require("../../scripts/whatsapp-test/groups.cjs");
 const { addOne, inspectTarget } = require("../../scripts/whatsapp-test/operations.cjs");
+
+function resolveChromeExecutable(): string | undefined {
+  if (process.env.WHATSAPP_CHROME_PATH && existsSync(process.env.WHATSAPP_CHROME_PATH)) {
+    return process.env.WHATSAPP_CHROME_PATH;
+  }
+  const root = resolve(process.env.EMOJI_APP_ROOT ?? process.cwd());
+  const bundledDir = join(root, "runtime", "chromium");
+  if (existsSync(bundledDir)) {
+    const isWin = process.platform === "win32";
+    const binary = isWin ? "chrome.exe" : "chrome";
+    const direct = join(bundledDir, binary);
+    if (existsSync(direct)) return direct;
+    const stack = [bundledDir];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      try {
+        for (const entry of readdirSync(cur)) {
+          const full = join(cur, entry);
+          const st = statSync(full);
+          if (st.isDirectory()) stack.push(full);
+          else if (entry.toLowerCase() === binary.toLowerCase()) return full;
+        }
+      } catch {}
+    }
+  }
+  return undefined;
+}
 
 let client: any = null;
 let pilot: any = null;
@@ -67,6 +95,22 @@ async function handleMessage(message: any) {
       const sessionDir = resolve(authDataPath, `session-${companyId}`);
 
 
+      const chromeExec = resolveChromeExecutable();
+      const enableSandbox = process.env.CHROME_SANDBOX === "true";
+      const puppeteerArgs = [
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-accelerated-2d-canvas",
+        "--no-first-run",
+        "--disable-gpu",
+      ];
+      if (!enableSandbox) {
+        // Under Windows SYSTEM (Session 0) service account, Chromium cannot create a sandboxed token
+        // without WinLocalSystemSid privilege failure. Setting CHROME_SANDBOX=true enables sandbox
+        // when running under an interactive user or dedicated unprivileged account.
+        puppeteerArgs.unshift("--no-sandbox");
+      }
+
       client = new Client({
         authStrategy: new LocalAuth({
           clientId: companyId,
@@ -75,17 +119,8 @@ async function handleMessage(message: any) {
         puppeteer: {
           headless: true,
           protocolTimeout: 30000,
-          args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-accelerated-2d-canvas",
-            "--no-first-run",
-            "--disable-gpu",
-          ],
-          ...(process.env.WHATSAPP_CHROME_PATH
-            ? { executablePath: process.env.WHATSAPP_CHROME_PATH }
-            : {}),
+          args: puppeteerArgs,
+          ...(chromeExec ? { executablePath: chromeExec } : {}),
         },
       });
 

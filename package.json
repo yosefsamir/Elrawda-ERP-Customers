@@ -16,6 +16,8 @@
     "typecheck": "tsc --noEmit",
     "test:core": "tsx --test tests/*.test.ts",
     "release": "node scripts/release.mjs",
+    "package:windows": "node scripts/release.mjs --bundle-runtime",
+    "build:installer": "powershell.exe -ExecutionPolicy Bypass -File installer/build-installer.ps1",
     "admin": "node dist/runtime/scripts/maintenance/admin.js",
     "test:release": "node tests/release-smoke.mjs"
   },

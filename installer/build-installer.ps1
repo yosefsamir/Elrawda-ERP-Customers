@@ -31,8 +31,9 @@ try {
     $releaseDir = Join-Path $repoRoot "release\whatsapp-erp-windows-$version"
     $manifestPath = Join-Path $releaseDir 'release-manifest.json'
 
-    # Run release packaging script to ensure latest build, manifest, and checksums
-    & $nodeCmd.Source (Join-Path $repoRoot 'scripts\release.mjs')
+    # Run release packaging script to ensure latest build, runtime bundle, manifest, and checksums
+    $env:BUNDLE_RUNTIME = '1'
+    & $nodeCmd.Source (Join-Path $repoRoot 'scripts\release.mjs') --bundle-runtime
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $manifestPath)) {
         throw "Release packaging pipeline failed (scripts\release.mjs). Check console errors above."
     }
@@ -94,7 +95,7 @@ After installation completes, re-run this script.
         throw "Inno Setup script not found: $issFile"
     }
 
-    & $isccPath $issFile
+    & $isccPath "/DMyAppVersion=$version" "/DMyReleaseDir=$releaseDir" $issFile
     if ($LASTEXITCODE -ne 0) {
         throw "Inno Setup compilation failed with exit code $LASTEXITCODE."
     }
