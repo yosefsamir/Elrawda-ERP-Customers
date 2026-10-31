@@ -173,7 +173,14 @@ export function bundleProductionNodeModules(releaseDir) {
   if (process.platform === 'win32') {
     const nativeAddon = join(targetModulesDir, 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
     if (!existsSync(nativeAddon)) {
-      throw new Error(`better-sqlite3 native addon missing at: ${nativeAddon}`);
+      const rootAddon = resolve('node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
+      if (existsSync(rootAddon)) {
+        console.log(`[Runtime] Copying verified better_sqlite3.node from root node_modules...`);
+        mkdirSync(join(targetModulesDir, 'better-sqlite3', 'build', 'Release'), { recursive: true });
+        cpSync(rootAddon, nativeAddon);
+      } else {
+        throw new Error(`better-sqlite3 native addon missing at: ${nativeAddon}`);
+      }
     }
     console.log(`[Runtime] better-sqlite3 native Windows x64 addon verified.`);
   }
