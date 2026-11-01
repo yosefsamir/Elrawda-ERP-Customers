@@ -44,6 +44,7 @@ try {
     # Provide minimal stub files so Inno Setup can resolve Source: "{#MyReleaseDir}\*"
     Set-Content -LiteralPath (Join-Path $stubDir 'package.json') -Value '{"version":"0.0.0-stub"}' -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $stubDir 'scripts\windows\install.ps1') -Value '# stub' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $stubDir 'scripts\windows\uninstall.ps1') -Value '# stub' -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $stubDir 'runtime\node.exe') -Value 'stub' -Encoding UTF8
 
     $issFile = Join-Path $RepoRoot 'installer\WhatsAppERP.iss'
@@ -67,3 +68,4 @@ finally {
         Remove-Item -LiteralPath $outDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+

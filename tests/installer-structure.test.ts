@@ -31,11 +31,16 @@ test('installer files and inno setup script integrity', () => {
   // Check error handling and log reporting
   assert.match(issContent, /ResultCode <> 0/, 'Must detect non-zero exit codes');
   assert.match(issContent, /install\.log/, 'Must report install.log path on error');
-  assert.match(issContent, /Abort;/, 'Must abort setup on non-zero exit code');
+  assert.match(issContent, /PrepareToInstall/, 'Must validate deployment in PrepareToInstall');
+  assert.match(issContent, /GetCustomSetupExitCode/, 'Must return custom exit code on failure');
 
-  // Check URL launching
+  // Check URL launching and silent install behavior
   assert.match(issContent, /http:\/\/127\.0\.0\.1:3211/, 'Must target local web UI port 3211');
   assert.match(issContent, /InstallSucceeded/, 'Web launcher must be conditional on install success');
+  assert.match(issContent, /skipifsilent/, 'Web launcher must skip launching browser in silent installs');
+
+  // Check uninstaller configuration
+  assert.match(issContent, /uninstall\.ps1/, 'Uninstaller must reference uninstall.ps1');
 
   // Verify obsolete external checks are removed
   assert.doesNotMatch(issContent, /CheckNodeVersion/, 'Must not contain obsolete external Node version checks');

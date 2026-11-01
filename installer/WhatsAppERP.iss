@@ -62,8 +62,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut to Web Management Interface"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-; Extract self-contained release payload into a temporary directory automatically purged after installation
-Source: "{#MyReleaseDir}\*"; DestDir: "{tmp}\WhatsAppERP-Payload"; Flags: ignoreversion recursesubdirs createallsubdirs deleteafterinstall
+; Shipped uninstallation script installed to application directory for reliable task removal
+Source: "{#MyReleaseDir}\scripts\windows\uninstall.ps1"; DestDir: "{app}\scripts\windows"; Flags: ignoreversion
+; Release payload marked dontcopy: extracted during PrepareToInstall for atomic validation before committing installation
+Source: "{#MyReleaseDir}\*"; DestDir: "{tmp}\WhatsAppERP-Payload"; Flags: dontcopy recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}\WhatsApp-ERP Web Interface"; Filename: "{#MyAppURL}"
@@ -71,22 +73,28 @@ Name: "{autoprograms}\{#MyAppName}\Installation Logs"; Filename: "{commonappdata
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{#MyAppURL}"; Tasks: desktopicon
 
 [Run]
-; Offer to open the web management interface on success
-Filename: "{#MyAppURL}"; Description: "Open WhatsApp-ERP Web Interface ({#MyAppURL})"; Flags: postinstall shellexec nowait; Check: InstallSucceeded
+; Offer to open the web management interface on success (skipped during silent installs)
+Filename: "{#MyAppURL}"; Description: "Open WhatsApp-ERP Web Interface ({#MyAppURL})"; Flags: postinstall shellexec nowait skipifsilent; Check: InstallSucceeded
 
 [UninstallRun]
 ; Safely stop and unregister scheduled tasks upon uninstallation without deleting persistent customer state
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""try {{ Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'WhatsAppERPOperations' -Confirm:$false -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'WhatsAppERPOperationsBackup' -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}"""; Flags: runhidden; RunOnceId: "UnregisterScheduledTasks"
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\scripts\windows\uninstall.ps1"" -InstallRoot ""{app}"""; Flags: runhidden; RunOnceId: "UninstallWhatsAppERP"
 
 [Code]
 var
   InstallSuccess: Boolean;
   IsUpgradeMode: Boolean;
   ExistingReleaseFound: Boolean;
+  CustomExitCode: Integer;
 
 function InstallSucceeded(): Boolean;
 begin
   Result := InstallSuccess;
+end;
+
+function GetCustomSetupExitCode(): Integer;
+begin
+  Result := CustomExitCode;
 end;
 
 function InitializeSetup(): Boolean;
@@ -138,7 +146,7 @@ begin
   end;
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   PowerShellExe: String;
   ScriptPath: String;
@@ -148,68 +156,61 @@ var
   LogPath: String;
   ShowMode: Integer;
   ShowConsole: Boolean;
+  ExtractedCount: Integer;
 begin
-  if CurStep = ssPostInstall then
+  Result := '';
+  NeedsRestart := False;
+
+  Log('Extracting self-contained release payload for deployment verification...');
+  ExtractedCount := ExtractTemporaryFiles('*');
+  Log('Extracted ' + IntToStr(ExtractedCount) + ' files to temporary payload.');
+
+  PowerShellExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  ScriptPath := ExpandConstant('{tmp}\WhatsAppERP-Payload\scripts\windows\install.ps1');
+  WorkingDir := ExpandConstant('{tmp}\WhatsAppERP-Payload\scripts\windows');
+  LogPath := ExpandConstant('{commonappdata}\WhatsApp-ERP\logs\install.log');
+
+  // Check if user requested console visibility via /SHOWCONSOLE or /DEBUG
+  ShowConsole := ExpandConstant('{param:SHOWCONSOLE|0}') = '1';
+  if ShowConsole then
+    ShowMode := SW_SHOWNORMAL
+  else
+    ShowMode := SW_HIDE;
+
+  // Build process-scoped execution policy command
+  Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ScriptPath + '"';
+  if IsUpgradeMode then
+    Params := Params + ' -Upgrade';
+
+  Log('Executing deployment: ' + PowerShellExe + ' ' + Params);
+
+  // Run powershell.exe and wait until terminated
+  if not Exec(PowerShellExe, Params, WorkingDir, ShowMode, ewWaitUntilTerminated, ResultCode) then
   begin
-    PowerShellExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
-    ScriptPath := ExpandConstant('{tmp}\WhatsAppERP-Payload\scripts\windows\install.ps1');
-    WorkingDir := ExpandConstant('{tmp}\WhatsAppERP-Payload\scripts\windows');
-    LogPath := ExpandConstant('{commonappdata}\WhatsApp-ERP\logs\install.log');
-
-    // Update wizard UI to show deployment progress
-    WizardForm.StatusLabel.Caption := 'Executing self-contained production deployment...';
-    WizardForm.FilenameLabel.Caption := 'Configuring runtime, scheduled tasks, and verifying readiness...';
-    WizardForm.ProgressGauge.Style := npbstMarquee;
-
-    // Check if user requested console visibility via /SHOWCONSOLE or /DEBUG
-    ShowConsole := ExpandConstant('{param:SHOWCONSOLE|0}') = '1';
-    if ShowConsole then
-      ShowMode := SW_SHOWNORMAL
-    else
-      ShowMode := SW_HIDE;
-
-    // Build process-scoped execution policy command
-    Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ScriptPath + '"';
-    if IsUpgradeMode then
-      Params := Params + ' -Upgrade';
-
-    Log('Executing: ' + PowerShellExe + ' ' + Params);
-
-    // Run powershell.exe and wait until terminated
-    if not Exec(PowerShellExe, Params, WorkingDir, ShowMode, ewWaitUntilTerminated, ResultCode) then
-    begin
-      InstallSuccess := False;
-      SuppressibleMsgBox(
-        'Failed to launch PowerShell deployment process.' + #13#10#13#10 +
-        'Executable: ' + PowerShellExe + #13#10 +
-        'System Error: ' + SysErrorMessage(ResultCode) + #13#10#13#10 +
-        'Please ensure Windows PowerShell 5.1 or newer is available.',
-        mbCriticalError, MB_OK, IDOK
-      );
-      Abort;
-    end;
-
-    if ResultCode <> 0 then
-    begin
-      InstallSuccess := False;
-      SuppressibleMsgBox(
-        'Installation failed with error code ' + IntToStr(ResultCode) + '.' + #13#10#13#10 +
-        'The deployment script encountered an error and could not complete.' + #13#10#13#10 +
-        'Log file location:' + #13#10 +
-        LogPath + #13#10#13#10 +
-        'No customer data or SQLite databases were deleted or modified.' + #13#10 +
-        'Please inspect the log file, resolve the issue, and re-run setup.',
-        mbError, MB_OK, IDOK
-      );
-      Abort;
-    end;
-
-    // Mark deployment as successful
-    InstallSuccess := True;
-    WizardForm.ProgressGauge.Style := npbstNormal;
-    WizardForm.ProgressGauge.Position := WizardForm.ProgressGauge.Max;
-    WizardForm.StatusLabel.Caption := 'Installation completed successfully.';
-    WizardForm.FilenameLabel.Caption := 'Services registered: WhatsAppERPOperations, WhatsAppERPOperationsBackup';
-    Log('Deployment finished successfully with exit code 0.');
+    InstallSuccess := False;
+    CustomExitCode := 7;
+    Result := 'Failed to launch PowerShell deployment process.' + #13#10#13#10 +
+              'Executable: ' + PowerShellExe + #13#10 +
+              'System Error: ' + SysErrorMessage(ResultCode) + #13#10#13#10 +
+              'Please ensure Windows PowerShell 5.1 or newer is available.';
+    Exit;
   end;
+
+  if ResultCode <> 0 then
+  begin
+    InstallSuccess := False;
+    CustomExitCode := 7;
+    Result := 'Installation deployment failed with error code ' + IntToStr(ResultCode) + '.' + #13#10#13#10 +
+              'The deployment script encountered an error and could not complete.' + #13#10#13#10 +
+              'Log file location:' + #13#10 +
+              LogPath + #13#10#13#10 +
+              'No customer data or SQLite databases were deleted or modified.' + #13#10 +
+              'Please inspect the log file, resolve the issue, and re-run setup.';
+    Exit;
+  end;
+
+  // Mark deployment as successful
+  InstallSuccess := True;
+  CustomExitCode := 0;
+  Log('Deployment finished successfully with exit code 0.');
 end;
