@@ -79,7 +79,7 @@ Filename: "{#MyAppURL}"; Description: "Open WhatsApp-ERP Web Interface ({#MyAppU
 
 [UninstallRun]
 ; Safely stop and unregister scheduled tasks upon uninstallation without deleting persistent customer state
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\scripts\windows\uninstall.ps1"" -InstallRoot ""{app}"""; Flags: runhidden; RunOnceId: "UninstallWhatsAppERP"
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\scripts\windows\uninstall.ps1"" -InstallRoot ""{app}"""; Flags: runhidden waituntilterminated; RunOnceId: "UninstallWhatsAppERP"
 
 [UninstallDelete]
 ; Ensure releases and helper scripts are completely deleted upon uninstallation (H2)

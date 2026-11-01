@@ -431,12 +431,25 @@ try {
         Write-Host "Waiting for uninstaller clone process to finish execution and remove unins000.exe..." -ForegroundColor Cyan
         $deadline = (Get-Date).AddSeconds(45)
         while ((Get-Date) -lt $deadline) {
-            $uninsProcs = Get-Process | Where-Object { $_.ProcessName -like 'unins*' -or $_.ProcessName -like '_iu*' }
+            $uninsProcs = Get-Process | Where-Object { $_.ProcessName -like 'unins*' -or $_.ProcessName -like '_iu*' -or $_.ProcessName -like 'is-*' }
             $uninstallerStillPresent = Test-Path -LiteralPath $uninstallerExe
             if (-not $uninsProcs -and -not $uninstallerStillPresent) {
                 break
             }
             Start-Sleep -Milliseconds 500
+        }
+
+        # Print uninstallation diagnostic transcripts
+        $progDataLog = "$env:ProgramData\WhatsApp-ERP\logs\uninstall.log"
+        if (Test-Path $progDataLog) {
+            Write-Host "Diagnostic: ProgramData uninstall.log:" -ForegroundColor Magenta
+            Get-Content $progDataLog | ForEach-Object { Write-Host "  $_" -ForegroundColor Magenta }
+        } else {
+            Write-Host "Diagnostic: $progDataLog not found." -ForegroundColor Yellow
+        }
+        if (Test-Path $uninstallLog) {
+            Write-Host "Diagnostic: Inno Setup uninstall.log:" -ForegroundColor Magenta
+            Get-Content $uninstallLog | ForEach-Object { Write-Host "  $_" -ForegroundColor Magenta }
         }
 
         # Test 17: Tasks removed by uninstall.ps1 (H1)
@@ -476,6 +489,13 @@ try {
     }
 }
 finally {
+    # Preserve test logs for diagnostic artifact upload before environment cleanup
+    $artifactLogDir = Join-Path $RepoRoot "release\logs"
+    New-Item -ItemType Directory -Path $artifactLogDir -Force | Out-Null
+    Get-ChildItem -Path "C:\WhatsAppERP-*.log" -ErrorAction SilentlyContinue | Copy-Item -Destination $artifactLogDir -Force
+    if (Test-Path "$env:ProgramData\WhatsApp-ERP\logs") {
+        Copy-Item -Path "$env:ProgramData\WhatsApp-ERP\logs\*" -Destination $artifactLogDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
     Clear-TestEnvironment
     # Restore original LocalMachine ExecutionPolicy
     Set-ExecutionPolicy -ExecutionPolicy $origPolicy -Scope LocalMachine -Force -ErrorAction SilentlyContinue
