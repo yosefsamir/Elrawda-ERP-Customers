@@ -133,11 +133,12 @@ function Get-InstallRoot($Config) {
     return $null
 }
 
-# Processes running from our own install root. Executable path is the proof of ownership:
-# PIDs from state files can be reused and port 3211 can belong to another program.
+# Service processes running from our releases folder. Executable path is the proof of ownership:
+# PIDs from state files can be reused and port 3211 can belong to another program. The install
+# root itself also holds unins000.exe, which must survive to finish the uninstall.
 function Get-OwnedProcess($InstallRoot) {
     if (-not $InstallRoot) { return }
-    $prefix = $InstallRoot.TrimEnd('\') + '\'
+    $prefix = (Join-Path $InstallRoot 'releases') + '\'
     Get-CimInstance -ClassName Win32_Process | Where-Object {
         $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
     }

@@ -544,6 +544,8 @@ try {
     Write-Host "`n[Uninstall] Running Uninstaller Retry..." -ForegroundColor Cyan
     $uninstallExitCode = Invoke-Uninstaller $uninstallLog
     Record-Test "Uninstaller Exits Successfully on Retry" ($uninstallExitCode -eq 0) "Exit code: $uninstallExitCode." "H1"
+    $forcedStops = @(Get-Content -LiteralPath $helperLog -ErrorAction SilentlyContinue | Where-Object { $_ -match 'Forcing stop of' })
+    Record-Test "Uninstall Stops the Service Without Forced Kills" ($forcedStops.Count -eq 0) "Forced stops logged: $($forcedStops.Count). $($forcedStops | Select-Object -First 2)" "H2"
 
     foreach ($diagnosticLog in @($helperLog, $uninstallLog)) {
         if (Test-Path -LiteralPath $diagnosticLog) {
@@ -558,8 +560,9 @@ try {
     $helperCompleted = ($helperText -match 'Completed\. Customer data preserved') -and ($innoText -match 'Uninstall helper exit code: 0')
     Record-Test "Uninstall Helper Ran to Completion" $helperCompleted "uninstall.log exists: $(Test-Path -LiteralPath $helperLog); exit code 0 logged: $($innoText -match 'Uninstall helper exit code: 0')." "H1"
 
-    # Test: no deletion errors remain in the Inno log
-    $deleteFailures = @($innoText -split "`r?`n" | Where-Object { $_ -match 'Failed to delete' })
+    # Test: no deletion errors remain in the Inno log. "Will retry later" is Inno's normal first pass
+    # at {app} while unins000.exe still sits in it; a real failure is logged without that suffix.
+    $deleteFailures = @($innoText -split "`r?`n" | Where-Object { ($_ -match 'Failed to delete') -and ($_ -notmatch 'Will retry later') })
     Record-Test "Uninstaller Log Has No Delete Failures" ($deleteFailures.Count -eq 0) "Delete failures logged: $($deleteFailures.Count). $($deleteFailures | Select-Object -First 3)" "H2"
 
     # Test: tasks removed (H1)

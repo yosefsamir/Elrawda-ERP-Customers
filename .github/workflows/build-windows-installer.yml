@@ -124,6 +124,7 @@ jobs:
     name: Test Windows Setup.exe Integration
     runs-on: windows-2022
     needs: build-windows-installer
+    timeout-minutes: 40
 
     steps:
       - name: Check out repository

@@ -61,6 +61,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut to Web Management Interface"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
+[Dirs]
+; install.ps1 creates {app} in PrepareToInstall, so Inno would otherwise treat it as pre-existing and keep it
+Name: "{app}"; Flags: uninsalwaysuninstall
+
 [Files]
 ; Shipped uninstallation script and common helpers installed to application directory for reliable task and process cleanup
 Source: "{#MyReleaseDir}\scripts\windows\uninstall.ps1"; DestDir: "{app}\scripts\windows"; Flags: ignoreversion
