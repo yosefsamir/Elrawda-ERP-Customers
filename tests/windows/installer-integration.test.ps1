@@ -424,7 +424,20 @@ try {
         $swUnins = [System.Diagnostics.Stopwatch]::StartNew()
         $u = Start-Process -FilePath $uninstallerExe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /LOG=`"$uninstallLog`"" -PassThru -Wait
         $swUnins.Stop()
-        Write-Host "Uninstaller finished in $([math]::Round($swUnins.Elapsed.TotalSeconds, 1))s with ExitCode: $($u.ExitCode)" -ForegroundColor White
+        Write-Host "Uninstaller launcher finished in $([math]::Round($swUnins.Elapsed.TotalSeconds, 1))s with ExitCode: $($u.ExitCode)" -ForegroundColor White
+
+        # Inno Setup unins000.exe spawns a temporary clone to delete itself and exits early.
+        # Wait until unins000.exe is completely removed from disk and all uninstaller clone processes terminate.
+        Write-Host "Waiting for uninstaller clone process to finish execution and remove unins000.exe..." -ForegroundColor Cyan
+        $deadline = (Get-Date).AddSeconds(45)
+        while ((Get-Date) -lt $deadline) {
+            $uninsProcs = Get-Process | Where-Object { $_.ProcessName -like 'unins*' -or $_.ProcessName -like '_iu*' }
+            $uninstallerStillPresent = Test-Path -LiteralPath $uninstallerExe
+            if (-not $uninsProcs -and -not $uninstallerStillPresent) {
+                break
+            }
+            Start-Sleep -Milliseconds 500
+        }
 
         # Test 17: Tasks removed by uninstall.ps1 (H1)
         $tasksRemaining = Get-ScheduledTask -TaskName 'WhatsAppERPOperations*' -ErrorAction SilentlyContinue

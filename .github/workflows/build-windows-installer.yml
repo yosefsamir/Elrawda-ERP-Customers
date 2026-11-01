@@ -146,10 +146,10 @@ jobs:
         with:
           name: windows-installer-test-logs-${{ github.sha }}
           path: |
-            C:\WhatsAppERP-setup.log
-            C:\WhatsAppERP-uninstall.log
-            C:\WhatsAppERP-setup-conflict.log
-            C:\ProgramData\WhatsApp-ERP\logs\**
+            C:/WhatsAppERP-setup.log
+            C:/WhatsAppERP-uninstall.log
+            C:/WhatsAppERP-setup-conflict.log
+            C:/ProgramData/WhatsApp-ERP/logs/**
           if-no-files-found: ignore
           retention-days: 14
 

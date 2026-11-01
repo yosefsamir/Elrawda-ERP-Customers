@@ -52,14 +52,28 @@ if (Test-Path -LiteralPath $commonScript) {
     } catch {}
 }
 
+# Ensure any orphaned node.exe or chrome.exe under the install root are terminated
+Get-Process -Name 'node', 'chrome' -ErrorAction SilentlyContinue | Where-Object {
+    try { $_.Path -and $_.Path -like "$InstallRoot*" } catch { $false }
+} | ForEach-Object {
+    try { & taskkill.exe /PID $_.Id /T /F | Out-Null } catch {}
+}
+
 # 6. Remove application releases directory (H2)
 $releasesDir = Join-Path $InstallRoot 'releases'
 if (Test-Path -LiteralPath $releasesDir) {
     Write-Host "Removing application binaries from $releasesDir..." -ForegroundColor Cyan
-    try {
-        Remove-Item -LiteralPath $releasesDir -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {
-        Write-Warning "Could not remove all files in $releasesDir: $($_.Exception.Message)"
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $releasesDir -Recurse -Force -ErrorAction Stop
+            break
+        } catch {
+            if ($attempt -eq 5) {
+                Write-Warning "Could not remove all files in $releasesDir: $($_.Exception.Message)"
+            } else {
+                Start-Sleep -Seconds 1
+            }
+        }
     }
 }
 
