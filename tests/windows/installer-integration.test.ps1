@@ -8,6 +8,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
+. (Join-Path $RepoRoot 'scripts\windows\common.ps1')
 
 Write-Host "====================================================" -ForegroundColor Cyan
 Write-Host " WhatsApp-ERP Real Windows Installer Integration Tests" -ForegroundColor Cyan
@@ -406,7 +407,7 @@ try {
 finally {
     Clear-TestEnvironment
     # Restore original LocalMachine ExecutionPolicy
-    Set-ExecutionPolicy -ExecutionPolicy $origPolicy -Scope LocalMachine -Force
+    Set-ExecutionPolicy -ExecutionPolicy $origPolicy -Scope LocalMachine -Force -ErrorAction SilentlyContinue
 }
 
 # -------------------------------------------------------------------------
@@ -416,8 +417,8 @@ Write-Host "`n====================================================" -ForegroundC
 Write-Host " TEST EXECUTION SUMMARY (Total Tests: $($testResults.Count))" -ForegroundColor Cyan
 Write-Host "====================================================" -ForegroundColor Cyan
 
-$passCount = ($testResults | Where-Object { $_.Status -eq 'PASS' }).Count
-$failCount = ($testResults | Where-Object { $_.Status -eq 'FAIL' }).Count
+$passCount = @($testResults | Where-Object { $_.Status -eq 'PASS' }).Count
+$failCount = @($testResults | Where-Object { $_.Status -eq 'FAIL' }).Count
 $totalCount = $testResults.Count
 
 $testResults | Format-Table -Property Test, Status, Finding, Details -AutoSize
