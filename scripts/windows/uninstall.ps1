@@ -41,3 +41,4 @@ Write-Host "WhatsApp-ERP scheduled tasks stopped and removed successfully." -For
 if (Test-Path -LiteralPath $logDir) {
     try { Stop-Transcript | Out-Null } catch {}
 }
+

@@ -30,10 +30,24 @@ $oldRelease = $config.ReleasePath
 $targetNode = Get-NodePath $target
 $flag = Join-Path $StateRoot 'maintenance.flag'
 if (Test-Path $flag) {
-    throw 'Maintenance mode is already active. Inspect the existing maintenance operation before updating.'
+    $existing = $null
+    try {
+        $existing = Get-Content -LiteralPath $flag -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {}
+    if ($existing -and $existing.pid -and -not (Get-Process -Id $existing.pid -ErrorAction SilentlyContinue)) {
+        Write-Host "Overriding stale maintenance flag from dead PID $($existing.pid)..." -ForegroundColor Yellow
+        Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue
+    } else {
+        throw 'Maintenance mode is already active. Inspect the existing maintenance operation before updating.'
+    }
 }
 
-[IO.File]::WriteAllText($flag, 'update')
+$flagData = [pscustomobject]@{
+    reason = 'update'
+    pid = $PID
+    startTime = (Get-Date -Format o)
+}
+[IO.File]::WriteAllText($flag, ($flagData | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
 $backup = Join-Path $StateRoot ('backups\before-' + $version + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 $stopped = $false
 $switched = $false

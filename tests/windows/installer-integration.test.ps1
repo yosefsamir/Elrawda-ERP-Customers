@@ -2,7 +2,8 @@
 # Tests real Setup.exe and unins000.exe on Windows.
 param(
     [string]$SetupExePath,
-    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
+    [switch]$Strict
 )
 
 Set-StrictMode -Version Latest
@@ -36,6 +37,11 @@ if (-not $isAdmin) {
     exit 1
 }
 
+# 3. Save original policy and configure machine execution policy to Restricted (Windows 10/11 default)
+$origPolicy = (Get-ExecutionPolicy -Scope LocalMachine)
+Write-Host "Configuring LocalMachine ExecutionPolicy to Restricted (Windows 10/11 default)..." -ForegroundColor Cyan
+Set-ExecutionPolicy -ExecutionPolicy Restricted -Scope LocalMachine -Force
+
 $testResults = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 function Record-Test($Name, [bool]$Passed, $Details, $FindingId = "") {
@@ -68,6 +74,20 @@ function Clear-TestEnvironment {
     }
 }
 
+function Wait-BackendHealth([int]$TimeoutSec = 30) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:3211/healthz" -TimeoutSec 2 -ErrorAction Stop
+            if ($resp.ok -eq $true) {
+                return @{ Success = $true; Version = $resp.version }
+            }
+        } catch {}
+        Start-Sleep -Seconds 2
+    }
+    return @{ Success = $false; Version = $null }
+}
+
 try {
     # -------------------------------------------------------------------------
     # TEST 1 & 2: Negative Deployment Test — Port Conflict / Abort Truthfulness (C3)
@@ -89,16 +109,16 @@ try {
 
         # Test 1: Setup exits with non-zero exit code on deployment failure (C3)
         if ($conflictExitCode -ne 0) {
-            Record-Test "Negative Test: Setup Aborts on Deployment Conflict (ExitCode != 0)" $true "Setup failed cleanly with non-zero exit code: $conflictExitCode (Inno Setup PrepareToInstall failure)." "C3"
+            Record-Test "Negative Test: Setup Aborts on Deployment Conflict (ExitCode != 0)" $true "Setup failed cleanly with non-zero exit code: $conflictExitCode." "C3"
         } else {
-            Record-Test "Negative Test: Setup Aborts on Deployment Conflict (ExitCode != 0)" $false "Setup exited with code 0 even though deployment failed! Setup falsely reported success." "C3"
+            Record-Test "Negative Test: Setup Aborts on Deployment Conflict (ExitCode != 0)" $false "Setup exited with code 0 even though deployment failed!" "C3"
         }
 
         # Test 2: Inno Setup does NOT create uninstaller or Apps registry entry when PrepareToInstall fails (C3)
         $uninsOnAbort = Test-Path "C:\WhatsApp-ERP\unins000.exe"
         $regKeyOnAbort = Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8B2F354D-9321-4F2A-A04E-5D345ECB901C}_is1"
         if (-not $uninsOnAbort -and -not $regKeyOnAbort) {
-            Record-Test "Failure Cleanness: No Uninstaller or Apps Registry Entry Created on Abort" $true "No phantom unins000.exe or Add/Remove Programs registry entry left behind on failure." "C3"
+            Record-Test "Failure Cleanness: No Uninstaller or Apps Registry Entry Created on Abort" $true "No phantom unins000.exe or registry entry left behind on failure." "C3"
         } else {
             Record-Test "Failure Cleanness: No Uninstaller or Apps Registry Entry Created on Abort" $false "Phantom uninstaller ($uninsOnAbort) or registry entry ($regKeyOnAbort) left behind on failed install." "C3"
         }
@@ -108,9 +128,9 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # TEST 3, 4, 5: Execute Setup.exe Silent Install & Validate Deployment
+    # TEST 3, 4, 5: Execute Setup.exe Silent Install under Restricted ExecutionPolicy
     # -------------------------------------------------------------------------
-    Write-Host "`n[Test 3, 4, 5] Executing Setup.exe Silent Installation (/VERYSILENT)..." -ForegroundColor Cyan
+    Write-Host "`n[Test 3, 4, 5] Executing Setup.exe Silent Installation under Restricted Policy..." -ForegroundColor Cyan
     $setupLog = "C:\WhatsAppERP-setup.log"
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $p = Start-Process -FilePath $SetupExePath -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /LOG=`"$setupLog`" /NOCANCEL" -PassThru -Wait
@@ -118,11 +138,11 @@ try {
     $setupExitCode = $p.ExitCode
     Write-Host "Setup finished in $([math]::Round($sw.Elapsed.TotalSeconds, 1))s with ExitCode: $setupExitCode" -ForegroundColor White
 
-    # Test 3: Setup installation exit code
+    # Test 3: Setup installation exit code under Restricted Policy (C2 & C3)
     if ($setupExitCode -eq 0) {
-        Record-Test "Setup.exe Silent Installation Succeeded (ExitCode == 0)" $true "Setup completed with exit code 0."
+        Record-Test "Setup.exe Silent Installation Succeeded under Restricted Policy (ExitCode == 0)" $true "Setup completed successfully with exit code 0." "C2"
     } else {
-        Record-Test "Setup.exe Silent Installation Succeeded (ExitCode == 0)" $false "Setup exited with non-zero exit code: $setupExitCode."
+        Record-Test "Setup.exe Silent Installation Succeeded under Restricted Policy (ExitCode == 0)" $false "Setup failed with exit code $setupExitCode under Restricted policy." "C2"
     }
 
     # Test 4: Silent install skips browser launch (L19)
@@ -145,7 +165,7 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # TEST 6, 7, 8: Verify Scheduled Tasks & Execution Policy (C2)
+    # TEST 6, 7, 8: Verify Scheduled Tasks & Execution Policy (C2, M6, L11)
     # -------------------------------------------------------------------------
     Write-Host "`n[Test 6, 7, 8] Verifying Scheduled Tasks..." -ForegroundColor Cyan
     $task = Get-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
@@ -163,34 +183,116 @@ try {
         $action = $task.Actions | Select-Object -First 1
         $hasBypass = $action.Arguments -match '-ExecutionPolicy\s+Bypass'
         if ($hasBypass) {
-            Record-Test "Task Action specifies -ExecutionPolicy Bypass" $true "Task arguments include -ExecutionPolicy Bypass."
+            Record-Test "Task Action specifies -ExecutionPolicy Bypass" $true "Task arguments ('$($action.Arguments)') include -ExecutionPolicy Bypass." "C2"
         } else {
-            Record-Test "Task Action specifies -ExecutionPolicy Bypass" $false "Task arguments ('$($action.Arguments)') lack -ExecutionPolicy Bypass. Under default Restricted policy, launcher.ps1 is blocked by Windows!" "C2"
+            Record-Test "Task Action specifies -ExecutionPolicy Bypass" $false "Task arguments ('$($action.Arguments)') lack -ExecutionPolicy Bypass!" "C2"
         }
     } else {
         Record-Test "Task Action specifies -ExecutionPolicy Bypass" $false "Task WhatsAppERPOperations not found." "C2"
     }
 
-    # Test 8: WhatsAppERPOperationsBackup task registered
+    # Test 8: Backup task registration, StartWhenAvailable setting (M6) and SID S-1-5-18 (L11)
     if ($taskBackup) {
-        Record-Test "Scheduled Task Registration (WhatsAppERPOperationsBackup)" $true "Task WhatsAppERPOperationsBackup is registered."
+        $hasStartWhenAvailable = $taskBackup.Settings.StartWhenAvailable -eq $true
+        $isLocalSystemSid = $taskBackup.Principal.UserId -eq 'S-1-5-18' -or $taskBackup.Principal.UserId -eq 'SYSTEM'
+        $hasBackupBypass = ($taskBackup.Actions | Select-Object -First 1).Arguments -match '-ExecutionPolicy\s+Bypass'
+
+        $allOk = $hasStartWhenAvailable -and $isLocalSystemSid -and $hasBackupBypass
+        if ($allOk) {
+            Record-Test "Backup Task Settings & SID (StartWhenAvailable & S-1-5-18)" $true "Backup task configured with StartWhenAvailable, SID S-1-5-18, and ExecutionPolicy Bypass." "M6"
+        } else {
+            Record-Test "Backup Task Settings & SID (StartWhenAvailable & S-1-5-18)" $false "StartWhenAvailable: $hasStartWhenAvailable, SID: $($taskBackup.Principal.UserId), Bypass: $hasBackupBypass" "M6"
+        }
     } else {
-        Record-Test "Scheduled Task Registration (WhatsAppERPOperationsBackup)" $false "Task WhatsAppERPOperationsBackup was not registered."
+        Record-Test "Backup Task Settings & SID (StartWhenAvailable & S-1-5-18)" $false "Task WhatsAppERPOperationsBackup not found." "M6"
     }
 
     # -------------------------------------------------------------------------
-    # TEST 9: State Management & Idempotency Inspection (C4)
+    # TEST 9 & 10: Backend HTTP Health Check & Task Restart
     # -------------------------------------------------------------------------
-    Write-Host "`n[Test 9] Verifying State Management & service.json..." -ForegroundColor Cyan
-    $serviceJsonPath = "$env:ProgramData\WhatsApp-ERP\service.json"
-    $serviceJsonExists = Test-Path -LiteralPath $serviceJsonPath
-    # Finding C4: service.json written prematurely before health check verification in install.ps1
-    Record-Test "Idempotent State Commit (service.json ordering)" $false "service.json is written in install.ps1 before service readiness is verified. (Active finding for Phase 3)." "C4"
+    Write-Host "`n[Test 9 & 10] Verifying Backend HTTP Health & Task Restart..." -ForegroundColor Cyan
+    $health1 = Wait-BackendHealth 30
+    if ($health1.Success) {
+        Record-Test "Backend HTTP Health Check (/healthz)" $true "Server responded successfully: version=$($health1.Version) under Scheduled Task identity." "C2"
+    } else {
+        Record-Test "Backend HTTP Health Check (/healthz)" $false "Server failed to respond on port 3211 within 30 seconds." "C2"
+    }
+
+    # Test 10: Restart task and verify health recovers
+    Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+    Start-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
+    $health2 = Wait-BackendHealth 30
+    if ($health2.Success) {
+        Record-Test "Backend Health Recovers After Task Restart" $true "Server resumed cleanly and responded on /healthz after task restart."
+    } else {
+        Record-Test "Backend Health Recovers After Task Restart" $false "Server failed to respond on /healthz after task restart."
+    }
 
     # -------------------------------------------------------------------------
-    # TEST 10, 11, 12, 13: Uninstallation, Task Removal & Cleanup (H1, H2)
+    # TEST 11: Stale Runtime Lock Recovery (H3)
     # -------------------------------------------------------------------------
-    Write-Host "`n[Test 10, 11, 12, 13] Running and Validating Uninstaller..." -ForegroundColor Cyan
+    Write-Host "`n[Test 11] Verifying Stale Runtime Lock Recovery (H3)..." -ForegroundColor Cyan
+    Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+
+    # Write simulated stale lock file from a previous boot session
+    $lockFile = "$env:ProgramData\WhatsApp-ERP\data\runtime.lock"
+    $staleBootLock = [pscustomobject]@{
+        pid = 1 # System PID 1 or dead PID
+        owner = 'dead-owner-from-previous-reboot'
+        createdAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - 86400000 # 24 hours ago
+        systemBootTime = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - 86400000
+    }
+    [IO.File]::WriteAllText($lockFile, ($staleBootLock | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    Write-Host "Injected pre-reboot stale runtime.lock. Starting service task..." -ForegroundColor White
+
+    Start-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
+    $health3 = Wait-BackendHealth 30
+    if ($health3.Success) {
+        Record-Test "Recovery from Stale Runtime Lock (H3)" $true "Server cleared pre-reboot stale lock and started successfully." "H3"
+    } else {
+        Record-Test "Recovery from Stale Runtime Lock (H3)" $false "Server was blocked by stale runtime.lock and failed to start!" "H3"
+    }
+
+    # -------------------------------------------------------------------------
+    # TEST 12: Stale Maintenance Flag Recovery (H4)
+    # -------------------------------------------------------------------------
+    Write-Host "`n[Test 12] Verifying Stale Maintenance Flag Recovery (H4)..." -ForegroundColor Cyan
+    Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+
+    # Write simulated stale maintenance flag with dead PID
+    $flagFile = "$env:ProgramData\WhatsApp-ERP\maintenance.flag"
+    $staleFlag = [pscustomobject]@{
+        reason = 'update'
+        pid = 999999 # Non-existent dead PID
+        startTime = (Get-Date).AddHours(-1).ToString('o')
+    }
+    [IO.File]::WriteAllText($flagFile, ($staleFlag | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    Write-Host "Injected stale maintenance.flag with dead PID. Starting launcher..." -ForegroundColor White
+
+    Start-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
+    $health4 = Wait-BackendHealth 30
+    if ($health4.Success) {
+        Record-Test "Recovery from Stale Maintenance Flag (H4)" $true "Launcher cleared stale maintenance flag from dead PID and started server." "H4"
+    } else {
+        Record-Test "Recovery from Stale Maintenance Flag (H4)" $false "Launcher was permanently blocked by maintenance.flag!" "H4"
+    }
+
+    # -------------------------------------------------------------------------
+    # TEST 13: State Management & Idempotency Inspection (C4 - Retained for Phase 3)
+    # -------------------------------------------------------------------------
+    Write-Host "`n[Test 13] Verifying State Management & service.json..." -ForegroundColor Cyan
+    $serviceJsonPath = "$env:ProgramData\WhatsApp-ERP\service.json"
+    $serviceJsonExists = Test-Path -LiteralPath $serviceJsonPath
+    # Finding C4: service.json written prematurely in install.ps1 before health check verification
+    Record-Test "Idempotent State Commit (service.json ordering)" $false "service.json is written before verifying service readiness. (Active finding for Phase 3)." "C4"
+
+    # -------------------------------------------------------------------------
+    # TEST 14, 15, 16, 17: Uninstallation, Task Removal & Cleanup (H1, H2)
+    # -------------------------------------------------------------------------
+    Write-Host "`n[Test 14, 15, 16, 17] Running and Validating Uninstaller..." -ForegroundColor Cyan
     $uninstallLog = "C:\WhatsAppERP-uninstall.log"
     if (Test-Path $uninstallerExe) {
         Write-Host "Executing unins000.exe /VERYSILENT..." -ForegroundColor Cyan
@@ -199,7 +301,7 @@ try {
         $swUnins.Stop()
         Write-Host "Uninstaller finished in $([math]::Round($swUnins.Elapsed.TotalSeconds, 1))s with ExitCode: $($u.ExitCode)" -ForegroundColor White
 
-        # Test 10: Tasks removed by uninstall.ps1 (H1)
+        # Test 14: Tasks removed by uninstall.ps1 (H1)
         $tasksRemaining = Get-ScheduledTask -TaskName 'WhatsAppERPOperations*' -ErrorAction SilentlyContinue
         if (-not $tasksRemaining) {
             Record-Test "Uninstaller Removes Scheduled Tasks via uninstall.ps1" $true "Scheduled tasks (WhatsAppERPOperations, WhatsAppERPOperationsBackup) were cleanly removed by uninstall.ps1." "H1"
@@ -208,7 +310,7 @@ try {
             Record-Test "Uninstaller Removes Scheduled Tasks via uninstall.ps1" $false "Scheduled tasks ($taskNames) still registered after uninstall!" "H1"
         }
 
-        # Test 11: Uninstaller log check for PowerShell parse errors (H1)
+        # Test 15: Uninstaller log check for PowerShell parse errors (H1)
         $uninstallLogContent = if (Test-Path $uninstallLog) { Get-Content $uninstallLog -Raw } else { "" }
         $hasBraceSyntaxError = $uninstallLogContent -match '\}\}\s*catch\s*\{\}\}'
         if (-not $hasBraceSyntaxError) {
@@ -217,7 +319,7 @@ try {
             Record-Test "Uninstaller Log Has No PowerShell Parse Errors" $false "Detected literal '}} catch {{}}' parse error in uninstall log!" "H1"
         }
 
-        # Test 12: Binary directory removal (H2)
+        # Test 16: Binary directory removal (H2 - Retained for Phase 5)
         $releasesRemaining = Test-Path "C:\WhatsApp-ERP\releases"
         if (-not $releasesRemaining) {
             Record-Test "Uninstaller Removes Application Binaries" $true "C:\WhatsApp-ERP\releases directory removed."
@@ -225,7 +327,7 @@ try {
             Record-Test "Uninstaller Removes Application Binaries" $false "C:\WhatsApp-ERP\releases still exists on disk! Robocopied releases not tracked by Inno Setup. (Active finding for Phase 5)." "H2"
         }
 
-        # Test 13: Customer data preservation
+        # Test 17: Customer data preservation
         $dataPreserved = Test-Path "$env:ProgramData\WhatsApp-ERP"
         Record-Test "Uninstaller Preserves Customer State Directory" $dataPreserved "Customer persistent state ($env:ProgramData\WhatsApp-ERP) preserved: $dataPreserved"
     } else {
@@ -237,6 +339,8 @@ try {
 }
 finally {
     Clear-TestEnvironment
+    # Restore original LocalMachine ExecutionPolicy
+    Set-ExecutionPolicy -ExecutionPolicy $origPolicy -Scope LocalMachine -Force
 }
 
 # -------------------------------------------------------------------------
@@ -254,17 +358,38 @@ $testResults | Format-Table -Property Test, Status, Finding, Details -AutoSize
 
 Write-Host "Results: $passCount Passed, $failCount Failed out of $totalCount tests." -ForegroundColor $(if ($failCount -gt 0) { "Yellow" } else { "Green" })
 
-$phase1TargetFindings = @('C3', 'H1', 'L19')
-$phase1TargetFailures = $testResults | Where-Object { $_.Status -eq 'FAIL' -and $_.Finding -in $phase1TargetFindings }
+# Export machine-readable test summary for release publishing gate
+$summaryDir = Join-Path $RepoRoot "release"
+if (-not (Test-Path $summaryDir)) {
+    New-Item -ItemType Directory -Path $summaryDir -Force | Out-Null
+}
+$testSummary = [pscustomobject]@{
+    Total = $totalCount
+    Passed = $passCount
+    Failed = $failCount
+    Failures = ($testResults | Where-Object { $_.Status -eq 'FAIL' } | Select-Object -Property Finding, Test, Details)
+}
+$testSummary | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $summaryDir "test-summary.json") -Encoding utf8
 
-if ($phase1TargetFailures) {
-    Write-Host "`n[ERROR] Phase 1 targeted findings failed:" -ForegroundColor Red
-    foreach ($f in $phase1TargetFailures) {
+if ($Strict -and $failCount -gt 0) {
+    Write-Host "`n[ERROR] Strict Mode (Release Gate): $failCount test(s) failed. Customer release cannot be published with known defects!" -ForegroundColor Red
+    foreach ($r in ($testResults | Where-Object { $_.Status -eq 'FAIL' })) {
+        Write-Host "  -> [$($r.Finding)] $($r.Test): $($r.Details)" -ForegroundColor Red
+    }
+    exit 1
+}
+
+$phase2TargetFindings = @('C2', 'C3', 'H1', 'H3', 'H4', 'L19', 'M6', 'L1', 'L11')
+$phase2TargetFailures = $testResults | Where-Object { $_.Status -eq 'FAIL' -and $_.Finding -in $phase2TargetFindings }
+
+if ($phase2TargetFailures) {
+    Write-Host "`n[ERROR] Targeted findings failed:" -ForegroundColor Red
+    foreach ($f in $phase2TargetFailures) {
         Write-Host "  -> $($f.Finding): $($f.Test) - $($f.Details)" -ForegroundColor Red
     }
     exit 1
 } else {
-    Write-Host "`nAll Phase 1 targeted tests (C3, H1, L19) PASSED!" -ForegroundColor Green
+    Write-Host "`nAll Phase 1 & Phase 2 targeted tests PASSED!" -ForegroundColor Green
     $remaining = $testResults | Where-Object { $_.Status -eq 'FAIL' }
     if ($remaining) {
         Write-Host "Retained known failures for subsequent phases:" -ForegroundColor Yellow

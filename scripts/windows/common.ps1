@@ -23,16 +23,7 @@ function Get-NodePath($ReleasePath) {
     if (Test-Path -LiteralPath $bundled) {
         return (Resolve-Path -LiteralPath $bundled).Path
     }
-    # Backward-compatibility fallback for legacy external node configurations
-    $progFiles = "$env:ProgramFiles\nodejs\node.exe"
-    if (Test-Path -LiteralPath $progFiles) {
-        return (Resolve-Path -LiteralPath $progFiles).Path
-    }
-    $cmd = Get-Command node.exe -ErrorAction SilentlyContinue
-    if ($cmd) {
-        return if ($cmd.Source) { $cmd.Source } else { $cmd.FullName }
-    }
-    throw "Node.js executable could not be found in active release: $bundled"
+    throw "Bundled Node.js runtime not found in release: $bundled"
 }
 
 function Get-ChromiumPath($ReleasePath) {

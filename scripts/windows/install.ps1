@@ -88,17 +88,18 @@ try {
     Copy-Item (Join-Path $target 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
     Write-JsonFile (Join-Path $StateRoot 'service.json') $config
 
-    # Register automatic startup Scheduled Task running under SYSTEM
-    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -File `"$(Join-Path $StateRoot 'launcher.ps1')`" -StateRoot `"$StateRoot`"" -WorkingDirectory $StateRoot
+    # Register automatic startup Scheduled Task running under LocalSystem SID (S-1-5-18)
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $StateRoot 'launcher.ps1')`" -StateRoot `"$StateRoot`"" -WorkingDirectory $StateRoot
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount
+    $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount
     Register-ScheduledTask -TaskName $config.TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 
-    # Register daily backup task (03:00)
-    $backupAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -File `"$(Join-Path $StateRoot 'scheduled-backup.ps1')`" -StateRoot `"$StateRoot`""
+    # Register daily backup task (03:00) with StartWhenAvailable to ensure missed backups run after boot
+    $backupAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $StateRoot 'scheduled-backup.ps1')`" -StateRoot `"$StateRoot`""
     $backupTrigger = New-ScheduledTaskTrigger -Daily -At '03:00'
-    Register-ScheduledTask -TaskName ($config.TaskName + 'Backup') -Action $backupAction -Trigger $backupTrigger -Principal $principal -Settings $settings -Force | Out-Null
+    $backupSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+    Register-ScheduledTask -TaskName ($config.TaskName + 'Backup') -Action $backupAction -Trigger $backupTrigger -Principal $principal -Settings $backupSettings -Force | Out-Null
 
     # Start service task and wait for HTTP readiness
     Start-ScheduledTask -TaskName $config.TaskName

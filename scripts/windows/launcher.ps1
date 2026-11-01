@@ -6,8 +6,34 @@ New-Item -ItemType Directory -Path $logs -Force | Out-Null
 
 while ($true) {
     if (Test-Path $flag) {
-        Start-Sleep -Seconds 1
-        continue
+        $isStale = $false
+        $flagContent = $null
+        try {
+            $raw = Get-Content -LiteralPath $flag -Raw -Encoding UTF8 -ErrorAction Stop
+            $flagContent = $raw | ConvertFrom-Json -ErrorAction SilentlyContinue
+        } catch {}
+
+        if ($flagContent -and $flagContent.pid) {
+            $owner = Get-Process -Id $flagContent.pid -ErrorAction SilentlyContinue
+            if (-not $owner) {
+                $isStale = $true
+            }
+        } elseif (-not $flagContent) {
+            # Legacy string or empty flag: check if older than 15 minutes
+            $item = Get-Item -LiteralPath $flag -ErrorAction SilentlyContinue
+            if ($item -and (Get-Date) - $item.LastWriteTime -gt (New-TimeSpan -Minutes 15)) {
+                $isStale = $true
+            }
+        }
+
+        if ($isStale) {
+            Add-Content -LiteralPath (Join-Path $logs 'launcher.log') -Value "$(Get-Date -Format o) [H4] Automatically cleared stale maintenance flag."
+            Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue
+        } else {
+            Add-Content -LiteralPath (Join-Path $logs 'launcher.log') -Value "$(Get-Date -Format o) Maintenance mode active (Reason: $($flagContent.reason), PID: $($flagContent.pid)). Waiting..."
+            Start-Sleep -Seconds 5
+            continue
+        }
     }
     try {
         $configFile = Join-Path $StateRoot 'service.json'
