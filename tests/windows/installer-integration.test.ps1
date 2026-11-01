@@ -428,7 +428,8 @@ try {
     # -------------------------------------------------------------------------
     Write-Host "`n[Phase 6] Verifying Service Identity and Access Boundaries..." -ForegroundColor Cyan
     $serviceTask = Get-ScheduledTask -TaskName 'WhatsAppERPOperations'
-    $serverOwner = (Get-Process -Id (Get-ServerPid) -IncludeUserName -ErrorAction SilentlyContinue).UserName
+    $currentServerPid = Get-ServerPid
+    $serverOwner = if ($currentServerPid) { (Get-Process -Id $currentServerPid -IncludeUserName -ErrorAction SilentlyContinue).UserName } else { 'not running' }
     $identityOk = ($serviceTask.Principal.ProcessTokenSidType -eq 'Unrestricted') -and ($serverOwner -eq 'NT AUTHORITY\LOCAL SERVICE')
     Record-Test "Server Runs as LOCAL SERVICE With a Task SID (H6)" $identityOk "Server owner: $serverOwner; SID type: $($serviceTask.Principal.ProcessTokenSidType); required privileges: $($serviceTask.Principal.RequiredPrivilege -join ', ')." "H6"
 

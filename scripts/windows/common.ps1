@@ -142,6 +142,18 @@ function Invoke-Icacls([string[]]$IcaclsArgs) {
     if ($LASTEXITCODE -ne 0) { throw "icacls failed on $($IcaclsArgs[0]) with exit code $LASTEXITCODE" }
 }
 
+# Grants by SID object. icacls resolves the SID to a name first, and a task SID has no name
+# until its task exists, so it fails with error 1332 on a fresh machine.
+function Grant-SidAccess([string]$Path, [string]$Sid, [Security.AccessControl.FileSystemRights]$Rights) {
+    $folder = Get-Item -LiteralPath $Path
+    $acl = $folder.GetAccessControl('Access')
+    $identity = [Security.Principal.SecurityIdentifier]::new($Sid)
+    $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new($identity, $Rights, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+    $acl.SetAccessRule($rule)
+    $folder.SetAccessControl($acl)
+}
+
 # New folders under C:\ give Authenticated Users Modify. Code here runs as a service and as
 # SYSTEM during backups, so only SYSTEM and Administrators may change it.
 function Set-InstallRootAcl([string]$InstallRoot) {
@@ -156,9 +168,10 @@ function Set-StateAcl([string]$StateRoot, [string]$TaskName) {
         New-Item -ItemType Directory -Path (Join-Path $StateRoot $name) -Force | Out-Null
     }
     $sid = Get-TaskSid $TaskName
-    Invoke-Icacls @($StateRoot, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', "*${sid}:(OI)(CI)RX")
+    Invoke-Icacls @($StateRoot, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
+    Grant-SidAccess $StateRoot $sid 'ReadAndExecute, Synchronize'
     foreach ($name in @('data', 'cache', 'temp', 'logs')) {
-        Invoke-Icacls @((Join-Path $StateRoot $name), '/grant:r', "*${sid}:(OI)(CI)M")
+        Grant-SidAccess (Join-Path $StateRoot $name) $sid 'Modify, Synchronize'
     }
     # Logs hold no secrets, and customers must be able to open them without changing folder permissions
     Invoke-Icacls @((Join-Path $StateRoot 'logs'), '/grant:r', '*S-1-5-32-545:(OI)(CI)RX')
@@ -343,7 +356,7 @@ function Assert-ServiceBrowser($ReleasePath, $StateRoot) {
     $workDir = Join-Path $StateRoot 'temp\preflight'
     if (Test-Path -LiteralPath $workDir) { Remove-Item -LiteralPath $workDir -Recurse -Force }
     New-Item -ItemType Directory -Path $workDir -Force | Out-Null
-    Invoke-Icacls @($workDir, '/grant:r', "*$(Get-TaskSid $taskName):(OI)(CI)M")
+    Grant-SidAccess $workDir (Get-TaskSid $taskName) 'Modify, Synchronize'
 
     $resultFile = Join-Path $workDir 'result.json'
     $errorFile = Join-Path $workDir 'error.txt'

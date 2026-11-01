@@ -138,6 +138,9 @@ try {
         # so this failed attempt does not leave an unverified service.json behind!
         Write-Host "Deployment verification failed. Rolling back provisional service.json..." -ForegroundColor Red
         try { Stop-ServiceProcessTree $config } catch { Write-Warning $_.Exception.Message }
+        foreach ($taskName in @($config.TaskName, ($config.TaskName + 'Backup'))) {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        }
         Remove-Item -LiteralPath $serviceJsonPath -Force -ErrorAction SilentlyContinue
         throw
     }
