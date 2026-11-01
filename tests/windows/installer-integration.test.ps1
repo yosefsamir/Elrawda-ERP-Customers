@@ -310,8 +310,8 @@ try {
     # TEST 15: Interrupted Install Safe Retry (C4)
     # -------------------------------------------------------------------------
     Write-Host "`n[Test 15] Verifying Interrupted Install Recovery (C4)..." -ForegroundColor Cyan
-    # Simulate an interrupted install: remove service.json and stop task, leaving release binaries on disk
-    Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
+    # Simulate an interrupted install: stop task, stop server process, remove service.json, leaving release binaries on disk
+    Stop-ServiceProcessTree @{ Port = 3211; DataDir = "$env:ProgramData\WhatsApp-ERP\data"; TaskName = 'WhatsAppERPOperations' }
     Remove-Item -LiteralPath $serviceJsonPath -Force -ErrorAction SilentlyContinue
     # Run Setup.exe again
     $interruptedLog = "C:\WhatsAppERP-interrupted-retry.log"
@@ -335,8 +335,8 @@ try {
     Copy-Item "C:\WhatsApp-ERP\releases\$currentVer\*" -Destination $fakeReleaseDir -Recurse -Force
     $fakePkg = @{ name = "whatsapp-erp"; version = $fakeVer }
     $fakePkg | ConvertTo-Json | Set-Content (Join-Path $fakeReleaseDir 'package.json') -Encoding UTF8
-    # Break dist/index.js so the server process immediately exits on start
-    Set-Content (Join-Path $fakeReleaseDir 'dist\index.js') 'process.exit(1);' -Encoding UTF8
+    # Break server entry point so the server process immediately exits on start
+    Set-Content (Join-Path $fakeReleaseDir 'dist\runtime\apps\server\index.js') 'process.exit(1);' -Encoding UTF8
 
     $updateFailedAsExpected = $false
     try {

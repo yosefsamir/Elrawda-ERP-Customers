@@ -104,28 +104,36 @@ function Move-ItemWithRetry($Source, $Destination, [int]$MaxAttempts = 5) {
 }
 
 function Stop-ServiceProcessTree($Config) {
-    # 1. Attempt graceful stop via Admin CLI
-    try {
-        Invoke-Admin $Config @('stop')
-        Start-Sleep -Seconds 2
-    } catch {}
+    if ($Config -and $Config.TaskName) {
+        Stop-ScheduledTask -TaskName $Config.TaskName -ErrorAction SilentlyContinue
+    }
+
+    # 1. Attempt graceful stop via Admin CLI if release exists
+    if ($Config -and $Config.ReleasePath -and (Test-Path $Config.ReleasePath)) {
+        try {
+            Invoke-Admin $Config @('stop')
+            Start-Sleep -Seconds 1
+        } catch {}
+    }
 
     # 2. Check shutdown.json or runtime.lock to identify server process ID
     $pidToKill = $null
-    $shutdownFile = Join-Path $Config.DataDir 'shutdown.json'
-    if (Test-Path -LiteralPath $shutdownFile) {
-        try {
-            $sd = Get-Content -LiteralPath $shutdownFile -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($sd.pid) { $pidToKill = [int]$sd.pid }
-        } catch {}
-    }
-    if (-not $pidToKill) {
-        $lockFile = Join-Path $Config.DataDir 'runtime.lock'
-        if (Test-Path -LiteralPath $lockFile) {
+    if ($Config -and $Config.DataDir) {
+        $shutdownFile = Join-Path $Config.DataDir 'shutdown.json'
+        if (Test-Path -LiteralPath $shutdownFile) {
             try {
-                $lk = Get-Content -LiteralPath $lockFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                if ($lk.pid) { $pidToKill = [int]$lk.pid }
+                $sd = Get-Content -LiteralPath $shutdownFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($sd.pid) { $pidToKill = [int]$sd.pid }
             } catch {}
+        }
+        if (-not $pidToKill) {
+            $lockFile = Join-Path $Config.DataDir 'runtime.lock'
+            if (Test-Path -LiteralPath $lockFile) {
+                try {
+                    $lk = Get-Content -LiteralPath $lockFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                    if ($lk.pid) { $pidToKill = [int]$lk.pid }
+                } catch {}
+            }
         }
     }
 
@@ -140,11 +148,22 @@ function Stop-ServiceProcessTree($Config) {
         }
     }
 
+    # Also kill any process listening on the configured Port
+    $port = if ($Config -and $Config.Port) { $Config.Port } else { 3211 }
+    $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    if ($conn) {
+        foreach ($c in $conn) {
+            if ($c.OwningProcess) {
+                try { & taskkill.exe /PID $c.OwningProcess /T /F | Out-Null } catch {}
+            }
+        }
+    }
+
     # 3. Wait up to 10 seconds for the port to be free
     $deadline = (Get-Date).AddSeconds(10)
     while ((Get-Date) -lt $deadline) {
-        $conn = Get-NetTCPConnection -LocalPort $Config.Port -State Listen -ErrorAction SilentlyContinue
-        if (-not $conn) { break }
+        $active = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+        if (-not $active) { break }
         Start-Sleep -Seconds 1
     }
 }

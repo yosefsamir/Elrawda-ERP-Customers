@@ -47,10 +47,9 @@ try {
             Write-Host "Staging release payload to $stage..." -ForegroundColor Cyan
             Copy-Release $packageRoot $stage
             Assert-ReleaseReady $stage
-            Move-ItemWithRetry $stage $target
-        } catch {
+            Copy-Release $stage $target
+        } finally {
             if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
-            throw
         }
 
         # Refresh launcher and backup scripts
@@ -91,10 +90,9 @@ try {
         Write-Host "Staging release payload to $stage..." -ForegroundColor Cyan
         Copy-Release $packageRoot $stage
         Assert-ReleaseReady $stage
-        Move-ItemWithRetry $stage $target
-    } catch {
+        Copy-Release $stage $target
+    } finally {
         if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
-        throw
     }
 
     # 5. Create persistent state directory structure (preserve existing customer data if reinstalling)
