@@ -231,6 +231,9 @@ async function handleMessage(message: any) {
         .initialize()
         .catch(async (err: any) => {
           console.error("WhatsApp client initialization failed:", err);
+          // A browser left running keeps the profile locked, and every retry then fails forever
+          clearInterval(recordBrowser);
+          await killBrowserProcess();
           try {
             await client?.destroy();
           } catch {

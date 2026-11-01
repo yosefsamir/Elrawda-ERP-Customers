@@ -78,6 +78,8 @@ function Clear-TestEnvironment {
 $InstallPath = 'C:\WhatsApp-ERP'
 $StatePath = "$env:ProgramData\WhatsApp-ERP"
 $ApiBase = 'http://127.0.0.1:3211'
+$HostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+$HostsOriginal = [IO.File]::ReadAllText($HostsPath)
 $UninstallerPath = Join-Path $InstallPath 'unins000.exe'
 $UninstallRegKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8B2F354D-9321-4F2A-A04E-5D345ECB901C}_is1'
 
@@ -361,6 +363,9 @@ try {
     # uninstall, runs against customer-like data with a live Chromium in the service account.
     Write-Host "`n[Phase 4: Test 16] Starting a Real WhatsApp Session in the Service Account (H5)..." -ForegroundColor Cyan
     $apiHeaders = @{ 'x-emoji-request' = '1' }
+
+    # WhatsApp is unreachable when the session starts, as on a machine that boots before its network
+    Add-Content -LiteralPath $HostsPath -Value "`r`n127.0.0.1 web.whatsapp.com`r`n" -Encoding ASCII
     $seedCompanyName = 'Integration Persistence Company'
     $apiSession = $null
     $seedCompanyId = $null
@@ -373,7 +378,18 @@ try {
         $sessionError = $_.Exception.Message
     }
 
-    $chromeDeadline = (Get-Date).AddSeconds(90)
+    $offlineDeadline = (Get-Date).AddSeconds(60)
+    $offlineStatus = $null
+    while ((Get-Date) -lt $offlineDeadline) {
+        $offlineStatus = Get-WhatsAppHealth
+        if ($offlineStatus -and $offlineStatus.status -eq 'error') { break }
+        Start-Sleep -Seconds 1
+    }
+    $offlineError = if ($offlineStatus) { "$($offlineStatus.status): $($offlineStatus.error)" } else { 'unreachable' }
+    [IO.File]::WriteAllText($HostsPath, $HostsOriginal, [Text.Encoding]::ASCII)
+    Write-Host "Network restored after startup failure ($offlineError)" -ForegroundColor White
+
+    $chromeDeadline = (Get-Date).AddSeconds(120)
     $waHealth = $null
     while ((Get-Date) -lt $chromeDeadline) {
         $waHealth = Get-WhatsAppHealth
@@ -395,6 +411,8 @@ try {
     $waStatus = if ($waHealth) { $waHealth.status } else { 'unreachable' }
     $waError = if ($waHealth) { $waHealth.error } else { $null }
     $chromeStarted = (-not $sessionError) -and ($liveChrome.Count -gt 0) -and ($waStatus -notin @('error', 'unreachable'))
+    $offlineRecovered = ($offlineStatus -and $offlineStatus.status -eq 'error') -and ($waStatus -eq 'qr')
+    Record-Test "WhatsApp Recovers After Network Failure at Startup (H5)" $offlineRecovered "While offline: $offlineError; after restore: $waStatus." "H5"
     Record-Test "Chromium Launches in the Service Account (H5)" $chromeStarted "API error: $sessionError; chrome.exe processes: $($liveChrome.Count); owner: $chromeOwner; WhatsApp status: $waStatus; error: $waError. A real QR scan is NOT exercised here." "H5"
     $lowPrivilege = ($chromeOwner -eq 'NT AUTHORITY\LOCAL SERVICE') -and ($renderers.Count -gt 0) -and ($unsandboxed.Count -eq 0)
     Record-Test "Chromium Runs Sandboxed as LOCAL SERVICE (H6)" $lowPrivilege "Owner of the worker that spawned the browser: $chromeOwner; renderers: $($renderers.Count); processes with --no-sandbox: $($unsandboxed.Count)." "H6"
@@ -692,6 +710,7 @@ catch {
     Record-Test "Integration Suite Ran to Completion" $false "Suite aborted: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)." "SUITE"
 }
 finally {
+    [IO.File]::WriteAllText($HostsPath, $HostsOriginal, [Text.Encoding]::ASCII)
     # Preserve test logs for diagnostic artifact upload before environment cleanup
     $artifactLogDir = Join-Path $RepoRoot "release\logs"
     New-Item -ItemType Directory -Path $artifactLogDir -Force | Out-Null
