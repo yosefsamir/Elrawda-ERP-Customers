@@ -136,28 +136,28 @@ function Get-InstallRoot($Config) {
 # Processes running from our own install root. Executable path is the proof of ownership:
 # PIDs from state files can be reused and port 3211 can belong to another program.
 function Get-OwnedProcess($InstallRoot) {
-    if (-not $InstallRoot) { return @() }
+    if (-not $InstallRoot) { return }
     $prefix = $InstallRoot.TrimEnd('\') + '\'
-    return @(Get-CimInstance -ClassName Win32_Process | Where-Object {
+    Get-CimInstance -ClassName Win32_Process | Where-Object {
         $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
-    })
+    }
 }
 
 function Get-LauncherProcess($StateRoot) {
-    if (-not $StateRoot) { return @() }
+    if (-not $StateRoot) { return }
     $launcher = Join-Path $StateRoot 'launcher.ps1'
-    return @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
+    Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
         $_.CommandLine -and $_.CommandLine.IndexOf($launcher, [StringComparison]::OrdinalIgnoreCase) -ge 0
-    })
+    }
 }
 
 function Wait-OwnedProcessExit($InstallRoot, [int]$TimeoutSec) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     do {
-        if ((Get-OwnedProcess $InstallRoot).Count -eq 0) { return $true }
+        if (@(Get-OwnedProcess $InstallRoot).Count -eq 0) { return $true }
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $deadline)
-    return ((Get-OwnedProcess $InstallRoot).Count -eq 0)
+    return (@(Get-OwnedProcess $InstallRoot).Count -eq 0)
 }
 
 # Stops the whole service: supervisor first so nothing respawns, then a graceful server

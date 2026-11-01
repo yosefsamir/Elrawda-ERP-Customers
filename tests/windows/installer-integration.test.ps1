@@ -87,7 +87,7 @@ $UninstallRegKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8
 function Wait-ServiceDown([int]$TimeoutSec = 20) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     do {
-        $running = Get-OwnedProcess $InstallPath
+        $running = @(Get-OwnedProcess $InstallPath)
         $listener = Get-NetTCPConnection -LocalPort 3211 -State Listen -ErrorAction SilentlyContinue
         if ($running.Count -eq 0 -and -not $listener) { return $true }
         Start-Sleep -Milliseconds 500
@@ -106,7 +106,7 @@ function Get-WhatsAppHealth {
 }
 
 function Get-OwnedChrome {
-    return @(Get-OwnedProcess $InstallPath | Where-Object { $_.Name -eq 'chrome.exe' })
+    Get-OwnedProcess $InstallPath | Where-Object { $_.Name -eq 'chrome.exe' }
 }
 
 # Runs one uninstall and waits for the second phase, which outlives the first-phase process
@@ -340,9 +340,9 @@ try {
     Write-Host "`n[Phase 4: Test 14] Verifying WhatsApp Health Monitoring via /healthz (H7)..." -ForegroundColor Cyan
     $healthResp = try { Invoke-RestMethod -Uri "http://127.0.0.1:3211/healthz" -TimeoutSec 2 } catch { $null }
     if ($healthResp -and $healthResp.whatsapp -and ($healthResp.whatsapp.status -in @('disconnected', 'starting', 'qr', 'ready'))) {
-        Record-Test "WhatsApp Health Status Exposed via /healthz" $true "Backend exposes WhatsApp worker status: $($healthResp.whatsapp.status)" "H7"
+        Record-Test "WhatsApp Health Status Exposed via /healthz" $true "Backend exposes WhatsApp worker status: $($healthResp.whatsapp.status)" "H5"
     } else {
-        Record-Test "WhatsApp Health Status Exposed via /healthz" $false "Backend /healthz does not expose whatsapp status: $($healthResp | ConvertTo-Json -Compress)" "H7"
+        Record-Test "WhatsApp Health Status Exposed via /healthz" $false "Backend /healthz does not expose whatsapp status: $($healthResp | ConvertTo-Json -Compress)" "H5"
     }
 
     Write-Host "`n[Phase 4: Test 15] Verifying WhatsApp Session Directory & Web Cache Path (L8, L9)..." -ForegroundColor Cyan
@@ -378,10 +378,10 @@ try {
     $waHealth = $null
     while ((Get-Date) -lt $chromeDeadline) {
         $waHealth = Get-WhatsAppHealth
-        if ((Get-OwnedChrome).Count -gt 0 -and $waHealth -and $waHealth.status -in @('qr', 'ready')) { break }
+        if (@(Get-OwnedChrome).Count -gt 0 -and $waHealth -and $waHealth.status -in @('qr', 'ready')) { break }
         Start-Sleep -Seconds 2
     }
-    $liveChrome = Get-OwnedChrome
+    $liveChrome = @(Get-OwnedChrome)
     $chromeOwner = 'none'
     if ($liveChrome.Count -gt 0) {
         $ownerInfo = Invoke-CimMethod -InputObject $liveChrome[0] -MethodName GetOwner
@@ -413,12 +413,12 @@ try {
     $recoveredHealth = $null
     while ((Get-Date) -lt $recoveryDeadline) {
         $recoveredHealth = Get-WhatsAppHealth
-        if ($recoveredHealth -and $recoveredHealth.workerPid -and ($recoveredHealth.workerPid -ne $workerPid) -and (Get-OwnedChrome).Count -gt 0) { break }
+        if ($recoveredHealth -and $recoveredHealth.workerPid -and ($recoveredHealth.workerPid -ne $workerPid) -and @(Get-OwnedChrome).Count -gt 0) { break }
         Start-Sleep -Seconds 2
     }
     $newWorkerPid = if ($recoveredHealth) { $recoveredHealth.workerPid } else { $null }
-    $workerRecovered = $newWorkerPid -and ($newWorkerPid -ne $workerPid) -and ((Get-OwnedChrome).Count -gt 0)
-    Record-Test "WhatsApp Worker Recovers With a New Browser (H7)" $workerRecovered "New worker PID: $newWorkerPid; chrome.exe processes: $((Get-OwnedChrome).Count)." "H7"
+    $workerRecovered = $newWorkerPid -and ($newWorkerPid -ne $workerPid) -and (@(Get-OwnedChrome).Count -gt 0)
+    Record-Test "WhatsApp Worker Recovers With a New Browser (M7)" $workerRecovered "New worker PID: $newWorkerPid; chrome.exe processes: $(@(Get-OwnedChrome).Count)." "M7"
 
     # -------------------------------------------------------------------------
     # TEST 17: State Management & Idempotency Inspection (C4)
@@ -525,7 +525,7 @@ try {
     New-Item -ItemType Directory -Path (Split-Path -Parent $sessionMarker) -Force | Out-Null
     [IO.File]::WriteAllText($sessionMarker, 'customer session marker')
     $secretHashBefore = if (Test-Path -LiteralPath $secretKeyPath) { (Get-FileHash -LiteralPath $secretKeyPath -Algorithm SHA256).Hash } else { $null }
-    $chromeAtUninstall = (Get-OwnedChrome).Count
+    $chromeAtUninstall = @(Get-OwnedChrome).Count
     Write-Host "Live chrome.exe processes at uninstall: $chromeAtUninstall" -ForegroundColor White
 
     # A blocked uninstall must report failure, stay registered, and succeed when retried
