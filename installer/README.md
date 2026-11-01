@@ -16,13 +16,13 @@ The installer packages a **completely self-contained portable Node.js runtime an
   - Bundled production dependencies: `node_modules` (including pre-compiled `better-sqlite3` native addon)
 - **Persistent Customer State & Databases:** `C:\ProgramData\WhatsApp-ERP` (contains SQLite WAL database, SQL Server encryption keys, WhatsApp sessions, and logs)
 - **Windows Scheduled Tasks:**
-  - `WhatsAppERPOperations`: Startup task running under `NT AUTHORITY\SYSTEM` via `launcher.ps1`
+  - `WhatsAppERPOperations`: Startup task running as `NT AUTHORITY\LOCAL SERVICE` with a per-task SID via `launcher.ps1`, with the Chromium sandbox enabled
   - `WhatsAppERPOperationsBackup`: Daily offline backup task running at 03:00
 - **Process Isolation:** Invokes `scripts\windows\install.ps1` with process-scoped execution policy bypass:
   ```powershell
   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "install.ps1"
   ```
-- **Security & ACLs:** Restrictive Windows ACLs ensure only `SYSTEM` and `Administrators` have access to `C:\ProgramData\WhatsApp-ERP`.
+- **Security & ACLs:** Only `SYSTEM` and `Administrators` can change the install folder. In `C:\ProgramData\WhatsApp-ERP`, the service's task SID can write only to `data`, `cache`, `temp` and `logs`. Other `LOCAL SERVICE` processes have no access.
 - **Zero Data Loss Upgrades:** Re-running the installer on an existing machine triggers the safe upgrade pipeline (`update.ps1`), taking an offline snapshot before migrating without deleting customer state.
 
 ---
@@ -133,7 +133,8 @@ When `WhatsAppERP-Setup-*.exe` is run on a machine where WhatsApp-ERP is already
 
 ### Failure Handling:
 If `install.ps1` exits with a non-zero exit code:
-- The installer displays an explicit error dialog with the return code.
-- It displays the full path to `install.log`.
-- It aborts immediately and **never** displays the "Finished" page.
-- No changes to existing persistent state are committed.
+- Setup stops on the Preparing to Install page with the error code and the path to `install.log`.
+- Setup exits with code 7 and registers no uninstaller or Apps entry.
+- Customer data is not deleted. Rerun Setup after fixing the cause.
+
+If `uninstall.ps1` fails, the uninstaller stops with a non-zero exit code and stays registered so it can be run again. Customer data under `C:\ProgramData\WhatsApp-ERP` is kept in every case.

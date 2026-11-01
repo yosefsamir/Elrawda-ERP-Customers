@@ -53,11 +53,6 @@ function Get-ChromiumPath($ReleasePath) {
         $found = Get-ChildItem -Path $chromiumDir -Filter 'chrome.exe' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($found) { return $found.FullName }
     }
-
-    # 3. Environment variable fallback if set
-    if ($env:WHATSAPP_CHROME_PATH -and (Test-Path -LiteralPath $env:WHATSAPP_CHROME_PATH)) {
-        return (Resolve-Path -LiteralPath $env:WHATSAPP_CHROME_PATH).Path
-    }
     return $null
 }
 

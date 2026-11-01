@@ -2,8 +2,7 @@
 # Tests real Setup.exe and unins000.exe on Windows.
 param(
     [string]$SetupExePath,
-    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
-    [switch]$Strict
+    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 )
 
 Set-StrictMode -Version Latest
@@ -477,19 +476,23 @@ writeFileSync(String.raw``$boundaryDir\result.json``, JSON.stringify(result));
 
     # The SYSTEM backup task must still read data the low-privilege service now owns
     $backupsDir = Join-Path $StatePath 'backups'
-    $backupsBefore = @(Get-ChildItem -LiteralPath $backupsDir -Directory -Filter 'manual-*' -ErrorAction SilentlyContinue).Count
+    $backupsBefore = @(Get-ChildItem -LiteralPath $backupsDir -Directory -Filter 'daily-*' -ErrorAction SilentlyContinue).Count
     Start-ScheduledTask -TaskName 'WhatsAppERPOperationsBackup'
     $backupDeadline = (Get-Date).AddSeconds(60)
     $newBackup = $null
     while ((Get-Date) -lt $backupDeadline) {
-        $found = @(Get-ChildItem -LiteralPath $backupsDir -Directory -Filter 'manual-*' -ErrorAction SilentlyContinue)
+        $found = @(Get-ChildItem -LiteralPath $backupsDir -Directory -Filter 'daily-*' -ErrorAction SilentlyContinue)
         if ($found.Count -gt $backupsBefore) {
             $candidate = $found | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             if (Test-Path -LiteralPath (Join-Path $candidate.FullName 'manifest.json')) { $newBackup = $candidate; break }
         }
         Start-Sleep -Seconds 1
     }
-    Record-Test "Daily Backup Task Backs Up Live Service Data (M6)" ($null -ne $newBackup) "New backup: $(if ($newBackup) { $newBackup.Name } else { 'none' })." "M6"
+    $backupLog = Join-Path $StatePath 'logs\backup.log'
+    $logDeadline = (Get-Date).AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $backupLog) -and (Get-Date) -lt $logDeadline) { Start-Sleep -Milliseconds 500 }
+    $backupLogged = (Test-Path -LiteralPath $backupLog) -and ((Get-Content -LiteralPath $backupLog -Raw) -match ' OK ')
+    Record-Test "Daily Backup Task Backs Up Live Service Data (M6)" (($null -ne $newBackup) -and $backupLogged) "New backup: $(if ($newBackup) { $newBackup.Name } else { 'none' }); recorded in backup.log: $backupLogged." "M6"
 
     # -------------------------------------------------------------------------
     # TEST 17: State Management & Idempotency Inspection (C4)

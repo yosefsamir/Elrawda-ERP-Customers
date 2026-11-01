@@ -22,9 +22,9 @@ Current Candidate Release: **`1.0.0-rc.1`**
   - **Idempotency & Operations Ledger**: Durable SQLite tracking table ensures no customer receives duplicate invites or repeated addition attempts.
 - **Enterprise-Grade Windows Deployment**:
   - Self-contained, precompiled JavaScript runtime (`dist/runtime`) and bundled frontend (`dist/web`) — no TypeScript compiler (`tsx`) or devDependencies required in production.
-  - Automated PowerShell deployment (`scripts/windows/install.ps1`) creating a monitored Windows Scheduled Task under `SYSTEM` with auto-restart on crash.
+  - Automated PowerShell deployment (`scripts/windows/install.ps1`) creating a monitored Windows Scheduled Task under `LOCAL SERVICE` with auto-restart on crash.
   - Online consistent backups using the SQLite Online Backup API scheduled daily at 03:00 AM.
-  - Secure state directory isolation under `C:\ProgramData\WhatsApp-ERP` restricted to `SYSTEM` and `Administrators`.
+  - Secure state directory isolation under `C:\ProgramData\WhatsApp-ERP`, writable only by `SYSTEM`, `Administrators`, and the service's task SID in its working folders.
 
 ---
 
@@ -99,9 +99,9 @@ If you are deploying directly using the pre-packaged ZIP archive:
 #### What Happens Automatically in the Background:
 - **Node.js 22 Detection:** If Node.js is missing, the script automatically downloads and silently installs official `Node.js 22 LTS (node-v22.23.4-x64.msi)`.
 - **Target Directories:** Copies release files to immutable `C:\WhatsApp-ERP\releases\1.0.0-rc.1`.
-- **Protected State:** Creates `C:\ProgramData\WhatsApp-ERP` restricted strictly to `SYSTEM` and `Administrators`.
+- **Protected State:** Creates `C:\ProgramData\WhatsApp-ERP`, writable only by `SYSTEM`, `Administrators`, and the service's task SID in its working folders.
 - **Automated Tasks:** Registers two Windows Scheduled Tasks:
-  - `WhatsAppERPOperations`: Automatically starts at machine boot under `NT AUTHORITY\SYSTEM` and restarts on unexpected exits.
+  - `WhatsAppERPOperations`: Automatically starts at machine boot under `NT AUTHORITY\LOCAL SERVICE` with a per-task SID and restarts on unexpected exits.
   - `WhatsAppERPOperationsBackup`: Daily consistent SQLite online backup at 03:00 AM.
 - **Service Verification:** Starts the service immediately and verifies readiness against `http://127.0.0.1:3211/healthz`.
 

@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js 22 LTS
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22.23.4'
           cache: 'npm'
@@ -25,7 +25,7 @@ jobs:
       - name: Install Inno Setup 6 Compiler
         shell: powershell
         run: |
-          choco install innosetup --no-progress
+          choco install innosetup --version=6.7.1 --allow-downgrade --no-progress
           $isccPath = "C:\Program Files (x86)\Inno Setup 6"
           if (Test-Path $isccPath) {
             Write-Host "Adding $isccPath to GITHUB_PATH"
@@ -68,7 +68,7 @@ jobs:
       - name: Compile Windows Setup Installer (.exe)
         shell: powershell
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File installer/build-installer.ps1
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File installer/build-installer.ps1 -ReusePayload
 
       - name: Generate Build Summary
         shell: powershell
@@ -86,31 +86,25 @@ jobs:
           $hash = (Get-FileHash -LiteralPath $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
           $sizeMB = [math]::Round($item.Length / 1MB, 2)
           
-          $summary = @"
-          # WhatsApp-ERP Windows Installer Build Summary
-          
-          - **Version:** $version
-          - **File:** $($item.Name)
-          - **File Size:** $sizeMB MB ($($item.Length) bytes)
-          - **SHA-256 Checksum:** `$hash`
-          - **Runner OS:** $($env:OS) (Windows x64)
-          - **Node.js ABI Target:** Node 22 LTS (win-x64)
-          - **Inno Setup:** 6.x (LZMA2 Solid Compression)
-          
-          ## Architecture Verification
-          - [x] Portable Node.js runtime bundled (`runtime\node.exe`)
-          - [x] Production dependencies pre-installed (`node_modules`)
-          - [x] Native `better-sqlite3` compiled for Windows x64 Node 22
-          - [x] Chromium browser bundled (`runtime\chromium`)
-          - [x] Zero external downloads required on customer computer
-          - [x] Zero npm or compiler execution on customer computer
-          "@
-          
+          $iscc = (Get-Item "C:\Program Files (x86)\Inno Setup 6\ISCC.exe").VersionInfo.ProductVersion
+          $summary = @(
+            '# WhatsApp-ERP Windows Installer Build Summary',
+            '',
+            "- **Version:** $version",
+            "- **File:** $($item.Name)",
+            "- **File Size:** $sizeMB MB ($($item.Length) bytes)",
+            ('- **SHA-256 Checksum:** `{0}`' -f $hash),
+            "- **Inno Setup:** $iscc",
+            "- **Commit:** $env:GITHUB_SHA",
+            '',
+            'Install, upgrade and uninstall results are in the windows-installer-test-results artifact.'
+          ) -join "`n"
+
           $summary | Out-File -FilePath "release\BUILD-SUMMARY.md" -Encoding utf8
           Write-Host $summary
 
       - name: Upload Installer Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: WhatsAppERP-Windows-Setup-${{ github.sha }}
           path: |
@@ -128,10 +122,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download Installer Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: WhatsAppERP-Windows-Setup-${{ github.sha }}
           path: release
@@ -141,14 +135,11 @@ jobs:
         run: |
           $setupExe = (Get-Item release\WhatsAppERP-Setup-*.exe | Select-Object -First 1).FullName
           Write-Host "Discovered Installer: $setupExe"
-          $isTag = $env:GITHUB_REF -and $env:GITHUB_REF.StartsWith('refs/tags/')
-          $strictArg = if ($isTag) { "-Strict" } else { "" }
-          Write-Host "Executing installer integration tests (Strict Release Mode: $isTag)..."
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/installer-integration.test.ps1 -SetupExePath "$setupExe" $strictArg
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/installer-integration.test.ps1 -SetupExePath "$setupExe"
 
       - name: Upload Test Logs and Diagnostic Artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-installer-test-logs-${{ github.sha }}
           path: release/logs
@@ -157,7 +148,7 @@ jobs:
 
       - name: Upload Test Results Artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-installer-test-results-${{ github.sha }}
           path: release/test-summary.json
@@ -174,16 +165,16 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download Installer Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: WhatsAppERP-Windows-Setup-${{ github.sha }}
           path: release
 
       - name: Download Test Results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: windows-installer-test-results-${{ github.sha }}
           path: release

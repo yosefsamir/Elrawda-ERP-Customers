@@ -34,12 +34,13 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-DefaultDirName=C:\WhatsApp-ERP
+DefaultDirName={sd}\WhatsApp-ERP
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 DisableDirPage=yes
 DisableReadyPage=no
 PrivilegesRequired=admin
+MinVersion=10.0.14393
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputBaseFilename=WhatsAppERP-Setup-{#MyAppVersion}
@@ -48,7 +49,9 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 WizardSizePercent=100
-ShowLanguageDialog=no
+ShowLanguageDialog=auto
+; The payload is dontcopy, so Inno counts none of it. It sits in {tmp}, staging and the release during install.
+ExtraDiskSpaceRequired=2500000000
 SetupLogging=yes
 CloseApplications=no
 RestartApplications=no
@@ -57,6 +60,7 @@ CreateUninstallRegKey=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "arabic"; MessagesFile: "compiler:Languages\Arabic.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut to Web Management Interface"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
@@ -159,7 +163,7 @@ begin
 
   // Check for existing installation and exact version conflict
   ServiceJsonPath := ExpandConstant('{commonappdata}\WhatsApp-ERP\service.json');
-  TargetReleaseDir := 'C:\WhatsApp-ERP\releases\' + '{#MyAppVersion}';
+  TargetReleaseDir := ExpandConstant('{sd}\WhatsApp-ERP\releases\') + '{#MyAppVersion}';
 
   if FileExists(ServiceJsonPath) then
   begin

@@ -277,7 +277,8 @@ export function registerCompanyRoutes(
     })();
     return { ok: true };
   });
-  app.post("/api/source/snapshot", async (request) => {
+  app.post("/api/source/snapshot", async (request, reply) => {
+    if (process.env.NODE_ENV === "production") return reply.code(404).send({ error: "مسار غير موجود" });
     return sync.run(company(request),{local:true});
   });
   app.post("/api/source/sql/databases", async (request) => {

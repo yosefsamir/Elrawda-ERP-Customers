@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { deflateRawSync } from 'node:zlib';
-import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
@@ -8,6 +8,7 @@ import {
   downloadChromiumRuntime,
   bundleProductionNodeModules,
   verifyPackagedRuntime,
+  writeThirdPartyNotices,
 } from './bundle-runtime.mjs';
 
 const build = spawnSync(process.execPath, ['scripts/build.mjs'], { stdio: 'inherit' });
@@ -24,13 +25,13 @@ for (const path of ['dist', 'package.json', 'package-lock.json', 'scripts/window
   cpSync(path, resolve(dir, path), { recursive: true });
 }
 cpSync('docs/windows-deployment.ar.md', resolve(dir, 'WINDOWS-READ-ME.ar.md'));
-writeFileSync(
-  resolve(dir, 'VALIDATION.ar.md'),
-  readFileSync(`docs/release-validation-${pkg.version}.ar.md`, 'utf8').replaceAll(
-    'windows-deployment.ar.md',
-    'WINDOWS-READ-ME.ar.md'
-  )
-);
+const validationDoc = `docs/release-validation-${pkg.version}.ar.md`;
+if (existsSync(validationDoc)) {
+  writeFileSync(
+    resolve(dir, 'VALIDATION.ar.md'),
+    readFileSync(validationDoc, 'utf8').replaceAll('windows-deployment.ar.md', 'WINDOWS-READ-ME.ar.md')
+  );
+}
 
 // Check if bundling self-contained Windows runtime
 const shouldBundleRuntime =
@@ -49,6 +50,7 @@ if (shouldBundleRuntime) {
   await downloadNodeRuntime(runtimeDir);
   await downloadChromiumRuntime(runtimeDir);
   bundleProductionNodeModules(dir);
+  writeThirdPartyNotices(dir);
   verifyPackagedRuntime(dir);
 }
 

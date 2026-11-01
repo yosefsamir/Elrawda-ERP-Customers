@@ -2,7 +2,7 @@
 # Usage: powershell.exe -ExecutionPolicy Bypass -File "installer\build-installer.ps1"
 
 param(
-    [switch]$Force
+    [switch]$ReusePayload
 )
 
 Set-StrictMode -Version Latest
@@ -36,7 +36,7 @@ try {
     $manifestPath = Join-Path $releaseDir 'release-manifest.json'
 
     # Run release packaging script to ensure latest build, runtime bundle, manifest, and checksums
-    if ($Force -or -not (Test-Path $manifestPath)) {
+    if (-not $ReusePayload -or -not (Test-Path $manifestPath)) {
         Write-Host "Packaging production payload..." -ForegroundColor Cyan
         $env:BUNDLE_RUNTIME = '1'
         & $nodeCmd.Source (Join-Path $repoRoot 'scripts\release.mjs') --bundle-runtime

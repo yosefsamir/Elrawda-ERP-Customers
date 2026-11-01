@@ -10,6 +10,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -138,78 +139,47 @@ export function bundleProductionNodeModules(releaseDir) {
   // Prune unnecessary files from packaged node_modules to optimize installer size
   pruneNodeModules(targetModulesDir);
 
-  // Ensure better-sqlite3 native addon is present and configured for Windows x64
-  const betterSqliteDir = join(targetModulesDir, 'better-sqlite3');
-  if (existsSync(betterSqliteDir)) {
-    console.log(`[Runtime] Configuring better-sqlite3 native binary...`);
-    const prebuildPath = join(betterSqliteDir, 'prebuilds', 'win32-x64.node');
-    const releasePath = join(betterSqliteDir, 'build', 'Release', 'better_sqlite3.node');
-
-    const rootPrebuildPath = resolve('node_modules', 'better-sqlite3', 'prebuilds', 'win32-x64.node');
-    const rootReleasePath = resolve('node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
-
-    // 1. If prebuild is missing in target but exists in root, copy it
-    if (!existsSync(prebuildPath) && existsSync(rootPrebuildPath)) {
-      console.log(`[Runtime] Copying win32-x64.node prebuild from root node_modules...`);
-      mkdirSync(join(betterSqliteDir, 'prebuilds'), { recursive: true });
-      cpSync(rootPrebuildPath, prebuildPath);
-    }
-
-    // 2. If release binary is missing in target but exists in root, copy it
-    if (!existsSync(releasePath) && existsSync(rootReleasePath)) {
-      console.log(`[Runtime] Copying compiled better_sqlite3.node from root node_modules...`);
-      mkdirSync(join(betterSqliteDir, 'build', 'Release'), { recursive: true });
-      cpSync(rootReleasePath, releasePath);
-    }
-
-    // 3. If prebuild exists but release doesn't, mirror prebuild to build/Release
-    if (existsSync(prebuildPath) && !existsSync(releasePath)) {
-      console.log(`[Runtime] Populating build/Release/better_sqlite3.node from verified prebuilds/win32-x64.node...`);
-      mkdirSync(join(betterSqliteDir, 'build', 'Release'), { recursive: true });
-      cpSync(prebuildPath, releasePath);
-    }
-
-    // 4. If release exists but prebuild doesn't, mirror release to prebuilds/win32-x64.node
-    if (existsSync(releasePath) && !existsSync(prebuildPath)) {
-      console.log(`[Runtime] Populating prebuilds/win32-x64.node from build/Release/better_sqlite3.node...`);
-      mkdirSync(join(betterSqliteDir, 'prebuilds'), { recursive: true });
-      cpSync(releasePath, prebuildPath);
-    }
-
-    // 5. If on Windows and neither exists, rebuild from source
-    if (process.platform === 'win32' && !existsSync(prebuildPath) && !existsSync(releasePath)) {
-      console.log(`[Runtime] No prebuilt binary found. Attempting native rebuild of better-sqlite3...`);
-      const npmCmd = 'npm.cmd';
-      const rebuildResult = spawnSync(npmCmd, ['rebuild', 'better-sqlite3', '--build-from-source'], {
-        cwd: targetModulesDir,
-        stdio: 'inherit',
-        shell: true,
-        env: { ...process.env, npm_config_msvs_version: '2022' },
-      });
-      if (rebuildResult.status !== 0) {
-        throw new Error(`Failed to compile better-sqlite3 native addon (code ${rebuildResult.status})`);
-      }
-      if (existsSync(releasePath) && !existsSync(prebuildPath)) {
-        mkdirSync(join(betterSqliteDir, 'prebuilds'), { recursive: true });
-        cpSync(releasePath, prebuildPath);
-      }
-    }
-
-    // 6. Final verification & diagnostic logging
-    const hasPrebuild = existsSync(prebuildPath);
-    const hasRelease = existsSync(releasePath);
-    const prebuildSize = hasPrebuild ? statSync(prebuildPath).size : 0;
-    const releaseSize = hasRelease ? statSync(releasePath).size : 0;
-    console.log(
-      `[Runtime] better-sqlite3 status: prebuilds/win32-x64.node=${hasPrebuild ? prebuildSize + ' bytes' : 'MISSING'}, build/Release/better_sqlite3.node=${hasRelease ? releaseSize + ' bytes' : 'MISSING'}`
-    );
-
-    if (process.platform === 'win32' && !hasPrebuild && !hasRelease) {
-      throw new Error(`better-sqlite3 Windows x64 native binary is missing from both prebuilds/ and build/Release/!`);
-    }
+  // better-sqlite3 loads prebuilds/<platform>-<arch>.node; verifyPackagedRuntime proves it runs
+  const prebuildPath = join(targetModulesDir, 'better-sqlite3', 'prebuilds', 'win32-x64.node');
+  if (!existsSync(prebuildPath)) {
+    throw new Error(`better-sqlite3 Windows x64 prebuild is missing: ${prebuildPath}`);
   }
 
   console.log(`[Runtime] Production node_modules prepared in: ${targetModulesDir}`);
+}
+
+const LICENSE_FILE = /^(licen[cs]e|copying|notice)/i;
+
+// MIT-style licenses require their notices to travel with redistributed copies
+export function writeThirdPartyNotices(releaseDir) {
+  const sections = [];
+  const visit = (modulesDir) => {
+    if (!existsSync(modulesDir)) return;
+    for (const entry of readdirSync(modulesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === '.bin') continue;
+      const packageDir = join(modulesDir, entry.name);
+      if (entry.name.startsWith('@')) { visit(packageDir); continue; }
+      const manifestPath = join(packageDir, 'package.json');
+      if (existsSync(manifestPath)) {
+        const { name, version, license } = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        const noticeFile = readdirSync(packageDir).find((file) => LICENSE_FILE.test(file));
+        const text = noticeFile ? readFileSync(join(packageDir, noticeFile), 'utf8') : 'No license file is included in this package.';
+        sections.push(`${name}@${version} (${license ?? 'see package'})\n\n${text}`);
+      }
+      visit(join(packageDir, 'node_modules'));
+    }
+  };
+  visit(join(releaseDir, 'node_modules'));
+  sections.sort();
+  const header = [
+    'WhatsApp-ERP includes the third-party software listed below.',
+    '',
+    `Node.js ${PINNED_NODE_VERSION}: MIT and bundled licenses. https://github.com/nodejs/node/blob/${PINNED_NODE_VERSION}/LICENSE`,
+    'Chromium: BSD-3-Clause and bundled licenses. https://chromium.googlesource.com/chromium/src/+/main/LICENSE',
+  ].join('\n');
+  writeFileSync(join(releaseDir, 'THIRD-PARTY-NOTICES.txt'), [header, ...sections].join(`\n\n${'-'.repeat(72)}\n\n`));
+  console.log(`[Runtime] Wrote notices for ${sections.length} packages.`);
+  return sections.length;
 }
 
 export function pruneNodeModules(modulesDir) {
@@ -224,7 +194,6 @@ export function pruneNodeModules(modulesDir) {
     /\.tsbuildinfo$/,
     /CHANGELOG/i,
     /README/i,
-    /LICENSE/i,
     /\.obj$/,
     /\.iobj$/,
     /\.pdb$/,
@@ -252,7 +221,7 @@ export function pruneNodeModules(modulesDir) {
         }
       } else if (e.isFile()) {
         // Never delete .node native addons or required runtime files
-        if (e.name.endsWith('.node')) continue;
+        if (e.name.endsWith('.node') || LICENSE_FILE.test(e.name)) continue;
         for (const pattern of removePatterns) {
           if (pattern.test(e.name)) {
             rmSync(full, { force: true });

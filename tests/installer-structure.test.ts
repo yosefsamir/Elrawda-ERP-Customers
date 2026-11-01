@@ -79,3 +79,27 @@ test('common.ps1 self-contained runtime helpers', () => {
   assert.match(commonPs1, /function Assert-ReleaseReady/, 'common.ps1 must define Assert-ReleaseReady');
   assert.doesNotMatch(commonPs1, /npm ci/, 'common.ps1 must never execute npm ci on customer computers');
 });
+
+test('third-party notices keep license text', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  // @ts-expect-error build script has no type declarations
+  const { pruneNodeModules, writeThirdPartyNotices } = await import('../scripts/bundle-runtime.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'notices-'));
+  try {
+    const pkg = join(dir, 'node_modules', '@scope', 'demo');
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@scope/demo', version: '1.2.3', license: 'MIT' }));
+    writeFileSync(join(pkg, 'LICENSE.md'), 'Copyright Demo Author');
+    writeFileSync(join(pkg, 'README.md'), 'removed by prune');
+    pruneNodeModules(join(dir, 'node_modules'));
+    assert.equal(writeThirdPartyNotices(dir), 1);
+    assert.equal(existsSync(join(pkg, 'README.md')), false, 'prune still removes documentation');
+    const notices = readFileSync(join(dir, 'THIRD-PARTY-NOTICES.txt'), 'utf8');
+    assert.match(notices, /@scope\/demo@1\.2\.3 \(MIT\)/);
+    assert.match(notices, /Copyright Demo Author/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
