@@ -30,6 +30,11 @@ jobs:
             "$isccPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           }
 
+      - name: Fast Inno Setup Compiler Validation (Stub Payload)
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/iscc-stub-check.ps1
+
       - name: Install dependencies (compile Windows x64 better-sqlite3)
         run: npm ci
 
@@ -106,5 +111,40 @@ jobs:
             release/WhatsAppERP-Setup-*.exe.sha256
             release/BUILD-SUMMARY.md
           if-no-files-found: error
+          retention-days: 14
+
+  test-windows-installer:
+    name: Test Windows Setup.exe Integration
+    runs-on: windows-2022
+    needs: build-windows-installer
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Installer Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: WhatsAppERP-Windows-Setup-${{ github.sha }}
+          path: release
+
+      - name: Run Windows Installer Integration Tests
+        shell: powershell
+        run: |
+          $setupExe = (Get-Item release\WhatsAppERP-Setup-*.exe | Select-Object -First 1).FullName
+          Write-Host "Discovered Installer: $setupExe"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/installer-integration.test.ps1 -SetupExePath "$setupExe"
+
+      - name: Upload Test Logs and Diagnostic Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-test-logs-${{ github.sha }}
+          path: |
+            C:\WhatsAppERP-setup.log
+            C:\WhatsAppERP-uninstall.log
+            C:\WhatsAppERP-setup-conflict.log
+            C:\ProgramData\WhatsApp-ERP\logs\**
+          if-no-files-found: ignore
           retention-days: 14
 
