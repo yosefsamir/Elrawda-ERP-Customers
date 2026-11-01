@@ -9,6 +9,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 . (Join-Path $RepoRoot 'scripts\windows\common.ps1')
+$ErrorActionPreference = 'Continue'
 
 Write-Host "====================================================" -ForegroundColor Cyan
 Write-Host " WhatsApp-ERP Real Windows Installer Integration Tests" -ForegroundColor Cyan
