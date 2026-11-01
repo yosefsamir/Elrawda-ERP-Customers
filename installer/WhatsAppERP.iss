@@ -105,7 +105,7 @@ begin
     SuppressibleMsgBox(
       'WhatsApp-ERP requires a 64-bit edition of Windows (x64).' + #13#10 +
       'Installation cannot continue on a 32-bit operating system.',
-      mbCriticalError, MB_OK
+      mbCriticalError, MB_OK, IDOK
     );
     Result := False;
     Exit;
@@ -128,7 +128,7 @@ begin
         'The background service (WhatsAppERPOperations) is configured.' + #13#10 +
         'To open the web management interface, go to {#MyAppURL}.' + #13#10#13#10 +
         'Do you want to re-run the deployment verification?',
-        mbConfirmation, MB_YESNO
+        mbConfirmation, MB_YESNO, IDYES
       ) = IDNO then
       begin
         Result := False;
@@ -184,7 +184,7 @@ begin
         'Executable: ' + PowerShellExe + #13#10 +
         'System Error: ' + SysErrorMessage(ResultCode) + #13#10#13#10 +
         'Please ensure Windows PowerShell 5.1 or newer is available.',
-        mbCriticalError, MB_OK
+        mbCriticalError, MB_OK, IDOK
       );
       Abort;
     end;
@@ -199,7 +199,7 @@ begin
         LogPath + #13#10#13#10 +
         'No customer data or SQLite databases were deleted or modified.' + #13#10 +
         'Please inspect the log file, resolve the issue, and re-run setup.',
-        mbError, MB_OK
+        mbError, MB_OK, IDOK
       );
       Abort;
     end;
