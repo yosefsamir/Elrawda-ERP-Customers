@@ -62,8 +62,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut to Web Management Interface"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-; Shipped uninstallation script installed to application directory for reliable task removal
+; Shipped uninstallation script and common helpers installed to application directory for reliable task and process cleanup
 Source: "{#MyReleaseDir}\scripts\windows\uninstall.ps1"; DestDir: "{app}\scripts\windows"; Flags: ignoreversion
+Source: "{#MyReleaseDir}\scripts\windows\common.ps1"; DestDir: "{app}\scripts\windows"; Flags: ignoreversion
 ; Release payload marked dontcopy: extracted during PrepareToInstall for atomic validation before committing installation
 Source: "{#MyReleaseDir}\*"; DestDir: "{tmp}\WhatsAppERP-Payload"; Flags: dontcopy recursesubdirs createallsubdirs
 
@@ -80,6 +81,11 @@ Filename: "{#MyAppURL}"; Description: "Open WhatsApp-ERP Web Interface ({#MyAppU
 ; Safely stop and unregister scheduled tasks upon uninstallation without deleting persistent customer state
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\scripts\windows\uninstall.ps1"" -InstallRoot ""{app}"""; Flags: runhidden; RunOnceId: "UninstallWhatsAppERP"
 
+[UninstallDelete]
+; Ensure releases and helper scripts are completely deleted upon uninstallation (H2)
+Type: filesandordirs; Name: "{app}\releases"
+Type: filesandordirs; Name: "{app}\scripts"
+
 [Code]
 var
   InstallSuccess: Boolean;
@@ -87,6 +93,16 @@ var
   IsRepairMode: Boolean;
   ExistingReleaseFound: Boolean;
   CustomExitCode: Integer;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    DelTree(ExpandConstant('{app}\releases'), True, True, True);
+    DelTree(ExpandConstant('{app}\scripts'), True, True, True);
+    RemoveDir(ExpandConstant('{app}'));
+  end;
+end;
 
 function InstallSucceeded(): Boolean;
 begin

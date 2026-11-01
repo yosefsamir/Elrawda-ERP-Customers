@@ -444,12 +444,12 @@ try {
             Record-Test "Uninstaller Log Has No PowerShell Parse Errors" $false "Detected literal '}} catch {{}}' parse error in uninstall log!" "H1"
         }
 
-        # Test 19: Binary directory removal (H2 - Retained for Phase 5)
+        # Test 19: Binary directory removal (H2)
         $releasesRemaining = Test-Path "C:\WhatsApp-ERP\releases"
         if (-not $releasesRemaining) {
-            Record-Test "Uninstaller Removes Application Binaries" $true "C:\WhatsApp-ERP\releases directory removed."
+            Record-Test "Uninstaller Removes Application Binaries" $true "C:\WhatsApp-ERP\releases directory removed." "H2"
         } else {
-            Record-Test "Uninstaller Removes Application Binaries" $false "C:\WhatsApp-ERP\releases still exists on disk! Robocopied releases not tracked by Inno Setup. (Active finding for Phase 5)." "H2"
+            Record-Test "Uninstaller Removes Application Binaries" $false "C:\WhatsApp-ERP\releases still exists on disk!" "H2"
         }
 
         # Test 20: Customer data preservation
@@ -504,20 +504,20 @@ if ($Strict -and $failCount -gt 0) {
     exit 1
 }
 
-$phase4TargetFindings = @('C2', 'C3', 'C4', 'H1', 'H3', 'H4', 'H5', 'H7', 'L19', 'M1', 'M2', 'M3', 'M5', 'M6', 'M7', 'L1', 'L3', 'L6', 'L8', 'L9', 'L11', 'L13', 'L18')
-$phase4TargetFailures = $testResults | Where-Object { $_.Status -eq 'FAIL' -and $_.Finding -in $phase4TargetFindings }
+$phase5TargetFindings = @('C2', 'C3', 'C4', 'H1', 'H2', 'H3', 'H4', 'H5', 'H7', 'L19', 'M1', 'M2', 'M3', 'M5', 'M6', 'M7', 'L1', 'L3', 'L6', 'L8', 'L9', 'L11', 'L13', 'L18')
+$phase5TargetFailures = $testResults | Where-Object { $_.Status -eq 'FAIL' -and $_.Finding -in $phase5TargetFindings }
 
-if ($phase4TargetFailures) {
+if ($phase5TargetFailures) {
     Write-Host "`n[ERROR] Targeted findings failed:" -ForegroundColor Red
-    foreach ($f in $phase4TargetFailures) {
+    foreach ($f in $phase5TargetFailures) {
         Write-Host "  -> $($f.Finding): $($f.Test) - $($f.Details)" -ForegroundColor Red
     }
     exit 1
 } else {
-    Write-Host "`nAll Phase 1, Phase 2, Phase 3 & Phase 4 targeted tests PASSED!" -ForegroundColor Green
+    Write-Host "`nAll Phase 1, Phase 2, Phase 3, Phase 4 & Phase 5 targeted tests PASSED!" -ForegroundColor Green
     $remaining = $testResults | Where-Object { $_.Status -eq 'FAIL' }
     if ($remaining) {
-        Write-Host "Retained known failures for subsequent phases:" -ForegroundColor Yellow
+        Write-Host "Remaining failures:" -ForegroundColor Yellow
         foreach ($r in $remaining) {
             Write-Host "  -> [$($r.Finding)] $($r.Test)" -ForegroundColor Yellow
         }
