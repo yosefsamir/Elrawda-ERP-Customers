@@ -42,7 +42,6 @@ DisableReadyPage=no
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-MinVersion=10.0.14393
 OutputBaseFilename=WhatsAppERP-Setup-{#MyAppVersion}
 OutputDir=..\release
 Compression=lzma2/max
@@ -124,7 +123,7 @@ begin
 
   // Check for existing installation and exact version conflict
   ServiceJsonPath := ExpandConstant('{commonappdata}\WhatsApp-ERP\service.json');
-  TargetReleaseDir := ExpandConstant('{app}\releases\{#MyAppVersion}');
+  TargetReleaseDir := 'C:\WhatsApp-ERP\releases\' + '{#MyAppVersion}';
 
   if FileExists(ServiceJsonPath) then
   begin

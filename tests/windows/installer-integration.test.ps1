@@ -40,7 +40,7 @@ if (-not $isAdmin) {
 # 3. Save original policy and configure machine execution policy to Restricted (Windows 10/11 default)
 $origPolicy = (Get-ExecutionPolicy -Scope LocalMachine)
 Write-Host "Configuring LocalMachine ExecutionPolicy to Restricted (Windows 10/11 default)..." -ForegroundColor Cyan
-Set-ExecutionPolicy -ExecutionPolicy Restricted -Scope LocalMachine -Force
+Set-ExecutionPolicy -ExecutionPolicy Restricted -Scope LocalMachine -Force -ErrorAction SilentlyContinue
 
 $testResults = [System.Collections.Generic.List[PSCustomObject]]::new()
 
