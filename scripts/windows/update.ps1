@@ -96,7 +96,7 @@ try {
     $switched = $true
     Remove-Item $flag -Force
     Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
-    Wait-Ready $config
+    Wait-Ready $config -TimeoutSec 25
 
     # Prune older releases (keep active release and previous release only) (L13)
     try {
@@ -144,7 +144,7 @@ try {
             # Clean up the aborted release folder so future update retry works cleanly (C4)
             Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
             Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
-            Wait-Ready $config
+            Wait-Ready $config -TimeoutSec 25
             throw "Update to $version failed during startup verification, but automatically rolled back to $oldRelease. Customer state preserved. Backup: $backup. Error: $err"
         } else {
             throw "Update to $version failed and schema cannot be safely read by previous release. Maintenance mode remains active to prevent data loss. Backup preserved at: $backup. Inspect logs at $(Join-Path $StateRoot 'logs'). Error: $err"

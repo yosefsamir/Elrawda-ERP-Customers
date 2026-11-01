@@ -332,17 +332,34 @@ try {
     $pkgJson = Get-Content (Join-Path $RepoRoot 'package.json') -Raw | ConvertFrom-Json
     $currentVer = $pkgJson.version
     $fakeVer = "9.9.9-failing-test"
-    $fakeReleaseDir = "C:\WhatsApp-ERP\releases\$fakeVer"
-    New-Item -ItemType Directory -Path $fakeReleaseDir -Force | Out-Null
-    Copy-Item "C:\WhatsApp-ERP\releases\$currentVer\*" -Destination $fakeReleaseDir -Recurse -Force
+    $fakeUpdatePkgDir = "C:\WhatsAppERP-pkg-$fakeVer"
+    New-Item -ItemType Directory -Path $fakeUpdatePkgDir -Force | Out-Null
+    Copy-Item "C:\WhatsApp-ERP\releases\$currentVer\*" -Destination $fakeUpdatePkgDir -Recurse -Force
     $fakePkg = @{ name = "whatsapp-erp"; version = $fakeVer }
-    $fakePkg | ConvertTo-Json | Set-Content (Join-Path $fakeReleaseDir 'package.json') -Encoding UTF8
+    $fakePkg | ConvertTo-Json | Set-Content (Join-Path $fakeUpdatePkgDir 'package.json') -Encoding UTF8
     # Break server entry point so the server process immediately exits on start
-    Set-Content (Join-Path $fakeReleaseDir 'dist\runtime\apps\server\index.js') 'process.exit(1);' -Encoding UTF8
+    Set-Content (Join-Path $fakeUpdatePkgDir 'dist\runtime\apps\server\index.js') 'process.exit(1);' -Encoding UTF8
+
+    # Recompute release-manifest.json checksums so Verify-Release and Copy-Release succeed
+    $manifestFile = Join-Path $fakeUpdatePkgDir 'release-manifest.json'
+    if (Test-Path -LiteralPath $manifestFile) {
+        $manifest = Get-Content -LiteralPath $manifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        foreach ($entry in $manifest.files) {
+            $fPath = Join-Path $fakeUpdatePkgDir $entry.path
+            if (Test-Path -LiteralPath $fPath) {
+                $bytes = [System.IO.File]::ReadAllBytes($fPath)
+                $hash = [System.BitConverter]::ToString($sha256.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
+                $entry.sha256 = $hash
+            }
+        }
+        $sha256.Dispose()
+        $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestFile -Encoding UTF8
+    }
 
     $updateFailedAsExpected = $false
     try {
-        & "$fakeReleaseDir\scripts\windows\update.ps1" -StateRoot "$env:ProgramData\WhatsApp-ERP" -InstallRoot "C:\WhatsApp-ERP"
+        & "$fakeUpdatePkgDir\scripts\windows\update.ps1" -StateRoot "$env:ProgramData\WhatsApp-ERP" -InstallRoot "C:\WhatsApp-ERP"
     } catch {
         $updateFailedAsExpected = $true
         Write-Host "Update threw expected error: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -356,6 +373,7 @@ try {
     } else {
         Record-Test "Upgrade Automatic Rollback and Process Cleanup (M1, M2)" $false "Rollback failed or old release failed to resume." "M2"
     }
+    Remove-Item -LiteralPath $fakeUpdatePkgDir -Recurse -Force -ErrorAction SilentlyContinue
 
     # -------------------------------------------------------------------------
     # TEST 17, 18, 19, 20: Uninstallation, Task Removal & Cleanup (H1, H2)

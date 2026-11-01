@@ -1,6 +1,22 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Get-ConfigProperty($Object, [string]$PropertyName, $Default = $null) {
+    if (-not $Object) { return $Default }
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($PropertyName) -and $null -ne $Object[$PropertyName]) {
+            return $Object[$PropertyName]
+        }
+        return $Default
+    }
+    if ($Object.PSObject -and $Object.PSObject.Properties[$PropertyName]) {
+        $val = $Object.PSObject.Properties[$PropertyName].Value
+        if ($null -ne $val) { return $val }
+        return $Default
+    }
+    return $Default
+}
+
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -46,44 +62,50 @@ function Get-ChromiumPath($ReleasePath) {
 }
 
 function Set-ServiceEnvironment($Config) {
-    $env:EMOJI_DATA_DIR = $Config.DataDir
-    $env:PUPPETEER_CACHE_DIR = $Config.CacheDir
-    $env:PORT = [string]$Config.Port
+    $dataDir = Get-ConfigProperty $Config 'DataDir'
+    $cacheDir = Get-ConfigProperty $Config 'CacheDir'
+    $port = Get-ConfigProperty $Config 'Port' 3211
+    $releasePath = Get-ConfigProperty $Config 'ReleasePath'
+
+    if ($dataDir) { $env:EMOJI_DATA_DIR = $dataDir }
+    if ($cacheDir) { $env:PUPPETEER_CACHE_DIR = $cacheDir }
+    $env:PORT = [string]$port
     $env:NODE_ENV = 'production'
-    $env:EMOJI_APP_ROOT = $Config.ReleasePath
 
-    # Node module resolution for packaged runtime
-    $nodeModules = Join-Path $Config.ReleasePath 'node_modules'
-    if (Test-Path -LiteralPath $nodeModules) {
-        $env:NODE_PATH = $nodeModules
-    }
-
-    # Chromium executable resolution
-    $chrome = Get-ChromiumPath $Config.ReleasePath
-    if ($chrome) {
-        $env:WHATSAPP_CHROME_PATH = $chrome
+    if ($releasePath) {
+        $env:EMOJI_APP_ROOT = $releasePath
+        $nodeModules = Join-Path $releasePath 'node_modules'
+        if (Test-Path -LiteralPath $nodeModules) {
+            $env:NODE_PATH = $nodeModules
+        }
+        $chrome = Get-ChromiumPath $releasePath
+        if ($chrome) {
+            $env:WHATSAPP_CHROME_PATH = $chrome
+        }
     }
 
     # Redirect user profile and temp paths away from systemprofile when running under SYSTEM
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     if ($identity.User -and $identity.User.Value -eq 'S-1-5-18') {
-        $stateRoot = Split-Path -Parent $Config.DataDir
-        $cacheDir = Join-Path $stateRoot 'cache'
-        $tempDir = Join-Path $stateRoot 'temp'
-        New-Item -ItemType Directory -Path $cacheDir -Force -ErrorAction SilentlyContinue | Out-Null
-        New-Item -ItemType Directory -Path $tempDir -Force -ErrorAction SilentlyContinue | Out-Null
+        $stateRoot = if ($dataDir) { Split-Path -Parent $dataDir } else { "$env:ProgramData\WhatsApp-ERP" }
+        $cDir = if ($cacheDir) { $cacheDir } else { Join-Path $stateRoot 'cache' }
+        $tDir = Join-Path $stateRoot 'temp'
+        New-Item -ItemType Directory -Path $cDir -Force -ErrorAction SilentlyContinue | Out-Null
+        New-Item -ItemType Directory -Path $tDir -Force -ErrorAction SilentlyContinue | Out-Null
         $env:USERPROFILE = $stateRoot
-        $env:LOCALAPPDATA = $cacheDir
-        $env:APPDATA = $cacheDir
-        $env:TEMP = $tempDir
-        $env:TMP = $tempDir
+        $env:LOCALAPPDATA = $cDir
+        $env:APPDATA = $cDir
+        $env:TEMP = $tDir
+        $env:TMP = $tDir
     }
 }
 
 function Invoke-Admin($Config, [string[]]$CommandArgs) {
     Set-ServiceEnvironment $Config
-    $node = Get-NodePath $Config.ReleasePath
-    & $node (Join-Path $Config.ReleasePath 'dist\runtime\scripts\maintenance\admin.js') @CommandArgs
+    $releasePath = Get-ConfigProperty $Config 'ReleasePath'
+    if (-not $releasePath) { throw "Cannot invoke admin command without ReleasePath in config" }
+    $node = Get-NodePath $releasePath
+    & $node (Join-Path $releasePath 'dist\runtime\scripts\maintenance\admin.js') @CommandArgs
     if ($LASTEXITCODE -ne 0) { throw "Maintenance command failed: $($CommandArgs[0])" }
 }
 
@@ -104,12 +126,17 @@ function Move-ItemWithRetry($Source, $Destination, [int]$MaxAttempts = 5) {
 }
 
 function Stop-ServiceProcessTree($Config) {
-    if ($Config -and $Config.TaskName) {
-        Stop-ScheduledTask -TaskName $Config.TaskName -ErrorAction SilentlyContinue
+    $taskName = Get-ConfigProperty $Config 'TaskName'
+    $releasePath = Get-ConfigProperty $Config 'ReleasePath'
+    $dataDir = Get-ConfigProperty $Config 'DataDir'
+    $port = [int](Get-ConfigProperty $Config 'Port' 3211)
+
+    if ($taskName) {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     }
 
     # 1. Attempt graceful stop via Admin CLI if release exists
-    if ($Config -and $Config.ReleasePath -and (Test-Path $Config.ReleasePath)) {
+    if ($releasePath -and (Test-Path -LiteralPath $releasePath)) {
         try {
             Invoke-Admin $Config @('stop')
             Start-Sleep -Seconds 1
@@ -118,8 +145,8 @@ function Stop-ServiceProcessTree($Config) {
 
     # 2. Check shutdown.json or runtime.lock to identify server process ID
     $pidToKill = $null
-    if ($Config -and $Config.DataDir) {
-        $shutdownFile = Join-Path $Config.DataDir 'shutdown.json'
+    if ($dataDir) {
+        $shutdownFile = Join-Path $dataDir 'shutdown.json'
         if (Test-Path -LiteralPath $shutdownFile) {
             try {
                 $sd = Get-Content -LiteralPath $shutdownFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -127,7 +154,7 @@ function Stop-ServiceProcessTree($Config) {
             } catch {}
         }
         if (-not $pidToKill) {
-            $lockFile = Join-Path $Config.DataDir 'runtime.lock'
+            $lockFile = Join-Path $dataDir 'runtime.lock'
             if (Test-Path -LiteralPath $lockFile) {
                 try {
                     $lk = Get-Content -LiteralPath $lockFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -149,7 +176,6 @@ function Stop-ServiceProcessTree($Config) {
     }
 
     # Also kill any process listening on the configured Port
-    $port = if ($Config -and $Config.Port) { $Config.Port } else { 3211 }
     $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($conn) {
         foreach ($c in $conn) {
@@ -186,16 +212,20 @@ function Register-ApplicationTasks($Config, $StateRoot) {
     Register-ScheduledTask -TaskName ($Config.TaskName + 'Backup') -Action $backupAction -Trigger $backupTrigger -Principal $principal -Settings $backupSettings -Force | Out-Null
 }
 
-function Wait-Ready($Config) {
-    $expected = (Get-Content -Raw -Encoding UTF8 (Join-Path $Config.ReleasePath 'package.json') | ConvertFrom-Json).version
-    for ($i = 0; $i -lt 45; $i++) {
+function Wait-Ready($Config, [int]$TimeoutSec = 90) {
+    $releasePath = Get-ConfigProperty $Config 'ReleasePath'
+    $port = Get-ConfigProperty $Config 'Port' 3211
+    $dataDir = Get-ConfigProperty $Config 'DataDir'
+    $expected = (Get-Content -Raw -Encoding UTF8 (Join-Path $releasePath 'package.json') | ConvertFrom-Json).version
+    $maxAttempts = [math]::Max(5, [int]($TimeoutSec / 2))
+    for ($i = 0; $i -lt $maxAttempts; $i++) {
         try {
-            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$($Config.Port)/healthz" -TimeoutSec 2
-            if ($health.ok -and $health.version -eq $expected -and (Test-Path (Join-Path $Config.DataDir 'shutdown.json'))) { return }
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/healthz" -TimeoutSec 2
+            if ($health.ok -and $health.version -eq $expected -and (Test-Path (Join-Path $dataDir 'shutdown.json'))) { return }
         } catch {}
         Start-Sleep -Seconds 2
     }
-    throw "Server did not become ready. Inspect logs in the state directory."
+    throw "Server did not become ready within ${TimeoutSec}s. Inspect logs in the state directory."
 }
 
 function Verify-Release($ReleasePath) {
