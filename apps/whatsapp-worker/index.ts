@@ -221,6 +221,17 @@ async function handleMessage(message: any) {
         publish({ status: "disconnected", qr: null }),
       );
 
+      // A killed worker leaves its browser running, so the server needs the PID on disk (M7)
+      const recordBrowser = setInterval(() => {
+        const browserPid = client?.pupBrowser?.process?.()?.pid;
+        if (!browserPid) return;
+        clearInterval(recordBrowser);
+        try {
+          writeFileSync(lockPath, JSON.stringify({ pid: process.pid, browserPid, companyId, createdAt: new Date().toISOString() }));
+        } catch {}
+      }, 250);
+      recordBrowser.unref();
+
       void client
         .initialize()
         .catch(async (err: any) => {

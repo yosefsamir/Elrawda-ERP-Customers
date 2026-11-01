@@ -77,15 +77,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{#MyAppURL}"; Tasks: desktopicon
 ; Offer to open the web management interface on success (skipped during silent installs)
 Filename: "{#MyAppURL}"; Description: "Open WhatsApp-ERP Web Interface ({#MyAppURL})"; Flags: postinstall shellexec nowait skipifsilent; Check: InstallSucceeded
 
-[UninstallRun]
-; Safely stop and unregister scheduled tasks upon uninstallation without deleting persistent customer state
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\scripts\windows\uninstall.ps1"" -InstallRoot ""{app}"""; Flags: runhidden waituntilterminated; RunOnceId: "UninstallWhatsAppERP"
-
-[UninstallDelete]
-; Ensure releases and helper scripts are completely deleted upon uninstallation (H2)
-Type: filesandordirs; Name: "{app}\releases"
-Type: filesandordirs; Name: "{app}\scripts"
-
 [Code]
 var
   InstallSuccess: Boolean;
@@ -94,13 +85,38 @@ var
   ExistingReleaseFound: Boolean;
   CustomExitCode: Integer;
 
+// [UninstallRun] ignores exit codes, so the helper runs here: Abort at usUninstall stops the
+// uninstall with a non-zero exit code and leaves it registered for a retry.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Params: String;
+  ResultCode: Integer;
+  HelperLog: String;
 begin
-  if CurUninstallStep = usPostUninstall then
+  if CurUninstallStep <> usUninstall then
+    Exit;
+
+  HelperLog := ExpandConstant('{commonappdata}\WhatsApp-ERP\logs\uninstall.log');
+  Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\scripts\windows\uninstall.ps1') +
+            '" -InstallRoot "' + ExpandConstant('{app}') + '" -StateRoot "' + ExpandConstant('{commonappdata}\WhatsApp-ERP') + '"';
+  Log('Executing uninstall helper: ' + Params);
+
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, ExpandConstant('{sys}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
-    DelTree(ExpandConstant('{app}\releases'), True, True, True);
-    DelTree(ExpandConstant('{app}\scripts'), True, True, True);
-    RemoveDir(ExpandConstant('{app}'));
+    Log('Uninstall helper could not start: ' + SysErrorMessage(ResultCode));
+    SuppressibleMsgBox('WhatsApp-ERP could not start its uninstall helper.' + #13#10#13#10 + SysErrorMessage(ResultCode), mbCriticalError, MB_OK, IDOK);
+    Abort;
+  end;
+
+  Log('Uninstall helper exit code: ' + IntToStr(ResultCode));
+  if ResultCode <> 0 then
+  begin
+    SuppressibleMsgBox(
+      'WhatsApp-ERP could not be fully stopped and removed (error ' + IntToStr(ResultCode) + ').' + #13#10#13#10 +
+      'Customer data has not been deleted. Close any program using the WhatsApp-ERP folder and run the uninstaller again.' + #13#10#13#10 +
+      'Details: ' + HelperLog,
+      mbCriticalError, MB_OK, IDOK);
+    Abort;
   end;
 end;
 

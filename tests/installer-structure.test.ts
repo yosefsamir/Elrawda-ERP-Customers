@@ -41,6 +41,8 @@ test('installer files and inno setup script integrity', () => {
 
   // Check uninstaller configuration
   assert.match(issContent, /uninstall\.ps1/, 'Uninstaller must reference uninstall.ps1');
+  assert.doesNotMatch(issContent, /^\[UninstallRun\]/m, '[UninstallRun] ignores exit codes; the helper must run from CurUninstallStepChanged');
+  assert.match(issContent, /CurUninstallStep <> usUninstall/, 'Uninstall helper must run at usUninstall, where Abort stops the uninstall');
 
   // Verify obsolete external checks are removed
   assert.doesNotMatch(issContent, /CheckNodeVersion/, 'Must not contain obsolete external Node version checks');

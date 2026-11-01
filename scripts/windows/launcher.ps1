@@ -4,17 +4,27 @@ $flag = Join-Path $StateRoot 'maintenance.flag'
 $logs = Join-Path $StateRoot 'logs'
 New-Item -ItemType Directory -Path $logs -Force | Out-Null
 
+# The server exits gracefully when this PID disappears, so stopping the task never orphans it
+$env:EMOJI_SUPERVISOR_PID = [string]$PID
+
 while ($true) {
     if (Test-Path $flag) {
         $isStale = $false
         $flagContent = $null
         try {
             $raw = Get-Content -LiteralPath $flag -Raw -Encoding UTF8 -ErrorAction Stop
-            $flagContent = $raw | ConvertFrom-Json -ErrorAction SilentlyContinue
+            $flagContent = $raw | ConvertFrom-Json -ErrorAction Stop
         } catch {}
 
-        if ($flagContent -and $flagContent.pid) {
-            $owner = Get-Process -Id $flagContent.pid -ErrorAction SilentlyContinue
+        $flagReason = 'unknown'
+        $flagPid = $null
+        if ($flagContent -and $flagContent.PSObject.Properties['reason']) { $flagReason = $flagContent.reason }
+        if ($flagContent -and $flagContent.PSObject.Properties['pid']) { $flagPid = $flagContent.pid }
+
+        if ($flagReason -eq 'recovery') {
+            # A failed upgrade that could not roll back stays stopped until someone acts on it
+        } elseif ($flagPid) {
+            $owner = Get-Process -Id $flagPid -ErrorAction SilentlyContinue
             if (-not $owner) {
                 $isStale = $true
             }
@@ -30,7 +40,7 @@ while ($true) {
             Add-Content -LiteralPath (Join-Path $logs 'launcher.log') -Value "$(Get-Date -Format o) [H4] Automatically cleared stale maintenance flag."
             Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue
         } else {
-            Add-Content -LiteralPath (Join-Path $logs 'launcher.log') -Value "$(Get-Date -Format o) Maintenance mode active (Reason: $($flagContent.reason), PID: $($flagContent.pid)). Waiting..."
+            Add-Content -LiteralPath (Join-Path $logs 'launcher.log') -Value "$(Get-Date -Format o) Maintenance mode active (Reason: $flagReason, PID: $flagPid). Waiting..."
             Start-Sleep -Seconds 5
             continue
         }

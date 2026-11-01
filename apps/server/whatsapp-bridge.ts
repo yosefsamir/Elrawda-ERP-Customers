@@ -1,4 +1,6 @@
-import { fork, execSync, type ChildProcess } from "node:child_process";
+import { fork, execFileSync, execSync, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
@@ -29,6 +31,17 @@ export class WhatsAppBridge {
 
   constructor(private dataDir: string) {
     this.startWatchdog();
+  }
+
+  private killRecordedBrowser(companyId: string | null) {
+    if (process.platform !== "win32" || !companyId) return;
+    try {
+      const lockPath = resolvePath(this.dataDir, "whatsapp-auth", `session-${companyId}`, "session.lock");
+      const { browserPid } = JSON.parse(readFileSync(lockPath, "utf8"));
+      if (!Number.isInteger(browserPid)) return;
+      const listed = execFileSync("tasklist.exe", ["/FI", `PID eq ${browserPid}`, "/FI", "IMAGENAME eq chrome.exe", "/NH", "/FO", "CSV"], { encoding: "utf8", windowsHide: true });
+      if (listed.toLowerCase().includes("chrome.exe")) execFileSync("taskkill.exe", ["/PID", String(browserPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    } catch {}
   }
 
   getWorkerPid(): number | undefined {
@@ -100,7 +113,7 @@ export class WhatsAppBridge {
         this.state = { ...this.state, status: "error", error: error.message };
       });
       this.child.on("exit", (code) => {
-        const exitedPid = this.child?.pid;
+        const exitedCompanyId = this.state.companyId ?? this.targetCompanyId;
         this.child = undefined;
         this.state = {
           companyId: null,
@@ -115,9 +128,7 @@ export class WhatsAppBridge {
         this.pending.clear();
 
         // Process cleanup for orphaned Chromium / child processes on Windows (M7)
-        if (process.platform === "win32" && exitedPid) {
-          try { execSync(`taskkill /PID ${exitedPid} /T /F`, { stdio: "ignore" }); } catch {}
-        }
+        this.killRecordedBrowser(exitedCompanyId);
 
         // Automatic immediate recovery if session was active (H7)
         if (this.targetCompanyId && !this.stopping) {

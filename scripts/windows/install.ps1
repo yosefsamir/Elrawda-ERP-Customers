@@ -70,7 +70,8 @@ try {
     # 1. Clean up any leftover release directory from an aborted attempt (C4)
     if (Test-Path -LiteralPath $target) {
         Write-Host "Leftover release destination from interrupted install detected ($target). Re-staging cleanly..." -ForegroundColor Yellow
-        Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+        Stop-ServiceProcessTree @{ InstallRoot = $InstallRoot; DataDir = (Join-Path $StateRoot 'data'); TaskName = 'WhatsAppERPOperations'; Port = $Port }
+        Remove-Item -LiteralPath $target -Recurse -Force
     }
 
     # 2. Port conflict check (M4)
@@ -138,8 +139,7 @@ try {
         # CRITICAL C4 FIX: If readiness verification fails, rollback service.json and stop task
         # so this failed attempt does not leave an unverified service.json behind!
         Write-Host "Deployment verification failed. Rolling back provisional service.json..." -ForegroundColor Red
-        Stop-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
-        Stop-ServiceProcessTree $config
+        try { Stop-ServiceProcessTree $config } catch { Write-Warning $_.Exception.Message }
         Remove-Item -LiteralPath $serviceJsonPath -Force -ErrorAction SilentlyContinue
         throw
     }

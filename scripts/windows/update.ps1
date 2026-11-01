@@ -60,8 +60,8 @@ $switched = $false
 
 try {
     Write-Host "Stopping current running service gracefully..." -ForegroundColor Cyan
-    Stop-ServiceProcessTree $config
     $stopped = $true
+    Stop-ServiceProcessTree $config
 
     Write-Host "Creating consistent offline pre-update backup..." -ForegroundColor Cyan
     Invoke-Admin $config @('backup', '--output', $backup, '--offline')
@@ -123,7 +123,7 @@ try {
         throw "Update aborted before activation. The existing release has been retained. Error: $err"
     } else {
         # Activation was performed, but server failed to become ready
-        [IO.File]::WriteAllText($flag, 'recovery')
+        [IO.File]::WriteAllText($flag, (([pscustomobject]@{ reason = 'recovery'; pid = $null; startTime = (Get-Date -Format o) }) | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
         $oldNode = Get-NodePath $oldRelease
         $canRollback = $false
         try {

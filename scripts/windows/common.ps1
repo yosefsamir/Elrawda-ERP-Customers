@@ -125,73 +125,84 @@ function Move-ItemWithRetry($Source, $Destination, [int]$MaxAttempts = 5) {
     }
 }
 
+function Get-InstallRoot($Config) {
+    $explicit = Get-ConfigProperty $Config 'InstallRoot'
+    if ($explicit) { return $explicit }
+    $releasePath = Get-ConfigProperty $Config 'ReleasePath'
+    if ($releasePath) { return Split-Path -Parent (Split-Path -Parent $releasePath) }
+    return $null
+}
+
+# Processes running from our own install root. Executable path is the proof of ownership:
+# PIDs from state files can be reused and port 3211 can belong to another program.
+function Get-OwnedProcess($InstallRoot) {
+    if (-not $InstallRoot) { return @() }
+    $prefix = $InstallRoot.TrimEnd('\') + '\'
+    return @(Get-CimInstance -ClassName Win32_Process | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+    })
+}
+
+function Get-LauncherProcess($StateRoot) {
+    if (-not $StateRoot) { return @() }
+    $launcher = Join-Path $StateRoot 'launcher.ps1'
+    return @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
+        $_.CommandLine -and $_.CommandLine.IndexOf($launcher, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    })
+}
+
+function Wait-OwnedProcessExit($InstallRoot, [int]$TimeoutSec) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    do {
+        if ((Get-OwnedProcess $InstallRoot).Count -eq 0) { return $true }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return ((Get-OwnedProcess $InstallRoot).Count -eq 0)
+}
+
+# Stops the whole service: supervisor first so nothing respawns, then a graceful server
+# shutdown, then a forced stop limited to our own binaries. Throws if anything survives.
 function Stop-ServiceProcessTree($Config) {
     $taskName = Get-ConfigProperty $Config 'TaskName'
     $releasePath = Get-ConfigProperty $Config 'ReleasePath'
     $dataDir = Get-ConfigProperty $Config 'DataDir'
     $port = [int](Get-ConfigProperty $Config 'Port' 3211)
+    $installRoot = Get-InstallRoot $Config
+    $stateRoot = if ($dataDir) { Split-Path -Parent $dataDir } else { $null }
 
     if ($taskName) {
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     }
+    foreach ($launcher in (Get-LauncherProcess $stateRoot)) {
+        Stop-Process -Id $launcher.ProcessId -Force -ErrorAction SilentlyContinue
+    }
 
-    # 1. Attempt graceful stop via Admin CLI if release exists
-    if ($releasePath -and (Test-Path -LiteralPath $releasePath)) {
+    if ($releasePath -and $dataDir -and (Test-Path -LiteralPath $releasePath) -and (Test-Path -LiteralPath (Join-Path $dataDir 'shutdown.json'))) {
         try {
             Invoke-Admin $Config @('stop')
-            Start-Sleep -Seconds 1
-        } catch {}
-    }
-
-    # 2. Check shutdown.json or runtime.lock to identify server process ID
-    $pidToKill = $null
-    if ($dataDir) {
-        $shutdownFile = Join-Path $dataDir 'shutdown.json'
-        if (Test-Path -LiteralPath $shutdownFile) {
-            try {
-                $sd = Get-Content -LiteralPath $shutdownFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                if ($sd.pid) { $pidToKill = [int]$sd.pid }
-            } catch {}
-        }
-        if (-not $pidToKill) {
-            $lockFile = Join-Path $dataDir 'runtime.lock'
-            if (Test-Path -LiteralPath $lockFile) {
-                try {
-                    $lk = Get-Content -LiteralPath $lockFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                    if ($lk.pid) { $pidToKill = [int]$lk.pid }
-                } catch {}
-            }
+        } catch {
+            Write-Warning "Graceful server stop did not complete: $($_.Exception.Message)"
         }
     }
 
-    if ($pidToKill) {
-        $proc = Get-Process -Id $pidToKill -ErrorAction SilentlyContinue
-        if ($proc) {
-            try {
-                & taskkill.exe /PID $pidToKill /T /F | Out-Null
-            } catch {
-                try { Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue } catch {}
-            }
+    if (-not (Wait-OwnedProcessExit $installRoot 45)) {
+        foreach ($proc in (Get-OwnedProcess $installRoot)) {
+            Write-Warning "Forcing stop of $($proc.Name) (PID $($proc.ProcessId)): $($proc.ExecutablePath)"
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+        if (-not (Wait-OwnedProcessExit $installRoot 15)) {
+            $remaining = (Get-OwnedProcess $installRoot | ForEach-Object { "$($_.Name)#$($_.ProcessId)" }) -join ', '
+            throw "Could not stop WhatsApp-ERP processes: $remaining"
         }
     }
 
-    # Also kill any process listening on the configured Port
-    $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-    if ($conn) {
-        foreach ($c in $conn) {
-            if ($c.OwningProcess) {
-                try { & taskkill.exe /PID $c.OwningProcess /T /F | Out-Null } catch {}
-            }
-        }
-    }
-
-    # 3. Wait up to 10 seconds for the port to be free
+    # The port frees shortly after the process exits. Never kill a foreign listener.
     $deadline = (Get-Date).AddSeconds(10)
     while ((Get-Date) -lt $deadline) {
-        $active = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-        if (-not $active) { break }
-        Start-Sleep -Seconds 1
+        if (-not (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 500
     }
+    Write-Warning "Port $port is still in use by a process outside the WhatsApp-ERP install root."
 }
 
 function Register-ApplicationTasks($Config, $StateRoot) {

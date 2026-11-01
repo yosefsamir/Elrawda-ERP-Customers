@@ -76,6 +76,50 @@ function Clear-TestEnvironment {
     }
 }
 
+$InstallPath = 'C:\WhatsApp-ERP'
+$StatePath = "$env:ProgramData\WhatsApp-ERP"
+$ApiBase = 'http://127.0.0.1:3211'
+$UninstallerPath = Join-Path $InstallPath 'unins000.exe'
+$UninstallRegKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8B2F354D-9321-4F2A-A04E-5D345ECB901C}_is1'
+
+# True only once nothing runs from the install root and port 3211 is free. A /healthz reply alone
+# cannot prove a restart: an orphaned old server answers it too.
+function Wait-ServiceDown([int]$TimeoutSec = 20) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    do {
+        $running = Get-OwnedProcess $InstallPath
+        $listener = Get-NetTCPConnection -LocalPort 3211 -State Listen -ErrorAction SilentlyContinue
+        if ($running.Count -eq 0 -and -not $listener) { return $true }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
+function Get-ServerPid {
+    $file = Join-Path $StatePath 'data\shutdown.json'
+    if (-not (Test-Path -LiteralPath $file)) { return $null }
+    try { return [int](Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json).pid } catch { return $null }
+}
+
+function Get-WhatsAppHealth {
+    try { return (Invoke-RestMethod -Uri "$ApiBase/healthz" -TimeoutSec 3).whatsapp } catch { return $null }
+}
+
+function Get-OwnedChrome {
+    return @(Get-OwnedProcess $InstallPath | Where-Object { $_.Name -eq 'chrome.exe' })
+}
+
+# Runs one uninstall and waits for the second phase, which outlives the first-phase process
+function Invoke-Uninstaller([string]$LogPath) {
+    $exitCode = (Start-Process -FilePath $UninstallerPath -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /LOG=`"$LogPath`"" -PassThru -Wait).ExitCode
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process | Where-Object { $_.ProcessName -like 'unins*' -or $_.ProcessName -like '_unins*' -or $_.ProcessName -like '_iu*' })) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    return $exitCode
+}
+
 function Wait-BackendHealth([int]$TimeoutSec = 30) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
@@ -220,23 +264,24 @@ try {
         Record-Test "Backend HTTP Health Check (/healthz)" $false "Server failed to respond on port 3211 within 30 seconds." "C2"
     }
 
-    # Test 10: Restart task and verify health recovers
+    # Test 10: Stopping the task must stop the server, and a restart must start a new one
+    $serverPidBefore = Get-ServerPid
     Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 3
+    $stoppedCleanly = Wait-ServiceDown 20
+    Record-Test "Stopping the Service Task Leaves No Orphaned Server" $stoppedCleanly "Server PID $serverPidBefore stopped with its supervisor: $stoppedCleanly." "H2"
+
     Start-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
     $health2 = Wait-BackendHealth 30
-    if ($health2.Success) {
-        Record-Test "Backend Health Recovers After Task Restart" $true "Server resumed cleanly and responded on /healthz after task restart."
-    } else {
-        Record-Test "Backend Health Recovers After Task Restart" $false "Server failed to respond on /healthz after task restart."
-    }
+    $serverPidAfter = Get-ServerPid
+    $restarted = $stoppedCleanly -and $health2.Success -and $serverPidAfter -and ($serverPidAfter -ne $serverPidBefore)
+    Record-Test "Backend Health Recovers After Task Restart" $restarted "Server PID changed from $serverPidBefore to $serverPidAfter; healthy: $($health2.Success)."
 
     # -------------------------------------------------------------------------
     # TEST 11: Stale Runtime Lock Recovery (H3)
     # -------------------------------------------------------------------------
     Write-Host "`n[Test 11] Verifying Stale Runtime Lock Recovery (H3)..." -ForegroundColor Cyan
     Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
+    $downBeforeLock = Wait-ServiceDown 20
 
     # Write simulated stale lock file from a previous boot session
     $lockFile = "$env:ProgramData\WhatsApp-ERP\data\runtime.lock"
@@ -251,18 +296,16 @@ try {
 
     Start-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
     $health3 = Wait-BackendHealth 30
-    if ($health3.Success) {
-        Record-Test "Recovery from Stale Runtime Lock (H3)" $true "Server cleared pre-reboot stale lock and started successfully." "H3"
-    } else {
-        Record-Test "Recovery from Stale Runtime Lock (H3)" $false "Server was blocked by stale runtime.lock and failed to start!" "H3"
-    }
+    $lockReplaced = (Test-Path -LiteralPath $lockFile) -and -not ((Get-Content -LiteralPath $lockFile -Raw) -match 'dead-owner-from-previous-reboot')
+    $recoveredLock = $downBeforeLock -and $health3.Success -and $lockReplaced
+    Record-Test "Recovery from Stale Runtime Lock (H3)" $recoveredLock "Service was down first: $downBeforeLock; healthy: $($health3.Success); stale lock replaced by the new server: $lockReplaced." "H3"
 
     # -------------------------------------------------------------------------
     # TEST 12: Stale Maintenance Flag Recovery (H4)
     # -------------------------------------------------------------------------
     Write-Host "`n[Test 12] Verifying Stale Maintenance Flag Recovery (H4)..." -ForegroundColor Cyan
     Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
+    $downBeforeFlag = Wait-ServiceDown 20
 
     # Write simulated stale maintenance flag with dead PID
     $flagFile = "$env:ProgramData\WhatsApp-ERP\maintenance.flag"
@@ -276,11 +319,9 @@ try {
 
     Start-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
     $health4 = Wait-BackendHealth 30
-    if ($health4.Success) {
-        Record-Test "Recovery from Stale Maintenance Flag (H4)" $true "Launcher cleared stale maintenance flag from dead PID and started server." "H4"
-    } else {
-        Record-Test "Recovery from Stale Maintenance Flag (H4)" $false "Launcher was permanently blocked by maintenance.flag!" "H4"
-    }
+    $flagCleared = -not (Test-Path -LiteralPath $flagFile)
+    $recoveredFlag = $downBeforeFlag -and $health4.Success -and $flagCleared
+    Record-Test "Recovery from Stale Maintenance Flag (H4)" $recoveredFlag "Service was down first: $downBeforeFlag; healthy: $($health4.Success); flag cleared: $flagCleared." "H4"
 
     # -------------------------------------------------------------------------
     # PHASE 4: WhatsApp & Chromium Reliability Tests (H5, H7, M7, L8, L9, L10)
@@ -317,9 +358,67 @@ try {
         Record-Test "WhatsApp Session & Cache Bound to Persistent State Root" $false "Paths not under ProgramData state root" "L9"
     }
 
-    Write-Host "`n[Phase 4: Test 16] Verifying WhatsApp Worker Process Tree Management (M7)..." -ForegroundColor Cyan
-    # Verify that worker process tree is tracked and stopped on shutdown
-    Record-Test "WhatsApp Worker Process Management and Tree Cleanup" $true "Worker process tree managed via job/PID tracking and taskkill cleanup." "M7"
+    # Seeds a real operator and company. Everything from here on, including repair, upgrade and
+    # uninstall, runs against customer-like data with a live Chromium in the service account.
+    Write-Host "`n[Phase 4: Test 16] Starting a Real WhatsApp Session in the Service Account (H5)..." -ForegroundColor Cyan
+    $apiHeaders = @{ 'x-emoji-request' = '1' }
+    $seedCompanyName = 'Integration Persistence Company'
+    $apiSession = $null
+    $seedCompanyId = $null
+    $sessionError = $null
+    try {
+        Invoke-RestMethod -Uri "$ApiBase/api/auth/bootstrap" -Method Post -Headers $apiHeaders -ContentType 'application/json' -SessionVariable apiSession -TimeoutSec 20 -Body (@{ username = 'integration'; password = 'IntegrationOnly-Password1' } | ConvertTo-Json) | Out-Null
+        $seedCompanyId = (Invoke-RestMethod -Uri "$ApiBase/api/companies" -Method Post -Headers $apiHeaders -ContentType 'application/json' -WebSession $apiSession -TimeoutSec 20 -Body (@{ name = $seedCompanyName } | ConvertTo-Json)).id
+        Invoke-RestMethod -Uri "$ApiBase/api/whatsapp/connect" -Method Post -Headers $apiHeaders -ContentType 'application/json' -WebSession $apiSession -TimeoutSec 20 -Body '{}' | Out-Null
+    } catch {
+        $sessionError = $_.Exception.Message
+    }
+
+    $chromeDeadline = (Get-Date).AddSeconds(90)
+    $waHealth = $null
+    while ((Get-Date) -lt $chromeDeadline) {
+        $waHealth = Get-WhatsAppHealth
+        if ((Get-OwnedChrome).Count -gt 0 -and $waHealth -and $waHealth.status -in @('qr', 'ready')) { break }
+        Start-Sleep -Seconds 2
+    }
+    $liveChrome = Get-OwnedChrome
+    $chromeOwner = 'none'
+    if ($liveChrome.Count -gt 0) {
+        $ownerInfo = Invoke-CimMethod -InputObject $liveChrome[0] -MethodName GetOwner
+        $chromeOwner = "$($ownerInfo.Domain)\$($ownerInfo.User)"
+    }
+    $waStatus = if ($waHealth) { $waHealth.status } else { 'unreachable' }
+    $waError = if ($waHealth) { $waHealth.error } else { $null }
+    $chromeStarted = (-not $sessionError) -and ($liveChrome.Count -gt 0) -and ($waStatus -notin @('error', 'unreachable'))
+    Record-Test "Chromium Launches in the Service Account (H5)" $chromeStarted "API error: $sessionError; chrome.exe processes: $($liveChrome.Count); owner: $chromeOwner; WhatsApp status: $waStatus; error: $waError. A real QR scan is NOT exercised here." "H5"
+
+    Write-Host "`n[Phase 4: Test 16b] Killing the WhatsApp Worker Must Not Orphan Chromium (M7)..." -ForegroundColor Cyan
+    $chromeBefore = @($liveChrome | ForEach-Object { $_.ProcessId })
+    $workerPid = if ($waHealth) { $waHealth.workerPid } else { $null }
+    $orphans = @($chromeBefore)
+    if ($workerPid -and $chromeBefore.Count -gt 0) {
+        Stop-Process -Id $workerPid -Force -ErrorAction SilentlyContinue
+        $orphanDeadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $orphanDeadline) {
+            $alive = @(Get-OwnedChrome | ForEach-Object { $_.ProcessId })
+            $orphans = @($chromeBefore | Where-Object { $_ -in $alive })
+            if ($orphans.Count -eq 0) { break }
+            Start-Sleep -Seconds 1
+        }
+    }
+    $workerStopped = $workerPid -and ($chromeBefore.Count -gt 0) -and ($orphans.Count -eq 0)
+    Record-Test "Killed Worker Leaves No Orphaned Chromium (M7)" $workerStopped "Worker PID: $workerPid; browser processes before: $($chromeBefore.Count); survivors of the old browser: $($orphans.Count)." "M7"
+
+    $recoveryDeadline = (Get-Date).AddSeconds(90)
+    $recoveredHealth = $null
+    while ((Get-Date) -lt $recoveryDeadline) {
+        $recoveredHealth = Get-WhatsAppHealth
+        if ($recoveredHealth -and $recoveredHealth.workerPid -and ($recoveredHealth.workerPid -ne $workerPid) -and (Get-OwnedChrome).Count -gt 0) { break }
+        Start-Sleep -Seconds 2
+    }
+    $newWorkerPid = if ($recoveredHealth) { $recoveredHealth.workerPid } else { $null }
+    $workerRecovered = $newWorkerPid -and ($newWorkerPid -ne $workerPid) -and ((Get-OwnedChrome).Count -gt 0)
+    Record-Test "WhatsApp Worker Recovers With a New Browser (H7)" $workerRecovered "New worker PID: $newWorkerPid; chrome.exe processes: $((Get-OwnedChrome).Count)." "H7"
 
     # -------------------------------------------------------------------------
     # TEST 17: State Management & Idempotency Inspection (C4)
@@ -352,7 +451,7 @@ try {
     # -------------------------------------------------------------------------
     Write-Host "`n[Test 15] Verifying Interrupted Install Recovery (C4)..." -ForegroundColor Cyan
     # Simulate an interrupted install: stop task, stop server process, remove service.json, leaving release binaries on disk
-    Stop-ServiceProcessTree @{ Port = 3211; DataDir = "$env:ProgramData\WhatsApp-ERP\data"; TaskName = 'WhatsAppERPOperations' }
+    Stop-ServiceProcessTree @{ Port = 3211; DataDir = "$env:ProgramData\WhatsApp-ERP\data"; TaskName = 'WhatsAppERPOperations'; InstallRoot = $InstallPath }
     Remove-Item -LiteralPath $serviceJsonPath -Force -ErrorAction SilentlyContinue
     # Run Setup.exe again
     $interruptedLog = "C:\WhatsAppERP-interrupted-retry.log"
@@ -415,78 +514,100 @@ try {
     Remove-Item -LiteralPath $fakeUpdatePkgDir -Recurse -Force -ErrorAction SilentlyContinue
 
     # -------------------------------------------------------------------------
-    # TEST 17, 18, 19, 20: Uninstallation, Task Removal & Cleanup (H1, H2)
+    # Uninstallation, Task Removal & Cleanup (H1, H2)
     # -------------------------------------------------------------------------
-    Write-Host "`n[Test 17, 18, 19, 20] Running and Validating Uninstaller..." -ForegroundColor Cyan
+    Write-Host "`n[Uninstall] Preparing customer-state fingerprints..." -ForegroundColor Cyan
     $uninstallLog = "C:\WhatsAppERP-uninstall.log"
-    if (Test-Path $uninstallerExe) {
-        Write-Host "Executing unins000.exe /VERYSILENT..." -ForegroundColor Cyan
-        $swUnins = [System.Diagnostics.Stopwatch]::StartNew()
-        $u = Start-Process -FilePath $uninstallerExe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /LOG=`"$uninstallLog`"" -PassThru -Wait
-        $swUnins.Stop()
-        Write-Host "Uninstaller launcher finished in $([math]::Round($swUnins.Elapsed.TotalSeconds, 1))s with ExitCode: $($u.ExitCode)" -ForegroundColor White
+    $helperLog = Join-Path $StatePath 'logs\uninstall.log'
+    $secretKeyPath = Join-Path $StatePath 'data\secret.key'
+    $sqlitePath = Join-Path $StatePath 'data\app.sqlite'
+    $sessionMarker = Join-Path $StatePath "data\whatsapp-auth\session-$seedCompanyId\integration-marker.txt"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $sessionMarker) -Force | Out-Null
+    [IO.File]::WriteAllText($sessionMarker, 'customer session marker')
+    $secretHashBefore = if (Test-Path -LiteralPath $secretKeyPath) { (Get-FileHash -LiteralPath $secretKeyPath -Algorithm SHA256).Hash } else { $null }
+    $chromeAtUninstall = (Get-OwnedChrome).Count
+    Write-Host "Live chrome.exe processes at uninstall: $chromeAtUninstall" -ForegroundColor White
 
-        # Inno Setup unins000.exe spawns a temporary clone to delete itself and exits early.
-        # Wait until unins000.exe is completely removed from disk and all uninstaller clone processes terminate.
-        Write-Host "Waiting for uninstaller clone process to finish execution and remove unins000.exe..." -ForegroundColor Cyan
-        $deadline = (Get-Date).AddSeconds(45)
-        while ((Get-Date) -lt $deadline) {
-            $uninsProcs = Get-Process | Where-Object { $_.ProcessName -like 'unins*' -or $_.ProcessName -like '_iu*' -or $_.ProcessName -like 'is-*' }
-            $uninstallerStillPresent = Test-Path -LiteralPath $uninstallerExe
-            if (-not $uninsProcs -and -not $uninstallerStillPresent) {
-                break
-            }
-            Start-Sleep -Milliseconds 500
-        }
-
-        # Print uninstallation diagnostic transcripts
-        $progDataLog = "$env:ProgramData\WhatsApp-ERP\logs\uninstall.log"
-        if (Test-Path $progDataLog) {
-            Write-Host "Diagnostic: ProgramData uninstall.log:" -ForegroundColor Magenta
-            Get-Content $progDataLog | ForEach-Object { Write-Host "  $_" -ForegroundColor Magenta }
-        } else {
-            Write-Host "Diagnostic: $progDataLog not found." -ForegroundColor Yellow
-        }
-        if (Test-Path $uninstallLog) {
-            Write-Host "Diagnostic: Inno Setup uninstall.log:" -ForegroundColor Magenta
-            Get-Content $uninstallLog | ForEach-Object { Write-Host "  $_" -ForegroundColor Magenta }
-        }
-
-        # Test 17: Tasks removed by uninstall.ps1 (H1)
-        $tasksRemaining = Get-ScheduledTask -TaskName 'WhatsAppERPOperations*' -ErrorAction SilentlyContinue
-        if (-not $tasksRemaining) {
-            Record-Test "Uninstaller Removes Scheduled Tasks via uninstall.ps1" $true "Scheduled tasks (WhatsAppERPOperations, WhatsAppERPOperationsBackup) were cleanly removed by uninstall.ps1." "H1"
-        } else {
-            $taskNames = ($tasksRemaining | ForEach-Object { $_.TaskName }) -join ', '
-            Record-Test "Uninstaller Removes Scheduled Tasks via uninstall.ps1" $false "Scheduled tasks ($taskNames) still registered after uninstall!" "H1"
-        }
-
-        # Test 18: Uninstaller log check for PowerShell parse errors (H1)
-        $uninstallLogContent = if (Test-Path $uninstallLog) { Get-Content $uninstallLog -Raw } else { "" }
-        $hasBraceSyntaxError = $uninstallLogContent -match '\}\}\s*catch\s*\{\}\}'
-        if (-not $hasBraceSyntaxError) {
-            Record-Test "Uninstaller Log Has No PowerShell Parse Errors" $true "Uninstaller command executed cleanly without syntax errors." "H1"
-        } else {
-            Record-Test "Uninstaller Log Has No PowerShell Parse Errors" $false "Detected literal '}} catch {{}}' parse error in uninstall log!" "H1"
-        }
-
-        # Test 19: Binary directory removal (H2)
-        $releasesRemaining = Test-Path "C:\WhatsApp-ERP\releases"
-        if (-not $releasesRemaining) {
-            Record-Test "Uninstaller Removes Application Binaries" $true "C:\WhatsApp-ERP\releases directory removed." "H2"
-        } else {
-            Record-Test "Uninstaller Removes Application Binaries" $false "C:\WhatsApp-ERP\releases still exists on disk!" "H2"
-        }
-
-        # Test 20: Customer data preservation
-        $dataPreserved = Test-Path "$env:ProgramData\WhatsApp-ERP"
-        Record-Test "Uninstaller Preserves Customer State Directory" $dataPreserved "Customer persistent state ($env:ProgramData\WhatsApp-ERP) preserved: $dataPreserved"
-    } else {
-        Record-Test "Uninstaller Removes Scheduled Tasks via uninstall.ps1" $false "unins000.exe not found to execute." "H1"
-        Record-Test "Uninstaller Log Has No PowerShell Parse Errors" $false "unins000.exe not found." "H1"
-        Record-Test "Uninstaller Removes Application Binaries" $false "unins000.exe not found." "H2"
-        Record-Test "Uninstaller Preserves Customer State Directory" $false "unins000.exe not found."
+    # A blocked uninstall must report failure, stay registered, and succeed when retried
+    Write-Host "`n[Uninstall] A Locked File Must Fail the Uninstall Truthfully..." -ForegroundColor Cyan
+    $pinPath = Join-Path $InstallPath 'releases\uninstall-lock-test.txt'
+    [IO.File]::WriteAllText($pinPath, 'held open to block removal')
+    $pin = [System.IO.File]::Open($pinPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+    try {
+        $blockedExitCode = Invoke-Uninstaller "C:\WhatsAppERP-uninstall-blocked.log"
+    } finally {
+        $pin.Dispose()
     }
+    $stillRegistered = (Test-Path -LiteralPath $UninstallerPath) -and (Test-Path -LiteralPath $UninstallRegKey)
+    Record-Test "Blocked Uninstall Reports Failure and Stays Retriable" (($blockedExitCode -ne 0) -and $stillRegistered) "Exit code with a file locked: $blockedExitCode; uninstaller and Apps entry kept for retry: $stillRegistered." "H2"
+
+    Write-Host "`n[Uninstall] Running Uninstaller Retry..." -ForegroundColor Cyan
+    $uninstallExitCode = Invoke-Uninstaller $uninstallLog
+    Record-Test "Uninstaller Exits Successfully on Retry" ($uninstallExitCode -eq 0) "Exit code: $uninstallExitCode." "H1"
+
+    foreach ($diagnosticLog in @($helperLog, $uninstallLog)) {
+        if (Test-Path -LiteralPath $diagnosticLog) {
+            Write-Host "Diagnostic: $diagnosticLog" -ForegroundColor Magenta
+            Get-Content -LiteralPath $diagnosticLog | Where-Object { $_ -notmatch 'Deleting (file|directory):' } | Select-Object -Last 60 | ForEach-Object { Write-Host "  $_" -ForegroundColor Magenta }
+        }
+    }
+
+    # Test: the helper really ran to completion
+    $helperText = if (Test-Path -LiteralPath $helperLog) { Get-Content -LiteralPath $helperLog -Raw } else { "" }
+    $innoText = if (Test-Path -LiteralPath $uninstallLog) { Get-Content -LiteralPath $uninstallLog -Raw } else { "" }
+    $helperCompleted = ($helperText -match 'Completed\. Customer data preserved') -and ($innoText -match 'Uninstall helper exit code: 0')
+    Record-Test "Uninstall Helper Ran to Completion" $helperCompleted "uninstall.log exists: $(Test-Path -LiteralPath $helperLog); exit code 0 logged: $($innoText -match 'Uninstall helper exit code: 0')." "H1"
+
+    # Test: no deletion errors remain in the Inno log
+    $deleteFailures = @($innoText -split "`r?`n" | Where-Object { $_ -match 'Failed to delete' })
+    Record-Test "Uninstaller Log Has No Delete Failures" ($deleteFailures.Count -eq 0) "Delete failures logged: $($deleteFailures.Count). $($deleteFailures | Select-Object -First 3)" "H2"
+
+    # Test: tasks removed (H1)
+    $tasksRemaining = @(Get-ScheduledTask -TaskName 'WhatsAppERPOperations*' -ErrorAction SilentlyContinue)
+    $taskNames = ($tasksRemaining | ForEach-Object { $_.TaskName }) -join ', '
+    Record-Test "Uninstaller Removes Scheduled Tasks via uninstall.ps1" ($tasksRemaining.Count -eq 0) "Remaining tasks: [$taskNames]." "H1"
+
+    # Test: nothing still runs or listens
+    $noProcesses = Wait-ServiceDown 15
+    $leftover = (Get-OwnedProcess $InstallPath | ForEach-Object { $_.Name }) -join ', '
+    Record-Test "No Process or Port 3211 Listener Survives Uninstall" $noProcesses "Remaining: [$leftover]." "H2"
+
+    # Test: binaries removed (H2)
+    $rootDeadline = (Get-Date).AddSeconds(20)
+    while ((Test-Path -LiteralPath $InstallPath) -and (Get-Date) -lt $rootDeadline) { Start-Sleep -Milliseconds 500 }
+    $rootRemaining = Test-Path -LiteralPath $InstallPath
+    Record-Test "Uninstaller Removes Application Binaries" (-not $rootRemaining) "$InstallPath still exists: $rootRemaining." "H2"
+
+    # Test: customer data is byte-for-byte what it was
+    $secretHashAfter = if (Test-Path -LiteralPath $secretKeyPath) { (Get-FileHash -LiteralPath $secretKeyPath -Algorithm SHA256).Hash } else { $null }
+    $sqliteKept = (Test-Path -LiteralPath $sqlitePath) -and ((Get-Item -LiteralPath $sqlitePath).Length -gt 0)
+    $sessionKept = Test-Path -LiteralPath $sessionMarker
+    $backupsKept = Test-Path -LiteralPath (Join-Path $StatePath 'backups')
+    $dataPreserved = $secretHashBefore -and ($secretHashAfter -eq $secretHashBefore) -and $sqliteKept -and $sessionKept -and $backupsKept
+    Record-Test "Uninstaller Preserves Customer Data" $dataPreserved "secret.key unchanged: $($secretHashAfter -eq $secretHashBefore); app.sqlite kept: $sqliteKept; WhatsApp session kept: $sessionKept; backups kept: $backupsKept." "H2"
+
+    # Test: reinstall adopts the preserved data (C4)
+    Write-Host "`n[Reinstall] Setup After Uninstall Must Adopt Preserved Data..." -ForegroundColor Cyan
+    $reinstallLog = "C:\WhatsAppERP-reinstall.log"
+    $pReinstall = Start-Process -FilePath $SetupExePath -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /LOG=`"$reinstallLog`"" -PassThru -Wait
+    $healthReinstall = Wait-BackendHealth 30
+    $reinstalledName = $null
+    try {
+        $reinstalledName = (Invoke-RestMethod -Uri "$ApiBase/api/company" -Headers $apiHeaders -WebSession $apiSession -TimeoutSec 20).name
+    } catch {
+        Write-Host "Company read after reinstall failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    $reinstallOk = ($pReinstall.ExitCode -eq 0) -and $healthReinstall.Success -and ($reinstalledName -eq $seedCompanyName)
+    Record-Test "Reinstall After Uninstall Keeps Customer Data" $reinstallOk "Exit code: $($pReinstall.ExitCode); healthy: $($healthReinstall.Success); company read back: '$reinstalledName'." "C4"
+
+    # Test: a second uninstall of the reinstalled product also comes out clean
+    $secondExitCode = Invoke-Uninstaller "C:\WhatsAppERP-uninstall-second.log"
+    $secondClean = ($secondExitCode -eq 0) -and (Wait-ServiceDown 15) -and (-not (Get-ScheduledTask -TaskName 'WhatsAppERPOperations*' -ErrorAction SilentlyContinue)) -and (-not (Test-Path -LiteralPath (Join-Path $InstallPath 'releases')))
+    Record-Test "Second Uninstall After Reinstall Is Clean" $secondClean "Exit code: $secondExitCode." "H2"
+}
+catch {
+    # A crash in the suite must never read as a pass or skip the summary
+    Record-Test "Integration Suite Ran to Completion" $false "Suite aborted: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)." "SUITE"
 }
 finally {
     # Preserve test logs for diagnostic artifact upload before environment cleanup
@@ -529,31 +650,14 @@ $testSummary = [pscustomobject]@{
 }
 $testSummary | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $summaryDir "test-summary.json") -Encoding utf8
 
-if ($Strict -and $failCount -gt 0) {
-    Write-Host "`n[ERROR] Strict Mode (Release Gate): $failCount test(s) failed. Customer release cannot be published with known defects!" -ForegroundColor Red
+# Any failed test fails the job. There is no allow-list and no separate mode for tags.
+if ($failCount -gt 0) {
+    Write-Host "`n[ERROR] $failCount integration test(s) failed:" -ForegroundColor Red
     foreach ($r in ($testResults | Where-Object { $_.Status -eq 'FAIL' })) {
         Write-Host "  -> [$($r.Finding)] $($r.Test): $($r.Details)" -ForegroundColor Red
     }
     exit 1
 }
 
-$phase5TargetFindings = @('C2', 'C3', 'C4', 'H1', 'H2', 'H3', 'H4', 'H5', 'H7', 'L19', 'M1', 'M2', 'M3', 'M5', 'M6', 'M7', 'L1', 'L3', 'L6', 'L8', 'L9', 'L11', 'L13', 'L18')
-$phase5TargetFailures = $testResults | Where-Object { $_.Status -eq 'FAIL' -and $_.Finding -in $phase5TargetFindings }
-
-if ($phase5TargetFailures) {
-    Write-Host "`n[ERROR] Targeted findings failed:" -ForegroundColor Red
-    foreach ($f in $phase5TargetFailures) {
-        Write-Host "  -> $($f.Finding): $($f.Test) - $($f.Details)" -ForegroundColor Red
-    }
-    exit 1
-} else {
-    Write-Host "`nAll Phase 1, Phase 2, Phase 3, Phase 4 & Phase 5 targeted tests PASSED!" -ForegroundColor Green
-    $remaining = $testResults | Where-Object { $_.Status -eq 'FAIL' }
-    if ($remaining) {
-        Write-Host "Remaining failures:" -ForegroundColor Yellow
-        foreach ($r in $remaining) {
-            Write-Host "  -> [$($r.Finding)] $($r.Test)" -ForegroundColor Yellow
-        }
-    }
-    exit 0
-}
+Write-Host "`nAll $totalCount integration tests PASSED." -ForegroundColor Green
+exit 0
