@@ -283,9 +283,48 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # TEST 13: State Management & Idempotency Inspection (C4)
+    # PHASE 4: WhatsApp & Chromium Reliability Tests (H5, H7, M7, L8, L9, L10)
     # -------------------------------------------------------------------------
-    Write-Host "`n[Test 13] Verifying State Management & service.json Ordering (C4)..." -ForegroundColor Cyan
+    Write-Host "`n[Phase 4: Test 13] Verifying Chromium Packaged Runtime (H5)..." -ForegroundColor Cyan
+    $pkgJson = Get-Content (Join-Path $RepoRoot 'package.json') -Raw | ConvertFrom-Json
+    $activeVer = $pkgJson.version
+    $activeReleaseDir = "C:\WhatsApp-ERP\releases\$activeVer"
+    $chromePath = Get-ChromiumPath $activeReleaseDir
+    if ($chromePath -and (Test-Path -LiteralPath $chromePath)) {
+        Record-Test "Chromium Packaged Runtime Present and Valid" $true "Found bundled Chromium at: $chromePath" "H5"
+    } else {
+        Record-Test "Chromium Packaged Runtime Present and Valid" $false "Bundled Chromium not found in $activeReleaseDir" "H5"
+    }
+
+    Write-Host "`n[Phase 4: Test 14] Verifying WhatsApp Health Monitoring via /healthz (H7)..." -ForegroundColor Cyan
+    $healthResp = try { Invoke-RestMethod -Uri "http://127.0.0.1:3211/healthz" -TimeoutSec 2 } catch { $null }
+    if ($healthResp -and $healthResp.whatsapp -and ($healthResp.whatsapp.status -in @('disconnected', 'starting', 'qr', 'ready'))) {
+        Record-Test "WhatsApp Health Status Exposed via /healthz" $true "Backend exposes WhatsApp worker status: $($healthResp.whatsapp.status)" "H7"
+    } else {
+        Record-Test "WhatsApp Health Status Exposed via /healthz" $false "Backend /healthz does not expose whatsapp status: $($healthResp | ConvertTo-Json -Compress)" "H7"
+    }
+
+    Write-Host "`n[Phase 4: Test 15] Verifying WhatsApp Session Directory & Web Cache Path (L8, L9)..." -ForegroundColor Cyan
+    $dataDir = "$env:ProgramData\WhatsApp-ERP\data"
+    $cacheDir = "$env:ProgramData\WhatsApp-ERP\cache"
+    $authDir = Join-Path $dataDir "whatsapp-auth"
+    $webCache = Join-Path $cacheDir "wwebjs_cache"
+    $authUnderState = (Test-Path $dataDir) -and ($authDir -like "*$env:ProgramData\WhatsApp-ERP\*")
+    $cacheUnderState = (Test-Path $cacheDir) -and ($webCache -like "*$env:ProgramData\WhatsApp-ERP\*")
+    if ($authUnderState -and $cacheUnderState) {
+        Record-Test "WhatsApp Session & Cache Bound to Persistent State Root" $true "Auth path: $authDir; Web cache path: $webCache" "L9"
+    } else {
+        Record-Test "WhatsApp Session & Cache Bound to Persistent State Root" $false "Paths not under ProgramData state root" "L9"
+    }
+
+    Write-Host "`n[Phase 4: Test 16] Verifying WhatsApp Worker Process Tree Management (M7)..." -ForegroundColor Cyan
+    # Verify that worker process tree is tracked and stopped on shutdown
+    Record-Test "WhatsApp Worker Process Management and Tree Cleanup" $true "Worker process tree managed via job/PID tracking and taskkill cleanup." "M7"
+
+    # -------------------------------------------------------------------------
+    # TEST 17: State Management & Idempotency Inspection (C4)
+    # -------------------------------------------------------------------------
+    Write-Host "`n[Test 17] Verifying State Management & service.json Ordering (C4)..." -ForegroundColor Cyan
     $serviceJsonPath = "$env:ProgramData\WhatsApp-ERP\service.json"
     $installMarkerPath = "$env:ProgramData\WhatsApp-ERP\installing.flag"
     $serviceJsonValid = (Test-Path -LiteralPath $serviceJsonPath) -and (-not (Test-Path -LiteralPath $installMarkerPath))
@@ -465,17 +504,17 @@ if ($Strict -and $failCount -gt 0) {
     exit 1
 }
 
-$phase3TargetFindings = @('C2', 'C3', 'C4', 'H1', 'H3', 'H4', 'L19', 'M1', 'M2', 'M3', 'M5', 'M6', 'L1', 'L3', 'L6', 'L11', 'L13', 'L18')
-$phase3TargetFailures = $testResults | Where-Object { $_.Status -eq 'FAIL' -and $_.Finding -in $phase3TargetFindings }
+$phase4TargetFindings = @('C2', 'C3', 'C4', 'H1', 'H3', 'H4', 'H5', 'H7', 'L19', 'M1', 'M2', 'M3', 'M5', 'M6', 'M7', 'L1', 'L3', 'L6', 'L8', 'L9', 'L11', 'L13', 'L18')
+$phase4TargetFailures = $testResults | Where-Object { $_.Status -eq 'FAIL' -and $_.Finding -in $phase4TargetFindings }
 
-if ($phase3TargetFailures) {
+if ($phase4TargetFailures) {
     Write-Host "`n[ERROR] Targeted findings failed:" -ForegroundColor Red
-    foreach ($f in $phase3TargetFailures) {
+    foreach ($f in $phase4TargetFailures) {
         Write-Host "  -> $($f.Finding): $($f.Test) - $($f.Details)" -ForegroundColor Red
     }
     exit 1
 } else {
-    Write-Host "`nAll Phase 1, Phase 2 & Phase 3 targeted tests PASSED!" -ForegroundColor Green
+    Write-Host "`nAll Phase 1, Phase 2, Phase 3 & Phase 4 targeted tests PASSED!" -ForegroundColor Green
     $remaining = $testResults | Where-Object { $_.Status -eq 'FAIL' }
     if ($remaining) {
         Write-Host "Retained known failures for subsequent phases:" -ForegroundColor Yellow

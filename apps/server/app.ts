@@ -173,7 +173,17 @@ export async function createApp(options: {
     );
   }
   const version = JSON.parse(readFileSync(resolve(options.root,"package.json"),"utf8")).version;
-  app.get("/healthz", async () => ({ok:true, schemaVersion:2, version}));
+  app.get("/healthz", async () => ({
+    ok: true,
+    schemaVersion: 2,
+    version,
+    whatsapp: {
+      status: wa.state.status,
+      companyId: wa.state.companyId,
+      error: wa.state.error ?? null,
+      workerPid: wa.state.workerPid ?? null,
+    },
+  }));
   const syncTimer = setInterval(() => {
     const sources = db.prepare("SELECT company_id FROM sources WHERE kind='sql'").all() as Array<{company_id:string}>;
     for (const source of sources) void sync.run(source.company_id).catch(() => {});

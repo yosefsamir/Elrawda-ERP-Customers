@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from "node:child_process";
+import { fork, execSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
@@ -24,10 +24,15 @@ export class WhatsAppBridge {
     phone?: string;
     pushname?: string;
     platform?: string;
+    workerPid?: number;
   } = { companyId: null, status: "disconnected" };
 
   constructor(private dataDir: string) {
     this.startWatchdog();
+  }
+
+  getWorkerPid(): number | undefined {
+    return this.child?.pid;
   }
 
   autoConnect(companyId: string) {
@@ -74,8 +79,12 @@ export class WhatsAppBridge {
           stdio: ["ignore", "inherit", "inherit", "ipc"],
         },
       );
+      this.state.workerPid = this.child.pid;
+
       this.child.on("message", (message: any) => {
-        if (message.type === "state") this.state = message.state;
+        if (message.type === "state") {
+          this.state = { ...message.state, workerPid: this.child?.pid };
+        }
         if (message.id) {
           const item = this.pending.get(message.id);
           if (item) {
@@ -90,18 +99,37 @@ export class WhatsAppBridge {
       this.child.on("error", (error) => {
         this.state = { ...this.state, status: "error", error: error.message };
       });
-      this.child.on("exit", () => {
+      this.child.on("exit", (code) => {
+        const exitedPid = this.child?.pid;
         this.child = undefined;
         this.state = {
           companyId: null,
           status: "disconnected",
-          error: "توقف عامل واتساب؛ أعد الربط من الشاشة.",
+          error: "توقف عامل واتساب؛ جارٍ استعادة الاتصال تلقائيًا...",
+          workerPid: undefined,
         };
         for (const item of this.pending.values()) {
           clearTimeout(item.timer);
           item.reject(new Error("عامل واتساب غير متاح"));
         }
         this.pending.clear();
+
+        // Process cleanup for orphaned Chromium / child processes on Windows (M7)
+        if (process.platform === "win32" && exitedPid) {
+          try { execSync(`taskkill /PID ${exitedPid} /T /F`, { stdio: "ignore" }); } catch {}
+        }
+
+        // Automatic immediate recovery if session was active (H7)
+        if (this.targetCompanyId && !this.stopping) {
+          console.log(`[WhatsApp Bridge] Worker exited with code ${code}. Auto-recovering session for company ${this.targetCompanyId}...`);
+          setTimeout(() => {
+            if (this.targetCompanyId && !this.stopping && !this.child) {
+              this.call(this.targetCompanyId, "connect").catch((err) => {
+                console.error("[WhatsApp Bridge] Auto-recovery connect failed:", err.message);
+              });
+            }
+          }, 2000).unref();
+        }
       });
     }
     if (this.state.companyId && this.state.companyId !== companyId)
@@ -132,11 +160,32 @@ export class WhatsAppBridge {
     const child = this.child;
     if (!child) return;
     await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => { child.kill("SIGKILL"); }, 35000);
+      const timeout = setTimeout(() => {
+        if (process.platform === "win32" && child.pid) {
+          try { execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: "ignore" }); } catch {}
+        } else {
+          child.kill("SIGKILL");
+        }
+      }, 5000);
       child.once("exit", () => { clearTimeout(timeout); resolve(); });
-      // IPC is graceful on Windows too; SIGTERM there would terminate immediately.
-      if (child.connected) child.send({action:"shutdown"}, error => { if (error) child.kill(); });
-      else child.kill();
+      // Graceful shutdown via IPC
+      if (child.connected) {
+        child.send({ action: "shutdown" }, (error) => {
+          if (error) {
+            if (process.platform === "win32" && child.pid) {
+              try { execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: "ignore" }); } catch {}
+            } else {
+              child.kill();
+            }
+          }
+        });
+      } else {
+        if (process.platform === "win32" && child.pid) {
+          try { execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: "ignore" }); } catch {}
+        } else {
+          child.kill();
+        }
+      }
     });
   }
 }
