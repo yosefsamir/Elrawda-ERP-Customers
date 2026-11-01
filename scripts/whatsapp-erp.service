@@ -9,6 +9,7 @@ ExecStart=/usr/bin/npx tsx apps/server/index.ts
 Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
+Environment=CHROME_NO_SANDBOX=true
 Environment=PORT=3211
 
 [Install]

@@ -3,7 +3,7 @@ param([Parameter(Mandatory=$true)][string]$BackupPath,[string]$StateRoot="$env:P
 Assert-Administrator
 $config=Read-ServiceConfig $StateRoot
 Invoke-Admin $config @('verify-backup','--input',$BackupPath)
-$flag=Join-Path $StateRoot 'maintenance.flag'
+$flag=Join-Path $StateRoot 'data\maintenance.flag'
 if(Test-Path $flag){throw 'Maintenance is already active. Inspect it before restoring.'}
 [IO.File]::WriteAllText($flag,'restore')
 Invoke-Admin $config @('stop')

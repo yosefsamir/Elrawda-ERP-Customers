@@ -32,9 +32,14 @@ try {
     throw
 }
 
+# Machines installed before the low-privilege identity get their permissions corrected here
+Set-InstallRootAcl $InstallRoot
+Set-StateAcl $StateRoot $config.TaskName
+Assert-ServiceBrowser $target $StateRoot
+
 $oldRelease = $config.ReleasePath
 $targetNode = Get-NodePath $target
-$flag = Join-Path $StateRoot 'maintenance.flag'
+$flag = Join-Path $StateRoot 'data\maintenance.flag'
 if (Test-Path $flag) {
     $existing = $null
     try {

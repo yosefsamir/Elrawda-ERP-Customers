@@ -7,7 +7,7 @@ if (-not $config.PreviousRelease -or -not (Test-Path $config.PreviousRelease)) {
     throw 'No previous release recorded.'
 }
 
-$flag = Join-Path $StateRoot 'maintenance.flag'
+$flag = Join-Path $StateRoot 'data\maintenance.flag'
 [IO.File]::WriteAllText($flag, 'rollback')
 
 try {

@@ -74,8 +74,8 @@ Invoke-UninstallStep 'Remove application binaries' {
 # not an upgrade of a release that no longer exists. Everything listed here is regenerated.
 Invoke-UninstallStep 'Remove service registration from state folder' {
     $generated = @(
-        'service.json', 'launcher.ps1', 'scheduled-backup.ps1', 'maintenance.flag', 'installing.flag',
-        'data\runtime.lock', 'data\shutdown.json'
+        'service.json', 'launcher.ps1', 'scheduled-backup.ps1', 'installing.flag',
+        'data\maintenance.flag', 'data\runtime.lock', 'data\shutdown.json'
     )
     foreach ($name in $generated) {
         $path = Join-Path $StateRoot $name

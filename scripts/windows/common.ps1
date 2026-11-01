@@ -84,15 +84,15 @@ function Set-ServiceEnvironment($Config) {
         }
     }
 
-    # Redirect user profile and temp paths away from systemprofile when running under SYSTEM
+    # Keep profile and temp paths inside the state folder when running as a service account
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    if ($identity.User -and $identity.User.Value -eq 'S-1-5-18') {
+    if ($identity.User -and $identity.User.Value -in @('S-1-5-18', 'S-1-5-19')) {
         $stateRoot = if ($dataDir) { Split-Path -Parent $dataDir } else { "$env:ProgramData\WhatsApp-ERP" }
         $cDir = if ($cacheDir) { $cacheDir } else { Join-Path $stateRoot 'cache' }
         $tDir = Join-Path $stateRoot 'temp'
         New-Item -ItemType Directory -Path $cDir -Force -ErrorAction SilentlyContinue | Out-Null
         New-Item -ItemType Directory -Path $tDir -Force -ErrorAction SilentlyContinue | Out-Null
-        $env:USERPROFILE = $stateRoot
+        $env:USERPROFILE = $cDir
         $env:LOCALAPPDATA = $cDir
         $env:APPDATA = $cDir
         $env:TEMP = $tDir
@@ -123,6 +123,51 @@ function Move-ItemWithRetry($Source, $Destination, [int]$MaxAttempts = 5) {
             Start-Sleep -Seconds 1
         }
     }
+}
+
+# Windows derives a task's SID from the upper-cased name, so ACLs can be set before the task runs
+function Get-TaskSid([string]$TaskName) {
+    $sha1 = [System.Security.Cryptography.SHA1]::Create()
+    try {
+        $hash = $sha1.ComputeHash([Text.Encoding]::Unicode.GetBytes($TaskName.ToUpperInvariant()))
+    } finally {
+        $sha1.Dispose()
+    }
+    $parts = 0..4 | ForEach-Object { [BitConverter]::ToUInt32($hash, $_ * 4) }
+    return 'S-1-5-87-' + ($parts -join '-')
+}
+
+function Invoke-Icacls([string[]]$IcaclsArgs) {
+    & icacls.exe @IcaclsArgs | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on $($IcaclsArgs[0]) with exit code $LASTEXITCODE" }
+}
+
+# New folders under C:\ give Authenticated Users Modify. Code here runs as a service and as
+# SYSTEM during backups, so only SYSTEM and Administrators may change it.
+function Set-InstallRootAcl([string]$InstallRoot) {
+    New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
+    Invoke-Icacls @($InstallRoot, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-32-545:(OI)(CI)RX')
+}
+
+# The service reads its configuration and writes only data, cache, temp and logs. Other
+# LOCAL SERVICE processes get nothing because access is granted to the task SID alone.
+function Set-StateAcl([string]$StateRoot, [string]$TaskName) {
+    foreach ($name in @('data', 'cache', 'temp', 'backups', 'logs')) {
+        New-Item -ItemType Directory -Path (Join-Path $StateRoot $name) -Force | Out-Null
+    }
+    $sid = Get-TaskSid $TaskName
+    Invoke-Icacls @($StateRoot, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', "*${sid}:(OI)(CI)RX")
+    foreach ($name in @('data', 'cache', 'temp', 'logs')) {
+        Invoke-Icacls @((Join-Path $StateRoot $name), '/grant:r', "*${sid}:(OI)(CI)M")
+    }
+    # Logs hold no secrets, and customers must be able to open them without changing folder permissions
+    Invoke-Icacls @((Join-Path $StateRoot 'logs'), '/grant:r', '*S-1-5-32-545:(OI)(CI)RX')
+}
+
+# LOCAL SERVICE, plus a task SID that scopes file access to this task, without the
+# SeImpersonate privilege that lets a compromised service climb to SYSTEM
+function New-ServicePrincipal {
+    return New-ScheduledTaskPrincipal -UserId 'S-1-5-19' -LogonType ServiceAccount -ProcessTokenSidType Unrestricted -RequiredPrivilege @('SeChangeNotifyPrivilege', 'SeIncreaseWorkingSetPrivilege')
 }
 
 function Get-InstallRoot($Config) {
@@ -210,14 +255,15 @@ function Register-ApplicationTasks($Config, $StateRoot) {
     $launcherScript = Join-Path $StateRoot 'launcher.ps1'
     $backupScript = Join-Path $StateRoot 'scheduled-backup.ps1'
 
-    # Register automatic startup Scheduled Task running under LocalSystem SID (S-1-5-18)
+    # Register automatic startup Scheduled Task under the low-privilege service identity
     $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$launcherScript`" -StateRoot `"$StateRoot`"" -WorkingDirectory $StateRoot
     $trigger = New-ScheduledTaskTrigger -AtStartup
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-    $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount
-    Register-ScheduledTask -TaskName $Config.TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 4
+    Register-ScheduledTask -TaskName $Config.TaskName -Action $action -Trigger $trigger -Settings $settings -Principal (New-ServicePrincipal) -Force | Out-Null
 
-    # Register daily backup task (03:00) with StartWhenAvailable to ensure missed backups run after boot
+    # Register daily backup task (03:00) with StartWhenAvailable to ensure missed backups run after boot.
+    # It stays SYSTEM because it writes backups the service must not be able to change.
+    $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount
     $backupAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$backupScript`" -StateRoot `"$StateRoot`""
     $backupTrigger = New-ScheduledTaskTrigger -Daily -At '03:00'
     $backupSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 2)
@@ -287,6 +333,53 @@ function Assert-ReleaseReady($ReleasePath) {
     } finally {
         $env:WHATSAPP_CHROME_PATH = $oldEnvChrome
         $env:NODE_PATH = $oldEnvNodePath
+    }
+}
+
+# Launches the packaged browser under the real service identity, so a Chromium that only works
+# for the installing administrator fails the install instead of the customer's first QR scan.
+function Assert-ServiceBrowser($ReleasePath, $StateRoot) {
+    $taskName = 'WhatsAppERPPreflight'
+    $workDir = Join-Path $StateRoot 'temp\preflight'
+    if (Test-Path -LiteralPath $workDir) { Remove-Item -LiteralPath $workDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $workDir -Force | Out-Null
+    Invoke-Icacls @($workDir, '/grant:r', "*$(Get-TaskSid $taskName):(OI)(CI)M")
+
+    $resultFile = Join-Path $workDir 'result.json'
+    $errorFile = Join-Path $workDir 'error.txt'
+    $runner = Join-Path $workDir 'run.cmd'
+    $node = Get-NodePath $ReleasePath
+    $preflight = Join-Path $ReleasePath 'dist\runtime\scripts\maintenance\preflight.js'
+    Set-Content -LiteralPath $runner -Encoding ASCII -Value @(
+        '@echo off'
+        "set TEMP=$workDir"
+        "set TMP=$workDir"
+        "set WHATSAPP_CHROME_PATH=$(Get-ChromiumPath $ReleasePath)"
+        "set EMOJI_APP_ROOT=$ReleasePath"
+        "`"$node`" `"$preflight`" > `"$resultFile`" 2> `"$errorFile`""
+    )
+
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument "/c `"$runner`"" -WorkingDirectory $workDir
+    Register-ScheduledTask -TaskName $taskName -Action $action -Principal (New-ServicePrincipal) -Force | Out-Null
+    try {
+        Start-ScheduledTask -TaskName $taskName
+        $deadline = (Get-Date).AddSeconds(120)
+        $output = ''
+        do {
+            Start-Sleep -Seconds 2
+            $finished = (Get-ScheduledTask -TaskName $taskName).State -ne 'Running'
+            if (Test-Path -LiteralPath $resultFile) { $output = [string](Get-Content -LiteralPath $resultFile -Raw) }
+        } while (-not $finished -and (Get-Date) -lt $deadline)
+
+        if ($output -notmatch '"ok":true') {
+            $details = if (Test-Path -LiteralPath $errorFile) { [string](Get-Content -LiteralPath $errorFile -Raw) } else { '' }
+            throw "Chromium could not start under the service identity. $details"
+        }
+        Write-Host "Service identity browser check passed: $($output.Trim())" -ForegroundColor Green
+    } finally {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

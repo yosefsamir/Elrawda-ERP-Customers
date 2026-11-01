@@ -22,6 +22,9 @@ try {
     $targetNode = Join-Path $target 'runtime\node.exe'
     $serviceJsonPath = Join-Path $StateRoot 'service.json'
 
+    # Lock the install root before any code is copied into it or run from it (H7)
+    Set-InstallRootAcl $InstallRoot
+
     # Check for existing committed service.json
     if (Test-Path -LiteralPath $serviceJsonPath) {
         $existingConfig = Read-ServiceConfig $StateRoot
@@ -51,6 +54,9 @@ try {
         } finally {
             if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
         }
+
+        Set-StateAcl $StateRoot $existingConfig.TaskName
+        Assert-ServiceBrowser $target $StateRoot
 
         # Refresh launcher and backup scripts
         Copy-Item (Join-Path $target 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
@@ -97,16 +103,8 @@ try {
     }
 
     # 5. Create persistent state directory structure (preserve existing customer data if reinstalling)
-    New-Item -ItemType Directory -Path (Join-Path $StateRoot 'data') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $StateRoot 'cache') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $StateRoot 'temp') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $StateRoot 'backups') -Force | Out-Null
-
-    # Apply secure ACLs: SYSTEM and Administrators only
-    & icacls.exe $StateRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Could not apply secure access control lists to the application state directory.'
-    }
+    Set-StateAcl $StateRoot 'WhatsAppERPOperations'
+    Assert-ServiceBrowser $target $StateRoot
 
     $config = [pscustomobject]@{
         ReleasePath = $target

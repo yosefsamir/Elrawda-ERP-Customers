@@ -308,7 +308,7 @@ try {
     $downBeforeFlag = Wait-ServiceDown 20
 
     # Write simulated stale maintenance flag with dead PID
-    $flagFile = "$env:ProgramData\WhatsApp-ERP\maintenance.flag"
+    $flagFile = "$env:ProgramData\WhatsApp-ERP\data\maintenance.flag"
     $staleFlag = [pscustomobject]@{
         reason = 'update'
         pid = 999999 # Non-existent dead PID
@@ -384,13 +384,16 @@ try {
     $liveChrome = @(Get-OwnedChrome)
     $chromeOwner = 'none'
     if ($liveChrome.Count -gt 0) {
-        $ownerInfo = Invoke-CimMethod -InputObject $liveChrome[0] -MethodName GetOwner
-        $chromeOwner = "$($ownerInfo.Domain)\$($ownerInfo.User)"
+        $chromeOwner = (Get-Process -Id $liveChrome[0].ProcessId -IncludeUserName -ErrorAction SilentlyContinue).UserName
     }
+    $renderers = @($liveChrome | Where-Object { $_.CommandLine -match '--type=renderer' })
+    $unsandboxed = @($liveChrome | Where-Object { $_.CommandLine -match '--no-sandbox' })
     $waStatus = if ($waHealth) { $waHealth.status } else { 'unreachable' }
     $waError = if ($waHealth) { $waHealth.error } else { $null }
     $chromeStarted = (-not $sessionError) -and ($liveChrome.Count -gt 0) -and ($waStatus -notin @('error', 'unreachable'))
     Record-Test "Chromium Launches in the Service Account (H5)" $chromeStarted "API error: $sessionError; chrome.exe processes: $($liveChrome.Count); owner: $chromeOwner; WhatsApp status: $waStatus; error: $waError. A real QR scan is NOT exercised here." "H5"
+    $lowPrivilege = ($chromeOwner -eq 'NT AUTHORITY\LOCAL SERVICE') -and ($renderers.Count -gt 0) -and ($unsandboxed.Count -eq 0)
+    Record-Test "Chromium Runs Sandboxed as LOCAL SERVICE (H6)" $lowPrivilege "Owner: $chromeOwner; renderers: $($renderers.Count); processes with --no-sandbox: $($unsandboxed.Count)." "H6"
 
     Write-Host "`n[Phase 4: Test 16b] Killing the WhatsApp Worker Must Not Orphan Chromium (M7)..." -ForegroundColor Cyan
     $chromeBefore = @($liveChrome | ForEach-Object { $_.ProcessId })
@@ -419,6 +422,73 @@ try {
     $newWorkerPid = if ($recoveredHealth) { $recoveredHealth.workerPid } else { $null }
     $workerRecovered = $newWorkerPid -and ($newWorkerPid -ne $workerPid) -and (@(Get-OwnedChrome).Count -gt 0)
     Record-Test "WhatsApp Worker Recovers With a New Browser (M7)" $workerRecovered "New worker PID: $newWorkerPid; chrome.exe processes: $(@(Get-OwnedChrome).Count)." "M7"
+
+    # -------------------------------------------------------------------------
+    # Phase 6: Service Identity and Access Boundaries (H6, H7)
+    # -------------------------------------------------------------------------
+    Write-Host "`n[Phase 6] Verifying Service Identity and Access Boundaries..." -ForegroundColor Cyan
+    $serviceTask = Get-ScheduledTask -TaskName 'WhatsAppERPOperations'
+    $serverOwner = (Get-Process -Id (Get-ServerPid) -IncludeUserName -ErrorAction SilentlyContinue).UserName
+    $identityOk = ($serviceTask.Principal.ProcessTokenSidType -eq 'Unrestricted') -and ($serverOwner -eq 'NT AUTHORITY\LOCAL SERVICE')
+    Record-Test "Server Runs as LOCAL SERVICE With a Task SID (H6)" $identityOk "Server owner: $serverOwner; SID type: $($serviceTask.Principal.ProcessTokenSidType); required privileges: $($serviceTask.Principal.RequiredPrivilege -join ', ')." "H6"
+
+    $rootAcl = (Get-Acl -LiteralPath $InstallPath).Access
+    $unsafeAces = @($rootAcl | Where-Object {
+        ($_.IdentityReference -notmatch 'SYSTEM|Administrators') -and
+        ($_.FileSystemRights.ToString() -match 'Modify|FullControl|Write')
+    })
+    Record-Test "Install Folder Is Not Writable by Non-Admins (H7)" ($unsafeAces.Count -eq 0) "Writable non-admin entries: $(($unsafeAces | ForEach-Object { $_.IdentityReference }) -join ', ')." "H7"
+
+    # A separate LOCAL SERVICE process stands in for any other service or standard user on the machine
+    $boundaryDir = 'C:\WhatsAppERP-boundary'
+    New-Item -ItemType Directory -Path $boundaryDir -Force | Out-Null
+    & icacls.exe $boundaryDir /grant '*S-1-5-19:(OI)(CI)M' /Q | Out-Null
+    $boundaryNode = Join-Path $boundaryDir 'node.exe'
+    Copy-Item -LiteralPath "$activeReleaseDir\runtime\node.exe" -Destination $boundaryNode
+    $boundaryScript = Join-Path $boundaryDir 'boundary.mjs'
+    @"
+import { readFileSync, writeFileSync } from 'node:fs';
+const checks = {
+  readSecretKey: () => readFileSync(String.raw``$StatePath\data\secret.key``),
+  readDatabase: () => readFileSync(String.raw``$StatePath\data\app.sqlite``),
+  writeServiceConfig: () => writeFileSync(String.raw``$StatePath\service.json``, 'x', { flag: 'a' }),
+  writeLauncher: () => writeFileSync(String.raw``$StatePath\launcher.ps1``, '', { flag: 'a' }),
+  writeInstallRoot: () => writeFileSync(String.raw``$InstallPath\boundary-test.txt``, 'x'),
+  writeServerCode: () => writeFileSync(String.raw``$activeReleaseDir\dist\runtime\apps\server\index.js``, '', { flag: 'a' }),
+};
+const result = {};
+for (const [name, check] of Object.entries(checks)) {
+  try { check(); result[name] = 'ALLOWED'; } catch (error) { result[name] = error.code; }
+}
+writeFileSync(String.raw``$boundaryDir\result.json``, JSON.stringify(result));
+"@ | Set-Content -LiteralPath $boundaryScript -Encoding ASCII
+    $boundaryAction = New-ScheduledTaskAction -Execute $boundaryNode -Argument "`"$boundaryScript`"" -WorkingDirectory $boundaryDir
+    Register-ScheduledTask -TaskName 'WhatsAppERPBoundaryTest' -Action $boundaryAction -Principal (New-ScheduledTaskPrincipal -UserId 'S-1-5-19' -LogonType ServiceAccount) -Force | Out-Null
+    Start-ScheduledTask -TaskName 'WhatsAppERPBoundaryTest'
+    $boundaryResult = Join-Path $boundaryDir 'result.json'
+    $boundaryDeadline = (Get-Date).AddSeconds(20)
+    while (-not (Test-Path -LiteralPath $boundaryResult) -and (Get-Date) -lt $boundaryDeadline) { Start-Sleep -Milliseconds 500 }
+    $boundaryText = if (Test-Path -LiteralPath $boundaryResult) { Get-Content -LiteralPath $boundaryResult -Raw } else { '' }
+    Unregister-ScheduledTask -TaskName 'WhatsAppERPBoundaryTest' -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $boundaryDir -Recurse -Force -ErrorAction SilentlyContinue
+    $boundaryHeld = ($boundaryText -match 'readSecretKey') -and ($boundaryText -notmatch 'ALLOWED')
+    Record-Test "Other Services Cannot Read Secrets or Change Code (H6, H7)" $boundaryHeld "Result from another LOCAL SERVICE process: $boundaryText" "H7"
+
+    # The SYSTEM backup task must still read data the low-privilege service now owns
+    $backupsDir = Join-Path $StatePath 'backups'
+    $backupsBefore = @(Get-ChildItem -LiteralPath $backupsDir -Directory -Filter 'manual-*' -ErrorAction SilentlyContinue).Count
+    Start-ScheduledTask -TaskName 'WhatsAppERPOperationsBackup'
+    $backupDeadline = (Get-Date).AddSeconds(60)
+    $newBackup = $null
+    while ((Get-Date) -lt $backupDeadline) {
+        $found = @(Get-ChildItem -LiteralPath $backupsDir -Directory -Filter 'manual-*' -ErrorAction SilentlyContinue)
+        if ($found.Count -gt $backupsBefore) {
+            $candidate = $found | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if (Test-Path -LiteralPath (Join-Path $candidate.FullName 'manifest.json')) { $newBackup = $candidate; break }
+        }
+        Start-Sleep -Seconds 1
+    }
+    Record-Test "Daily Backup Task Backs Up Live Service Data (M6)" ($null -ne $newBackup) "New backup: $(if ($newBackup) { $newBackup.Name } else { 'none' })." "M6"
 
     # -------------------------------------------------------------------------
     # TEST 17: State Management & Idempotency Inspection (C4)

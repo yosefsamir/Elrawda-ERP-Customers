@@ -1,6 +1,7 @@
 param([string]$StateRoot = "$env:ProgramData\WhatsApp-ERP")
 $ErrorActionPreference = 'Stop'
-$flag = Join-Path $StateRoot 'maintenance.flag'
+# In data because the service account clears stale flags and cannot write to StateRoot
+$flag = Join-Path $StateRoot 'data\maintenance.flag'
 $logs = Join-Path $StateRoot 'logs'
 New-Item -ItemType Directory -Path $logs -Force | Out-Null
 
@@ -72,7 +73,8 @@ while ($true) {
         $entry = Join-Path $config.ReleasePath 'dist\runtime\apps\server\index.js'
         $child = Start-Process -FilePath $nodePath -ArgumentList ('"{0}"' -f $entry) -WorkingDirectory $config.ReleasePath -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logs "$stamp.out.log") -RedirectStandardError (Join-Path $logs "$stamp.err.log")
         $child.WaitForExit()
-        Get-ChildItem $logs -File | Sort-Object LastWriteTime -Descending | Select-Object -Skip 60 | Remove-Item -Force -ErrorAction SilentlyContinue
+        # Rotate server output only: a crash loop must not erase install, uninstall or launcher logs (M8)
+        Get-ChildItem $logs -File -Include '*.out.log', '*.err.log' -Path (Join-Path $logs '*') | Sort-Object LastWriteTime -Descending | Select-Object -Skip 60 | Remove-Item -Force -ErrorAction SilentlyContinue
     } catch {
         Add-Content -LiteralPath (Join-Path $logs 'launcher.log') -Value "$(Get-Date -Format o) $($_.Exception.Message)"
     }

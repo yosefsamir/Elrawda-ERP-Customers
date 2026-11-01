@@ -88,7 +88,7 @@ try {
     executablePath: chromePath,
     headless: true,
     args: [
-      "--no-sandbox",
+      ...(process.env.CHROME_NO_SANDBOX === "true" ? ["--no-sandbox"] : []),
       "--disable-setuid-sandbox",
       "--disable-gpu",
       "--disable-dev-shm-usage",

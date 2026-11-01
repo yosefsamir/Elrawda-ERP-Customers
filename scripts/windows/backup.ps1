@@ -4,7 +4,7 @@ Assert-Administrator
 $config = Read-ServiceConfig $StateRoot
 $target = Join-Path $StateRoot ('backups\manual-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 if ($Offline) {
-    $flag=Join-Path $StateRoot 'maintenance.flag'
+    $flag=Join-Path $StateRoot 'data\maintenance.flag'
     if (Test-Path $flag) { throw 'Maintenance is already active.' }
     [IO.File]::WriteAllText($flag,'backup')
     Invoke-Admin $config @('stop')

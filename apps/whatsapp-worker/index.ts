@@ -162,7 +162,6 @@ async function handleMessage(message: any) {
       }
 
       const chromeExec = resolveChromeExecutable();
-      const enableSandbox = process.env.CHROME_SANDBOX === "true";
       const puppeteerArgs = [
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
@@ -170,12 +169,8 @@ async function handleMessage(message: any) {
         "--no-first-run",
         "--disable-gpu",
       ];
-      if (!enableSandbox) {
-        // Under Windows SYSTEM (Session 0) service account, Chromium cannot create a sandboxed token
-        // without WinLocalSystemSid privilege failure. Setting CHROME_SANDBOX=true enables sandbox
-        // when running under an interactive user or dedicated unprivileged account.
-        puppeteerArgs.unshift("--no-sandbox");
-      }
+      // Only for Linux hosts without user namespaces. Windows always runs with the sandbox on.
+      if (process.env.CHROME_NO_SANDBOX === "true") puppeteerArgs.unshift("--no-sandbox");
 
       client = new Client({
         authStrategy: new LocalAuth({
