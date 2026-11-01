@@ -19,3 +19,5 @@
 /release/*
 !/release/*.zip
 !/release/*.sha256
+/ci-artifacts/
+
