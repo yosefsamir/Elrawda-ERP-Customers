@@ -381,9 +381,14 @@ try {
         Start-Sleep -Seconds 2
     }
     $liveChrome = @(Get-OwnedChrome)
+    # Chrome locks its own process, so Windows returns no owner for it even to an administrator.
+    # The browser inherits its token from the worker that spawned it, and that owner is readable.
     $chromeOwner = 'none'
-    if ($liveChrome.Count -gt 0) {
-        $chromeOwner = (Get-Process -Id $liveChrome[0].ProcessId -IncludeUserName -ErrorAction SilentlyContinue).UserName
+    $browserProcess = @($liveChrome | Where-Object { $_.CommandLine -notmatch '--type=' }) | Select-Object -First 1
+    if ($browserProcess) {
+        $spawner = Get-Process -Id $browserProcess.ParentProcessId -IncludeUserName -ErrorAction SilentlyContinue
+        $spawnerIsNode = $spawner -and ($spawner.Path -like "$InstallPath\releases\*\runtime\node.exe")
+        if ($spawnerIsNode) { $chromeOwner = $spawner.UserName }
     }
     $renderers = @($liveChrome | Where-Object { $_.CommandLine -match '--type=renderer' })
     $unsandboxed = @($liveChrome | Where-Object { $_.CommandLine -match '--no-sandbox' })
@@ -392,7 +397,7 @@ try {
     $chromeStarted = (-not $sessionError) -and ($liveChrome.Count -gt 0) -and ($waStatus -notin @('error', 'unreachable'))
     Record-Test "Chromium Launches in the Service Account (H5)" $chromeStarted "API error: $sessionError; chrome.exe processes: $($liveChrome.Count); owner: $chromeOwner; WhatsApp status: $waStatus; error: $waError. A real QR scan is NOT exercised here." "H5"
     $lowPrivilege = ($chromeOwner -eq 'NT AUTHORITY\LOCAL SERVICE') -and ($renderers.Count -gt 0) -and ($unsandboxed.Count -eq 0)
-    Record-Test "Chromium Runs Sandboxed as LOCAL SERVICE (H6)" $lowPrivilege "Owner: $chromeOwner; renderers: $($renderers.Count); processes with --no-sandbox: $($unsandboxed.Count)." "H6"
+    Record-Test "Chromium Runs Sandboxed as LOCAL SERVICE (H6)" $lowPrivilege "Owner of the worker that spawned the browser: $chromeOwner; renderers: $($renderers.Count); processes with --no-sandbox: $($unsandboxed.Count)." "H6"
 
     Write-Host "`n[Phase 4: Test 16b] Killing the WhatsApp Worker Must Not Orphan Chromium (M7)..." -ForegroundColor Cyan
     $chromeBefore = @($liveChrome | ForEach-Object { $_.ProcessId })
