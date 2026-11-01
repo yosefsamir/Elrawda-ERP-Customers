@@ -43,8 +43,13 @@ New-Item -ItemType Directory -Path (Join-Path $stubDir 'runtime') -Force | Out-N
 try {
     # Provide minimal stub files so Inno Setup can resolve Source: "{#MyReleaseDir}\*"
     Set-Content -LiteralPath (Join-Path $stubDir 'package.json') -Value '{"version":"0.0.0-stub"}' -Encoding UTF8
-    Set-Content -LiteralPath (Join-Path $stubDir 'scripts\windows\install.ps1') -Value '# stub' -Encoding UTF8
-    Set-Content -LiteralPath (Join-Path $stubDir 'scripts\windows\uninstall.ps1') -Value '# stub' -Encoding UTF8
+    if (Test-Path (Join-Path $RepoRoot 'scripts\windows')) {
+        Copy-Item (Join-Path $RepoRoot 'scripts\windows\*') (Join-Path $stubDir 'scripts\windows') -Force
+    } else {
+        Set-Content -LiteralPath (Join-Path $stubDir 'scripts\windows\install.ps1') -Value '# stub' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $stubDir 'scripts\windows\uninstall.ps1') -Value '# stub' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $stubDir 'scripts\windows\common.ps1') -Value '# stub' -Encoding UTF8
+    }
     Set-Content -LiteralPath (Join-Path $stubDir 'runtime\node.exe') -Value 'stub' -Encoding UTF8
 
     $issFile = Join-Path $RepoRoot 'installer\WhatsAppERP.iss'
