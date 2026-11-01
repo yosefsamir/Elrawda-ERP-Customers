@@ -8,8 +8,14 @@ Verify-Release $packageRoot
 
 $version = (Get-Content (Join-Path $packageRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
 $target = Join-Path $InstallRoot "releases\$version"
-if (Test-Path $target) {
-    throw "Release destination already exists: $target. Use a new version or run rollback.ps1."
+if (Test-Path -LiteralPath $target) {
+    if ($config.ReleasePath -ne $target) {
+        Write-Host "Detected leftover release destination from previously aborted update ($target). Cleaning up for clean update retry..." -ForegroundColor Yellow
+        Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "Current active release is already $version."
+        return
+    }
 }
 
 # Stage new release and validate bundled runtime completely before touching live service
@@ -18,7 +24,7 @@ try {
     Write-Host "Staging release payload for version $version..." -ForegroundColor Cyan
     Copy-Release $packageRoot $stage
     Assert-ReleaseReady $stage
-    Move-Item -LiteralPath $stage -Destination $target
+    Move-ItemWithRetry $stage $target
 } catch {
     if (Test-Path $stage) {
         Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
@@ -54,7 +60,7 @@ $switched = $false
 
 try {
     Write-Host "Stopping current running service gracefully..." -ForegroundColor Cyan
-    Invoke-Admin $config @('stop')
+    Stop-ServiceProcessTree $config
     $stopped = $true
 
     Write-Host "Creating consistent offline pre-update backup..." -ForegroundColor Cyan
@@ -84,9 +90,28 @@ try {
     Copy-Item (Join-Path $target 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
     Copy-Item (Join-Path $target 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
 
+    # Idempotently re-register scheduled tasks with latest settings (M1)
+    Register-ApplicationTasks $config $StateRoot
+
     $switched = $true
     Remove-Item $flag -Force
+    Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
     Wait-Ready $config
+
+    # Prune older releases (keep active release and previous release only) (L13)
+    try {
+        $releasesDir = Join-Path $InstallRoot 'releases'
+        if (Test-Path -LiteralPath $releasesDir) {
+            $allReleases = Get-ChildItem -LiteralPath $releasesDir -Directory
+            foreach ($rel in $allReleases) {
+                if ($rel.FullName -ne $config.ReleasePath -and $rel.FullName -ne $config.PreviousRelease) {
+                    Write-Host "Pruning old release folder: $($rel.FullName)" -ForegroundColor Cyan
+                    Remove-Item -LiteralPath $rel.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    } catch {}
+
     Write-Host "Successfully updated to $version. Backup preserved at: $backup." -ForegroundColor Green
 } catch {
     $err = $_.Exception.Message
@@ -108,11 +133,17 @@ try {
 
         if ($canRollback) {
             Write-Warning "New release failed readiness checks. Database schema is compatible with previous release. Automatically rolling back to $oldRelease..."
+            # Stop failed new release server process tree before switching back (M2)
+            Stop-ServiceProcessTree $config
             $config.ReleasePath = $oldRelease
             $config.NodePath = $oldNode
             Write-JsonFile (Join-Path $StateRoot 'service.json') $config
             Copy-Item (Join-Path $oldRelease 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
+            Copy-Item (Join-Path $oldRelease 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
             Remove-Item $flag -Force
+            # Clean up the aborted release folder so future update retry works cleanly (C4)
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+            Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
             Wait-Ready $config
             throw "Update to $version failed during startup verification, but automatically rolled back to $oldRelease. Customer state preserved. Backup: $backup. Error: $err"
         } else {

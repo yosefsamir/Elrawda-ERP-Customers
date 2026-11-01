@@ -42,6 +42,7 @@ DisableReadyPage=no
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+MinVersion=10.0.14393
 OutputBaseFilename=WhatsAppERP-Setup-{#MyAppVersion}
 OutputDir=..\release
 Compression=lzma2/max
@@ -84,6 +85,7 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile
 var
   InstallSuccess: Boolean;
   IsUpgradeMode: Boolean;
+  IsRepairMode: Boolean;
   ExistingReleaseFound: Boolean;
   CustomExitCode: Integer;
 
@@ -105,6 +107,7 @@ begin
   Result := True;
   InstallSuccess := False;
   IsUpgradeMode := False;
+  IsRepairMode := False;
   ExistingReleaseFound := False;
 
   // Architecture check: 64-bit Windows required
@@ -121,27 +124,31 @@ begin
 
   // Check for existing installation and exact version conflict
   ServiceJsonPath := ExpandConstant('{commonappdata}\WhatsApp-ERP\service.json');
-  TargetReleaseDir := 'C:\WhatsApp-ERP\releases\' + '{#MyAppVersion}';
+  TargetReleaseDir := ExpandConstant('{app}\releases\{#MyAppVersion}');
 
   if FileExists(ServiceJsonPath) then
   begin
-    IsUpgradeMode := True;
     if DirExists(TargetReleaseDir) then
     begin
       ExistingReleaseFound := True;
+      IsRepairMode := True;
       if SuppressibleMsgBox(
         'WhatsApp-ERP version {#MyAppVersion} is already installed on this machine.' + #13#10#13#10 +
         'Location: ' + TargetReleaseDir + #13#10 +
         'State: ' + ExpandConstant('{commonappdata}\WhatsApp-ERP') + #13#10#13#10 +
         'The background service (WhatsAppERPOperations) is configured.' + #13#10 +
         'To open the web management interface, go to {#MyAppURL}.' + #13#10#13#10 +
-        'Do you want to re-run the deployment verification?',
+        'Do you want to repair or reinstall this version?',
         mbConfirmation, MB_YESNO, IDYES
       ) = IDNO then
       begin
         Result := False;
         Exit;
       end;
+    end
+    else
+    begin
+      IsUpgradeMode := True;
     end;
   end;
 end;
@@ -178,9 +185,11 @@ begin
     ShowMode := SW_HIDE;
 
   // Build process-scoped execution policy command
-  Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ScriptPath + '"';
+  Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ScriptPath + '" -InstallRoot "' + ExpandConstant('{app}') + '"';
   if IsUpgradeMode then
-    Params := Params + ' -Upgrade';
+    Params := Params + ' -Upgrade'
+  else if IsRepairMode then
+    Params := Params + ' -Repair';
 
   Log('Executing deployment: ' + PowerShellExe + ' ' + Params);
 

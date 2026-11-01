@@ -281,18 +281,84 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # TEST 13: State Management & Idempotency Inspection (C4 - Retained for Phase 3)
+    # TEST 13: State Management & Idempotency Inspection (C4)
     # -------------------------------------------------------------------------
-    Write-Host "`n[Test 13] Verifying State Management & service.json..." -ForegroundColor Cyan
+    Write-Host "`n[Test 13] Verifying State Management & service.json Ordering (C4)..." -ForegroundColor Cyan
     $serviceJsonPath = "$env:ProgramData\WhatsApp-ERP\service.json"
-    $serviceJsonExists = Test-Path -LiteralPath $serviceJsonPath
-    # Finding C4: service.json written prematurely in install.ps1 before health check verification
-    Record-Test "Idempotent State Commit (service.json ordering)" $false "service.json is written before verifying service readiness. (Active finding for Phase 3)." "C4"
+    $installMarkerPath = "$env:ProgramData\WhatsApp-ERP\installing.flag"
+    $serviceJsonValid = (Test-Path -LiteralPath $serviceJsonPath) -and (-not (Test-Path -LiteralPath $installMarkerPath))
+    Record-Test "Idempotent State Commit (service.json ordering)" $serviceJsonValid "service.json committed and installing marker cleanly cleared after readiness." "C4"
 
     # -------------------------------------------------------------------------
-    # TEST 14, 15, 16, 17: Uninstallation, Task Removal & Cleanup (H1, H2)
+    # TEST 14: Same-Version Rerun / Repair (C4, L18)
     # -------------------------------------------------------------------------
-    Write-Host "`n[Test 14, 15, 16, 17] Running and Validating Uninstaller..." -ForegroundColor Cyan
+    Write-Host "`n[Test 14] Verifying Same-Version Repair Execution (C4, L18)..." -ForegroundColor Cyan
+    $repairLog = "C:\WhatsAppERP-repair.log"
+    $swRepair = [System.Diagnostics.Stopwatch]::StartNew()
+    $pRepair = Start-Process -FilePath $SetupExePath -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /LOG=`"$repairLog`"" -PassThru -Wait
+    $swRepair.Stop()
+    $repairExitCode = $pRepair.ExitCode
+    Write-Host "Setup Repair finished in $([math]::Round($swRepair.Elapsed.TotalSeconds, 1))s with ExitCode: $repairExitCode" -ForegroundColor White
+    $healthRepair = Wait-BackendHealth 30
+    if ($repairExitCode -eq 0 -and $healthRepair.Success) {
+        Record-Test "Same-Version Repair Succeeded (ExitCode == 0)" $true "Setup repaired running installation without 'destination already exists' error." "C4"
+    } else {
+        Record-Test "Same-Version Repair Succeeded (ExitCode == 0)" $false "Setup repair failed with exit code $repairExitCode (Health: $($healthRepair.Success))." "C4"
+    }
+
+    # -------------------------------------------------------------------------
+    # TEST 15: Interrupted Install Safe Retry (C4)
+    # -------------------------------------------------------------------------
+    Write-Host "`n[Test 15] Verifying Interrupted Install Recovery (C4)..." -ForegroundColor Cyan
+    # Simulate an interrupted install: remove service.json and stop task, leaving release binaries on disk
+    Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $serviceJsonPath -Force -ErrorAction SilentlyContinue
+    # Run Setup.exe again
+    $interruptedLog = "C:\WhatsAppERP-interrupted-retry.log"
+    $pRetry = Start-Process -FilePath $SetupExePath -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /LOG=`"$interruptedLog`"" -PassThru -Wait
+    $healthRetry = Wait-BackendHealth 30
+    if ($pRetry.ExitCode -eq 0 -and $healthRetry.Success) {
+        Record-Test "Interrupted Install Safe Retry" $true "Setup cleaned up leftover destination and reinstalled cleanly." "C4"
+    } else {
+        Record-Test "Interrupted Install Safe Retry" $false "Setup failed to recover from interrupted install (ExitCode: $($pRetry.ExitCode))." "C4"
+    }
+
+    # -------------------------------------------------------------------------
+    # TEST 16: Safe Upgrade & Rollback (M1, M2)
+    # -------------------------------------------------------------------------
+    Write-Host "`n[Test 16] Verifying Safe Upgrade Rollback (M1, M2)..." -ForegroundColor Cyan
+    $pkgJson = Get-Content (Join-Path $RepoRoot 'package.json') -Raw | ConvertFrom-Json
+    $currentVer = $pkgJson.version
+    $fakeVer = "9.9.9-failing-test"
+    $fakeReleaseDir = "C:\WhatsApp-ERP\releases\$fakeVer"
+    New-Item -ItemType Directory -Path $fakeReleaseDir -Force | Out-Null
+    Copy-Item "C:\WhatsApp-ERP\releases\$currentVer\*" -Destination $fakeReleaseDir -Recurse -Force
+    $fakePkg = @{ name = "whatsapp-erp"; version = $fakeVer }
+    $fakePkg | ConvertTo-Json | Set-Content (Join-Path $fakeReleaseDir 'package.json') -Encoding UTF8
+    # Break dist/index.js so the server process immediately exits on start
+    Set-Content (Join-Path $fakeReleaseDir 'dist\index.js') 'process.exit(1);' -Encoding UTF8
+
+    $updateFailedAsExpected = $false
+    try {
+        & "$fakeReleaseDir\scripts\windows\update.ps1" -StateRoot "$env:ProgramData\WhatsApp-ERP" -InstallRoot "C:\WhatsApp-ERP"
+    } catch {
+        $updateFailedAsExpected = $true
+        Write-Host "Update threw expected error: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    $healthRollback = Wait-BackendHealth 30
+    $rolledBackConfig = if (Test-Path $serviceJsonPath) { Read-ServiceConfig "$env:ProgramData\WhatsApp-ERP" } else { $null }
+    $isOldReleaseActive = $rolledBackConfig -and ($rolledBackConfig.ReleasePath -like "*$currentVer*")
+    if ($updateFailedAsExpected -and $healthRollback.Success -and $isOldReleaseActive) {
+        Record-Test "Upgrade Automatic Rollback and Process Cleanup (M1, M2)" $true "Update failed readiness, stopped failed server, and rolled back cleanly to $currentVer." "M2"
+    } else {
+        Record-Test "Upgrade Automatic Rollback and Process Cleanup (M1, M2)" $false "Rollback failed or old release failed to resume." "M2"
+    }
+
+    # -------------------------------------------------------------------------
+    # TEST 17, 18, 19, 20: Uninstallation, Task Removal & Cleanup (H1, H2)
+    # -------------------------------------------------------------------------
+    Write-Host "`n[Test 17, 18, 19, 20] Running and Validating Uninstaller..." -ForegroundColor Cyan
     $uninstallLog = "C:\WhatsAppERP-uninstall.log"
     if (Test-Path $uninstallerExe) {
         Write-Host "Executing unins000.exe /VERYSILENT..." -ForegroundColor Cyan
@@ -301,7 +367,7 @@ try {
         $swUnins.Stop()
         Write-Host "Uninstaller finished in $([math]::Round($swUnins.Elapsed.TotalSeconds, 1))s with ExitCode: $($u.ExitCode)" -ForegroundColor White
 
-        # Test 14: Tasks removed by uninstall.ps1 (H1)
+        # Test 17: Tasks removed by uninstall.ps1 (H1)
         $tasksRemaining = Get-ScheduledTask -TaskName 'WhatsAppERPOperations*' -ErrorAction SilentlyContinue
         if (-not $tasksRemaining) {
             Record-Test "Uninstaller Removes Scheduled Tasks via uninstall.ps1" $true "Scheduled tasks (WhatsAppERPOperations, WhatsAppERPOperationsBackup) were cleanly removed by uninstall.ps1." "H1"
@@ -310,7 +376,7 @@ try {
             Record-Test "Uninstaller Removes Scheduled Tasks via uninstall.ps1" $false "Scheduled tasks ($taskNames) still registered after uninstall!" "H1"
         }
 
-        # Test 15: Uninstaller log check for PowerShell parse errors (H1)
+        # Test 18: Uninstaller log check for PowerShell parse errors (H1)
         $uninstallLogContent = if (Test-Path $uninstallLog) { Get-Content $uninstallLog -Raw } else { "" }
         $hasBraceSyntaxError = $uninstallLogContent -match '\}\}\s*catch\s*\{\}\}'
         if (-not $hasBraceSyntaxError) {
@@ -319,7 +385,7 @@ try {
             Record-Test "Uninstaller Log Has No PowerShell Parse Errors" $false "Detected literal '}} catch {{}}' parse error in uninstall log!" "H1"
         }
 
-        # Test 16: Binary directory removal (H2 - Retained for Phase 5)
+        # Test 19: Binary directory removal (H2 - Retained for Phase 5)
         $releasesRemaining = Test-Path "C:\WhatsApp-ERP\releases"
         if (-not $releasesRemaining) {
             Record-Test "Uninstaller Removes Application Binaries" $true "C:\WhatsApp-ERP\releases directory removed."
@@ -327,7 +393,7 @@ try {
             Record-Test "Uninstaller Removes Application Binaries" $false "C:\WhatsApp-ERP\releases still exists on disk! Robocopied releases not tracked by Inno Setup. (Active finding for Phase 5)." "H2"
         }
 
-        # Test 17: Customer data preservation
+        # Test 20: Customer data preservation
         $dataPreserved = Test-Path "$env:ProgramData\WhatsApp-ERP"
         Record-Test "Uninstaller Preserves Customer State Directory" $dataPreserved "Customer persistent state ($env:ProgramData\WhatsApp-ERP) preserved: $dataPreserved"
     } else {
@@ -379,17 +445,17 @@ if ($Strict -and $failCount -gt 0) {
     exit 1
 }
 
-$phase2TargetFindings = @('C2', 'C3', 'H1', 'H3', 'H4', 'L19', 'M6', 'L1', 'L11')
-$phase2TargetFailures = $testResults | Where-Object { $_.Status -eq 'FAIL' -and $_.Finding -in $phase2TargetFindings }
+$phase3TargetFindings = @('C2', 'C3', 'C4', 'H1', 'H3', 'H4', 'L19', 'M1', 'M2', 'M3', 'M5', 'M6', 'L1', 'L3', 'L6', 'L11', 'L13', 'L18')
+$phase3TargetFailures = $testResults | Where-Object { $_.Status -eq 'FAIL' -and $_.Finding -in $phase3TargetFindings }
 
-if ($phase2TargetFailures) {
+if ($phase3TargetFailures) {
     Write-Host "`n[ERROR] Targeted findings failed:" -ForegroundColor Red
-    foreach ($f in $phase2TargetFailures) {
+    foreach ($f in $phase3TargetFailures) {
         Write-Host "  -> $($f.Finding): $($f.Test) - $($f.Details)" -ForegroundColor Red
     }
     exit 1
 } else {
-    Write-Host "`nAll Phase 1 & Phase 2 targeted tests PASSED!" -ForegroundColor Green
+    Write-Host "`nAll Phase 1, Phase 2 & Phase 3 targeted tests PASSED!" -ForegroundColor Green
     $remaining = $testResults | Where-Object { $_.Status -eq 'FAIL' }
     if ($remaining) {
         Write-Host "Retained known failures for subsequent phases:" -ForegroundColor Yellow

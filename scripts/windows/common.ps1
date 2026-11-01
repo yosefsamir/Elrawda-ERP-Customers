@@ -87,6 +87,86 @@ function Invoke-Admin($Config, [string[]]$CommandArgs) {
     if ($LASTEXITCODE -ne 0) { throw "Maintenance command failed: $($CommandArgs[0])" }
 }
 
+function Move-ItemWithRetry($Source, $Destination, [int]$MaxAttempts = 5) {
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Move-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -eq $MaxAttempts) { throw }
+            Write-Warning "Move-Item failed (attempt $attempt/$MaxAttempts): $($_.Exception.Message). Retrying in 1s..."
+            Start-Sleep -Seconds 1
+        }
+    }
+}
+
+function Stop-ServiceProcessTree($Config) {
+    # 1. Attempt graceful stop via Admin CLI
+    try {
+        Invoke-Admin $Config @('stop')
+        Start-Sleep -Seconds 2
+    } catch {}
+
+    # 2. Check shutdown.json or runtime.lock to identify server process ID
+    $pidToKill = $null
+    $shutdownFile = Join-Path $Config.DataDir 'shutdown.json'
+    if (Test-Path -LiteralPath $shutdownFile) {
+        try {
+            $sd = Get-Content -LiteralPath $shutdownFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($sd.pid) { $pidToKill = [int]$sd.pid }
+        } catch {}
+    }
+    if (-not $pidToKill) {
+        $lockFile = Join-Path $Config.DataDir 'runtime.lock'
+        if (Test-Path -LiteralPath $lockFile) {
+            try {
+                $lk = Get-Content -LiteralPath $lockFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($lk.pid) { $pidToKill = [int]$lk.pid }
+            } catch {}
+        }
+    }
+
+    if ($pidToKill) {
+        $proc = Get-Process -Id $pidToKill -ErrorAction SilentlyContinue
+        if ($proc) {
+            try {
+                & taskkill.exe /PID $pidToKill /T /F | Out-Null
+            } catch {
+                try { Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue } catch {}
+            }
+        }
+    }
+
+    # 3. Wait up to 10 seconds for the port to be free
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline) {
+        $conn = Get-NetTCPConnection -LocalPort $Config.Port -State Listen -ErrorAction SilentlyContinue
+        if (-not $conn) { break }
+        Start-Sleep -Seconds 1
+    }
+}
+
+function Register-ApplicationTasks($Config, $StateRoot) {
+    $launcherScript = Join-Path $StateRoot 'launcher.ps1'
+    $backupScript = Join-Path $StateRoot 'scheduled-backup.ps1'
+
+    # Register automatic startup Scheduled Task running under LocalSystem SID (S-1-5-18)
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$launcherScript`" -StateRoot `"$StateRoot`"" -WorkingDirectory $StateRoot
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount
+    Register-ScheduledTask -TaskName $Config.TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+
+    # Register daily backup task (03:00) with StartWhenAvailable to ensure missed backups run after boot
+    $backupAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$backupScript`" -StateRoot `"$StateRoot`""
+    $backupTrigger = New-ScheduledTaskTrigger -Daily -At '03:00'
+    $backupSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+    Register-ScheduledTask -TaskName ($Config.TaskName + 'Backup') -Action $backupAction -Trigger $backupTrigger -Principal $principal -Settings $backupSettings -Force | Out-Null
+}
+
 function Wait-Ready($Config) {
     $expected = (Get-Content -Raw -Encoding UTF8 (Join-Path $Config.ReleasePath 'package.json') | ConvertFrom-Json).version
     for ($i = 0; $i -lt 45; $i++) {
