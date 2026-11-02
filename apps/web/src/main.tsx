@@ -2,29 +2,21 @@ import React, { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Building2,
-  ChartNoAxesCombined,
-  ChevronDown,
-  ClipboardList,
-  Database,
-  FileChartColumn,
+    FileChartColumn,
   LayoutDashboard,
   LogOut,
   Pause,
   Play,
   Plus,
   Settings2,
-  ShieldCheck,
   Users,
   Wifi,
   X,
-  ArrowLeft,
-  Clock3,
 } from "lucide-react";
-import { api, post, dateTime } from "./api";
-import { Badge, Button, Field, Notice, ReportView } from "./components";
+import { api, post } from "./api";
+import { Button, Field, Notice, ReportView } from "./components";
 import {
   CompanySetup,
-  SourceSetup,
   Overview,
   Branches,
   Settings,
@@ -69,16 +61,7 @@ function Auth({
   }
   return (
     <main className="auth-page">
-      <div className="auth-symbol">
-        <ChartNoAxesCombined size={30} />
-      </div>
-      <p className="eyebrow">إدارة العملاء والفروع</p>
-      <h1>{bootstrap ? "إعداد مساحة العمل" : "أهلًا بعودتك"}</h1>
-      <p>
-        {bootstrap
-          ? "أنشئ حساب المسؤول، وبعده سجّل شركتك واربط مصدر العملاء."
-          : "سجّل الدخول لمتابعة العملاء وحالة الفروع."}
-      </p>
+      <h1>{bootstrap ? "إنشاء حساب المسؤول" : "تسجيل الدخول"}</h1>
       <form className="auth-form" onSubmit={submit}>
         <Field label="اسم المستخدم">
           <input
@@ -93,11 +76,7 @@ function Auth({
         </Field>
         <Field
           label="كلمة المرور"
-          hint={
-            bootstrap
-              ? "10 أحرف على الأقل؛ لا توجد كلمة مرور افتراضية."
-              : undefined
-          }
+          hint={bootstrap ? "10 أحرف على الأقل" : undefined}
         >
           <input
             type="password"
@@ -109,15 +88,8 @@ function Auth({
           />
         </Field>
         {error && <Notice tone="error">{error}</Notice>}
-        <Button busy={busy}>
-          {bootstrap ? "إنشاء حساب المسؤول" : "تسجيل الدخول"}
-          <ArrowLeft size={17} />
-        </Button>
+        <Button busy={busy}>{bootstrap ? "إنشاء الحساب" : "دخول"}</Button>
       </form>
-      <div className="auth-foot">
-        <ShieldCheck size={15} />
-        بياناتك محفوظة محليًا على جهاز السيرفر
-      </div>
     </main>
   );
 }
@@ -271,6 +243,9 @@ function App() {
       </div>
     );
   const props = { company, refresh, notify };
+  const whatsappReady = company.whatsapp.status === "ready";
+  const databaseReady = Boolean(company.source) && !company.source.last_error;
+  const running = company.runMode === "live" && !company.paused;
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -282,74 +257,54 @@ function App() {
               alt={"شعار " + company.name}
             />
           ) : (
-            <div className="brand-monogram">
-              {(company.name?.slice(0, 1) || "ش").toUpperCase()}
-              <span />
-            </div>
+            <div className="brand-monogram">{company.name?.slice(0, 1) || "ش"}</div>
           )}
-          <div>
-            <strong>{company.name}</strong>
-            <small>مساحة العملاء</small>
-          </div>
-          <span className="brand-tag">محلي</span>
+          <strong>{company.name}</strong>
         </div>
-        <div className="nav-label">إدارة مساحة العمل</div>
         <nav>
           {pages.map((item) => (
             <button
               key={item.id}
               aria-label={item.label}
               title={item.label}
-              className={page === item.id ? "active" : ""}
+              className={page === item.id && !addingCompany ? "active" : ""}
               onClick={() => {
                 setPage(item.id);
                 setAddingCompany(false);
               }}
             >
-              <item.icon size={19} />
+              <item.icon size={18} />
               <span>{item.label}</span>
-              {page === item.id && <i />}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="session-card">
-            <div>
-              <i
-                className={
-                  "dot " +
-                  (company.whatsapp.status === "ready" ? "green" : "amber")
-                }
-              />
-              <strong>
-                واتساب{" "}
-                {company.whatsapp.status === "ready" ? "متصل" : "غير متصل"}
-              </strong>
-            </div>
-            <small>
-              {company.whatsapp.status === "ready"
-                ? "فحص الأرقام متاح"
-                : "اربط الحساب لفحص الأرقام"}
-            </small>
-            <button onClick={() => setPage("connections")}>
-              إدارة الاتصال
-              <ArrowLeft size={14} />
-            </button>
-          </div>
-          <label className="company-switch">
-            <Building2 size={16} />
-            <select
-              aria-label="تبديل الشركة"
-              value={company.id}
-              onChange={(e) => void switchCompany(e.target.value)}
-            >
-              {(session.companies || []).map((c: any) => (
-                <option value={c.id} key={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <button className="link-status" onClick={() => setPage("connections")}>
+            <span>
+              <i className={"dot " + (databaseReady ? "green" : "gray")} />
+              قاعدة البيانات
+            </span>
+            <span>
+              <i className={"dot " + (whatsappReady ? "green" : "gray")} />
+              واتساب
+            </span>
+          </button>
+          {(session.companies || []).length > 1 && (
+            <label className="company-switch">
+              <Building2 size={16} />
+              <select
+                aria-label="تبديل الشركة"
+                value={company.id}
+                onChange={(e) => void switchCompany(e.target.value)}
+              >
+                {(session.companies || []).map((c: any) => (
+                  <option value={c.id} key={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <div className="sidebar-actions">
             <button
               onClick={() => {
@@ -365,111 +320,59 @@ function App() {
               خروج
             </button>
           </div>
-          <span className="sidebar-version">Customer Operations · v{import.meta.env.VITE_APP_VERSION}</span>
+          <span className="sidebar-version">v{import.meta.env.VITE_APP_VERSION}</span>
         </div>
       </aside>
       <div className="main-shell">
         <header className="topbar">
-          <div className="breadcrumbs">
-            <span>{company.name}</span>
-            <span>/</span>
-            <strong>{pages.find((p) => p.id === page)?.label}</strong>
+          <div className={"run-state " + (running ? "live" : "idle")}>
+            <i />
+            <div>
+              <strong>
+                {running
+                  ? "التشغيل الفعلي"
+                  : company.runMode === "live"
+                  ? "التشغيل الفعلي متوقف"
+                  : "المعاينة"}
+              </strong>
+              <span>
+                {running
+                  ? whatsappReady
+                    ? "الإضافة التلقائية للعملاء تعمل."
+                    : "الإضافة متوقفة حتى يتصل واتساب."
+                  : "يقرأ البرنامج العملاء ويصنفهم، ولا يضيف أحدًا على واتساب."}
+              </span>
+            </div>
           </div>
           <div className="topbar-actions">
-            <span className="today">
-              <Clock3 size={14} />
-              {new Date().toLocaleDateString("ar-EG", {
-                day: "numeric",
-                month: "long",
-                year: "numeric",
-                timeZone: "Africa/Cairo",
-              })}
-            </span>
-            <Badge tone={company.paused ? "amber" : company.runMode === "live" ? "green" : "neutral"}>
-              {company.paused
-                ? "المعالجة متوقفة"
-                : company.runMode === "live"
-                ? "التشغيل الفعلي نشط (Live)"
-                : "وضع المعاينة (Preview)"}
-            </Badge>
-            <button
-              className={
-                "button " + (company.paused ? "secondary" : "pause-button")
-              }
-              onClick={() =>
-                company.paused ? void processing(false) : setPauseModal(true)
-              }
-              disabled={busy}
-            >
-              {company.paused ? <Play size={15} /> : <Pause size={15} />}
-              <span>{company.paused ? "استئناف" : "إيقاف مؤقت"}</span>
-            </button>
-            <div className="operator-avatar">م</div>
+            {company.runMode === "live" ? (
+              <>
+                <Button kind="secondary" disabled={busy} onClick={() => void processing(company.paused, "preview")}>
+                  رجوع للمعاينة
+                </Button>
+                <Button
+                  kind="secondary"
+                  disabled={busy}
+                  onClick={() => (company.paused ? void processing(false) : setPauseModal(true))}
+                >
+                  {company.paused ? <Play size={15} /> : <Pause size={15} />}
+                  {company.paused ? "استئناف" : "إيقاف مؤقت"}
+                </Button>
+              </>
+            ) : (
+              <Button
+                busy={busy}
+                disabled={!databaseReady || !whatsappReady}
+                title={!databaseReady || !whatsappReady ? "اربط قاعدة البيانات وواتساب أولًا" : undefined}
+                onClick={() => void processing(false, "live")}
+              >
+                <Play size={15} />
+                بدء التشغيل الفعلي
+              </Button>
+            )}
           </div>
         </header>
         <main className="main-content">
-          {company.runMode === "live" ? (
-            <div
-              className="preview-banner"
-              style={{
-                background: "rgba(16, 185, 129, 0.08)",
-                borderColor: "rgba(16, 185, 129, 0.25)",
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-              }}
-            >
-              <span>
-                <span
-                  className="preview-dot"
-                  style={{ background: "#10b981" }}
-                />
-                التشغيل الفعلي (Live)
-              </span>
-              <p style={{ margin: 0 }}>
-                الإضافة الآلية نشطة: العملاء الجدد يُضافون فور تسجيلهم بالفرع، والعملاء القدامى تدريجيًا ضمن ساعات العمل وحصص اليوم.
-              </p>
-              <button
-                className="button secondary"
-                style={{
-                  marginRight: "auto",
-                  fontSize: "0.82rem",
-                  padding: "4px 10px",
-                }}
-                onClick={() => void processing(company.paused, "preview")}
-              >
-                العودة لوضع المعاينة
-              </button>
-            </div>
-          ) : (
-            <div
-              className="preview-banner"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-              }}
-            >
-              <span>
-                <span className="preview-dot" />
-                وضع المعاينة (Preview)
-              </span>
-              <p style={{ margin: 0 }}>
-                قراءة وتصنيف فقط دون كتابة إلى واتساب. اضغط زر البدء للانتقال لوضع التشغيل الفعلي.
-              </p>
-              <button
-                className="button primary"
-                style={{
-                  marginRight: "auto",
-                  fontSize: "0.82rem",
-                  padding: "4px 12px",
-                }}
-                onClick={() => void processing(false, "live")}
-              >
-                تفعيل التشغيل الفعلي (Live)
-              </button>
-            </div>
-          )}
           {addingCompany ? (
             <>
               <button
@@ -487,8 +390,6 @@ function App() {
                 }}
               />
             </>
-          ) : !company.source ? (
-            <SourceSetup {...props} />
           ) : page === "overview" ? (
             <Overview {...props} navigate={setPage} />
           ) : page === "customers" || page === "reports" ? (
@@ -505,10 +406,6 @@ function App() {
           ) : (
             <Connections {...props} />
           )}
-          <footer className="main-footer">
-            <span>{company.name} · إدارة العملاء والفروع</span>
-            <span>آخر قراءة: {dateTime(company.source?.last_sync)}</span>
-          </footer>
         </main>
       </div>
       {toast && (

@@ -94,6 +94,12 @@ try {
   });
   assert.equal(created.status, 200);
 
+  // A company must be usable before any data source or WhatsApp session is connected
+  for (const path of ['/api/company', '/api/overview', '/api/branches', '/api/customers?scope=all&state=all&page=1']) {
+    const response = await fetch(base + path, { headers: { cookie } });
+    assert.equal(response.status, 200, `${path} must work without a data source`);
+  }
+
   const web = await fetch(base + '/');
   assert.equal(web.status, 200);
   assert.match(await web.text(), /assets\/index/);

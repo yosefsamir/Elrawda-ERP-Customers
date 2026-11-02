@@ -1,23 +1,13 @@
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
-  ArrowUpLeft,
-  Building2,
-  Check,
-  CheckCheck,
   Database,
-  FileSpreadsheet,
   ImagePlus,
   Link2,
   LoaderCircle,
-  Monitor,
   RefreshCw,
   Save,
-  ShieldCheck,
-  Upload,
-  Users,
   Wifi,
-  X,
 } from "lucide-react";
 import { api, post, put, number, dateTime } from "./api";
 import { Badge, Button, Empty, Field, Notice } from "./components";
@@ -36,7 +26,7 @@ export function CompanySetup({
   notify: ViewProps["notify"];
   isNew?: boolean;
 }) {
-  const [name, setName] = useState("شركة الروضة للتجارة"),
+  const [name, setName] = useState(""),
     [logo, setLogo] = useState<File | null>(null),
     [busy, setBusy] = useState(false);
   async function submit(e: React.FormEvent) {
@@ -58,14 +48,9 @@ export function CompanySetup({
   }
   return (
     <div className="setup-page">
-      <div className="setup-label">
-        <Building2 size={18} />
-        مساحة مستقلة لكل شركة
-      </div>
-      <h1>{isNew ? "إضافة شركة جديدة" : "نبدأ بهوية شركتك"}</h1>
-      <p>اسم وشعار وإعدادات مستقلة. تقدر تعدلهم في أي وقت.</p>
+      <h1>{isNew ? "شركة جديدة" : "بيانات الشركة"}</h1>
       <form className="setup-card" onSubmit={submit}>
-        <Field label="اسم الشركة أو سلسلة المحلات">
+        <Field label="اسم الشركة">
           <input
             autoFocus
             value={name}
@@ -75,13 +60,10 @@ export function CompanySetup({
             maxLength={100}
           />
         </Field>
-        <Field
-          label="شعار الشركة"
-          hint="اختياري · PNG أو JPEG أو WebP · حتى 2 ميجابايت"
-        >
+        <Field label="شعار الشركة" hint="اختياري. PNG أو JPEG أو WebP حتى 2 ميجابايت.">
           <label className="upload-box">
-            <ImagePlus size={24} />
-            <span>{logo ? logo.name : "اختار صورة الشعار"}</span>
+            <ImagePlus size={20} />
+            <span>{logo ? logo.name : "اختر صورة"}</span>
             <input
               type="file"
               accept="image/png,image/jpeg,image/webp"
@@ -89,19 +71,16 @@ export function CompanySetup({
             />
           </label>
         </Field>
-        <Button busy={busy}>
-          إنشاء مساحة الشركة
-          <ArrowLeft size={17} />
-        </Button>
+        <Button busy={busy}>حفظ ومتابعة</Button>
       </form>
-      <small>
-        الشعار محفوظ لاستخدامه في الواجهة، ويمكن استخدامه لصورة الجروبات عند
-        تنفيذ إنشاء الأجزاء.
-      </small>
     </div>
   );
 }
-export function SourceSetup({ company, refresh, notify }: ViewProps) {
+export function SourceSetup({
+  refresh,
+  notify,
+  onCancel,
+}: Pick<ViewProps, "refresh" | "notify"> & { onCancel?: () => void }) {
   const [busy, setBusy] = useState(false),
     [databases, setDatabases] = useState<string[]>([]),
     [manualDb, setManualDb] = useState(false),
@@ -167,6 +146,7 @@ export function SourceSetup({ company, refresh, notify }: ViewProps) {
         `اكتملت المزامنة بنجاح: تم جلب ${number(result.added)} سجل كقاعدة أساسية (Baseline).`,
       );
       await refresh();
+      onCancel?.();
     } catch (e) {
       notify((e as Error).message, true);
     } finally {
@@ -175,17 +155,7 @@ export function SourceSetup({ company, refresh, notify }: ViewProps) {
   }
 
   return (
-    <div className="setup-page source-setup">
-      <div className="setup-label">
-        <Database size={16} />
-        إعداد مصدر البيانات · SQL Server
-      </div>
-      <h1>ربط قاعدة بيانات الـ ERP</h1>
-      <p>
-        اتصال قراءة فقط (Read-Only) مع سيرفر الشركة لجلب العملاء والفروع ومزامنة أي إضافات جديدة.
-      </p>
-
-      <form className="setup-card" onSubmit={submit}>
+    <form className="source-form" onSubmit={submit}>
         <div className="form-grid">
           <Field label="اسم أو عنوان السيرفر">
             <input
@@ -202,7 +172,7 @@ export function SourceSetup({ company, refresh, notify }: ViewProps) {
           >
             <input
               dir="ltr"
-              placeholder="SQLMOHSEN (اختياري)"
+              placeholder="اختياري"
               value={form.instance}
               onChange={(e) => change("instance", e.target.value)}
             />
@@ -228,7 +198,6 @@ export function SourceSetup({ company, refresh, notify }: ViewProps) {
           </Field>
         </div>
 
-        <div style={{ marginTop: "4px", marginBottom: "16px" }}>
           <Field
             label="قاعدة البيانات"
             hint={
@@ -278,53 +247,32 @@ export function SourceSetup({ company, refresh, notify }: ViewProps) {
                 />
               </div>
             )}
-            <div style={{ marginTop: "6px" }}>
-              <button
-                type="button"
-                onClick={() => setManualDb(!manualDb)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "var(--muted, #64748b)",
-                  fontSize: "0.8rem",
-                  cursor: "pointer",
-                  padding: 0,
-                  textDecoration: "underline",
-                }}
-              >
-                {!manualDb ? "أو كتابة الاسم يدويًا" : "الرجوع للقائمة المنسدلة"}
-              </button>
-            </div>
+            <button type="button" className="text-button" onClick={() => setManualDb(!manualDb)}>
+              {!manualDb ? "كتابة الاسم يدويًا" : "الرجوع للقائمة"}
+            </button>
           </Field>
-        </div>
 
         <details className="setup-advanced">
-          <summary>خيارات متقدمة (رقم البرنامج في الـ ERP)</summary>
-          <div style={{ marginTop: "14px" }}>
-            <Field
-              label="رقم البرنامج داخل ERP"
-              hint="مضبوط تلقائياً على 9 الخاص بجميع فروع الروضة في السيستم (لا تقم بتغييره إلا عند الحاجة)"
-            >
-              <input
-                type="number"
-                min={1}
-                value={form.programId}
-                onChange={(e) => change("programId", Number(e.target.value))}
-              />
-            </Field>
-          </div>
+          <summary>إعدادات متقدمة</summary>
+          <Field label="رقم البرنامج داخل ERP" hint="القيمة الافتراضية 9. لا تغيّرها إلا عند الحاجة.">
+            <input
+              type="number"
+              min={1}
+              value={form.programId}
+              onChange={(e) => change("programId", Number(e.target.value))}
+            />
+          </Field>
         </details>
 
-        <Notice tone="info">
-          الاتصال يتم مباشرة بسيرفر SQL Server بصلاحيات قراءة فقط (Read-Only) دون أي تعديل أو كتابة على قاعدة بيانات أو جداول الـ ERP الأصلية.
-        </Notice>
-
-        <Button busy={busy} style={{ width: "100%", minHeight: "42px" }}>
-          <Database size={16} />
-          الاتصال بالسيرفر وحفظ المصدر
-        </Button>
-      </form>
-    </div>
+        <div className="connection-actions">
+          <Button busy={busy}>حفظ وبدء المزامنة</Button>
+          {onCancel && (
+            <Button type="button" kind="secondary" onClick={onCancel}>
+              إلغاء
+            </Button>
+          )}
+        </div>
+    </form>
   );
 }
 export function Overview({
@@ -353,6 +301,31 @@ export function Overview({
     );
   const active = data.branches.filter((b: any) => b.enabled),
     max = Math.max(1, ...active.map((b: any) => b.total));
+  const whatsappReady = company.whatsapp.status === "ready";
+  const steps = [
+    {
+      label: "قاعدة البيانات",
+      done: Boolean(company.source) && !company.source.last_error,
+      detail: !company.source
+        ? "غير مربوطة. لن تظهر بيانات عملاء قبل ربطها."
+        : company.source.last_error
+        ? "تعذرت آخر مزامنة."
+        : `آخر مزامنة: ${dateTime(company.source.last_sync)}`,
+      page: "connections",
+    },
+    {
+      label: "واتساب",
+      done: whatsappReady,
+      detail: whatsappReady ? "متصل." : "غير متصل. يلزم لفحص الأرقام وإضافة العملاء.",
+      page: "connections",
+    },
+    {
+      label: "الفروع والجروبات",
+      done: active.length > 0,
+      detail: active.length ? `${number(active.length)} فرع مفعّل.` : "فعّل الفروع وحدد الجروبات.",
+      page: "branches",
+    },
+  ];
   const events: Record<string, string> = {
     "company.created": "تم إنشاء مساحة الشركة",
     "source.synced": "اكتملت قراءة العملاء",
@@ -368,72 +341,53 @@ export function Overview({
   return (
     <>
       <div className="page-heading">
-        <div>
-          <p className="eyebrow">لوحة المتابعة</p>
-          <h1>متابعة العملاء والفروع</h1>
-          <p>جودة أرقام العملاء وحالة فروعك وآخر المستجدات.</p>
-        </div>
+        <h1>نظرة عامة</h1>
         <button
           className="button secondary"
           onClick={() => navigate("reports")}
         >
           التقرير اليومي
-          <ArrowUpLeft size={17} />
         </button>
       </div>
-      <div className="stat-grid">
+      {!steps.every((step) => step.done) && (
+        <section className="panel setup-steps">
+          <h2>حالة التشغيل</h2>
+          {steps.map((step) => (
+            <button key={step.label} onClick={() => navigate(step.page)}>
+              <i className={"dot " + (step.done ? "green" : "gray")} />
+              <strong>{step.label}</strong>
+              <span>{step.detail}</span>
+              <ArrowLeft size={15} />
+            </button>
+          ))}
+        </section>
+      )}
+      <div className="stat-strip">
         {[
-          {
-            label: "كل العملاء المسجلين",
-            value: data.all.total,
-            detail: `على ${number(active.length)} فرع`,
-            icon: Users,
-          },
-          {
-            label: "أرقام مصرية صحيحة",
-            value: data.all.valid,
-            detail: "الصيغة صحيحة · وجود واتساب يُفحص منفصلًا",
-            icon: ShieldCheck,
-          },
-          {
-            label: "بحاجة لمراجعة الرقم",
-            value: data.all.invalid,
-            detail: "رقم ناقص أو غير صالح أو خارج مصر",
-            icon: FileSpreadsheet,
-          },
-          {
-            label: "مكتشفون اليوم",
-            value: data.daily.total,
-            detail: "لا يشمل العملاء الموجودين في أول مزامنة",
-            icon: CheckCheck,
-          },
-        ].map((s, index) => (
-          <section className={"stat-card stat-" + index} key={s.label}>
-            <div className="stat-top">
-              <span>{s.label}</span>
-              <s.icon size={20} />
-            </div>
+          { label: "كل العملاء", value: data.all.total },
+          { label: "أرقام صحيحة", value: data.all.valid },
+          { label: "تحتاج مراجعة", value: data.all.invalid },
+          { label: "جدد اليوم", value: data.daily.total },
+        ].map((s) => (
+          <div key={s.label}>
+            <span>{s.label}</span>
             <strong>{number(s.value)}</strong>
-            <p>{s.detail}</p>
-          </section>
+          </div>
         ))}
       </div>
       <div className="overview-grid">
         <section className="panel">
           <div className="panel-heading">
-            <div>
-              <h2>العملاء حسب الفرع</h2>
-              <p>الأرقام المسجلة في المصدر الحالي</p>
-            </div>
+            <h2>العملاء حسب الفرع</h2>
             <button
               className="text-button"
               onClick={() => navigate("branches")}
             >
               إدارة الفروع
-              <ArrowLeft size={15} />
             </button>
           </div>
           <div className="branch-chart">
+            {!active.length && <p className="subtle">لا توجد فروع مفعّلة.</p>}
             {active.slice(0, 7).map((b: any) => (
               <div className="branch-bar" key={b.branch_id}>
                 <div>
@@ -450,18 +404,10 @@ export function Overview({
               </div>
             ))}
           </div>
-          <div className="panel-footer">
-            <span className="legend-dot" />
-            إجمالي العملاء · {number(active.length)} فروع مفعّلة
-          </div>
         </section>
         <section className="panel data-quality">
           <div className="panel-heading">
-            <div>
-              <h2>جودة البيانات</h2>
-              <p>نراجع الرقم قبل أي خطوة</p>
-            </div>
-            <ShieldCheck size={20} />
+            <h2>جودة الأرقام</h2>
           </div>
           <div className="quality-number">
             <strong>
@@ -500,62 +446,42 @@ export function Overview({
             </span>
             <strong>{number(data.all.unchecked)}</strong>
           </div>
-          <button
-            className="button secondary full-width"
-            onClick={() => navigate("customers")}
-          >
-            مراجعة سجل العملاء
-            <ArrowLeft size={16} />
+          <button className="text-button quality-link" onClick={() => navigate("customers")}>
+            مراجعة العملاء
           </button>
         </section>
       </div>
       <div className="overview-grid bottom-grid">
         <section className="panel">
           <div className="panel-heading">
-            <div>
-              <h2>آخر النشاطات</h2>
-              <p>تغييرات واضحة وسجل محفوظ</p>
-            </div>
-            <span className="subtle">بتوقيت القاهرة</span>
+            <h2>آخر النشاطات</h2>
           </div>
           <div className="activity-list">
             {data.events.map((e: any, i: number) => (
               <div className="activity" key={i}>
-                <span className="activity-icon">
-                  <Check size={14} />
-                </span>
-                <div>
-                  <strong>
-                    {events[e.event] ?? "تم تحديث بيانات مساحة العمل"}
-                  </strong>
-                  <small>{dateTime(e.created_at)}</small>
-                </div>
+                <strong>{events[e.event] ?? "تحديث في بيانات الشركة"}</strong>
+                <small>{dateTime(e.created_at)}</small>
               </div>
             ))}
           </div>
         </section>
-        <section className="source-panel">
-          <div className="source-panel-icon">
-            <Database size={23} />
+        <section className="panel">
+          <div className="panel-heading">
+            <h2>مصدر البيانات</h2>
+            <button className="text-button" onClick={() => navigate("connections")}>
+              إدارة الاتصالات
+            </button>
           </div>
-          <p className="eyebrow">مصدر البيانات</p>
-          <h2>
-            {company.source?.kind === "snapshot"
-              ? "نسخة محلية محفوظة"
-              : "اتصال مباشر بالسيستم"}
-          </h2>
-          <p>{company.source?.label}</p>
-          <div className="source-line">
-            <span>آخر قراءة ناجحة</span>
-            <strong>{dateTime(company.source?.last_sync)}</strong>
+          <div className="info-rows compact">
+            <div>
+              <span>المصدر</span>
+              <strong>{company.source?.label ?? "غير مربوط"}</strong>
+            </div>
+            <div>
+              <span>آخر قراءة</span>
+              <strong>{dateTime(company.source?.last_sync)}</strong>
+            </div>
           </div>
-          <button
-            className="text-button"
-            onClick={() => navigate("connections")}
-          >
-            تفاصيل الاتصال
-            <ArrowLeft size={16} />
-          </button>
         </section>
       </div>
     </>
@@ -674,11 +600,7 @@ export function Branches({ company, refresh, notify }: ViewProps) {
   return (
     <>
       <div className="page-heading">
-        <div>
-          <p className="eyebrow">التوزيع والوجهات</p>
-          <h1>الفروع والجروبات</h1>
-          <p>حدد الجروب الموحد أو الجروب المستقل لكل فرع، وأسماء الترقية عند الامتلاء.</p>
-        </div>
+        <h1>الفروع والجروبات</h1>
         <Button
           kind="secondary"
           busy={loadingGroups}
@@ -917,21 +839,11 @@ export function Settings({ company, refresh, notify }: ViewProps) {
   return (
     <>
       <div className="page-heading">
-        <div>
-          <p className="eyebrow">مساحة العمل</p>
-          <h1>إعدادات {company.name}</h1>
-          <p>هوية الشركة وسياسة توزيع العملاء ومواعيد المعالجة.</p>
-        </div>
+        <h1>الإعدادات</h1>
       </div>
       <form onSubmit={save} className="settings-form">
         <section className="panel form-panel">
-          <div className="section-title">
-            <Building2 size={21} />
-            <div>
-              <h2>هوية الشركة</h2>
-              <p>بيانات مستقلة عن الشركات الأخرى.</p>
-            </div>
-          </div>
+          <h2 className="section-title">هوية الشركة</h2>
           <div className="form-grid">
             <Field label="اسم الشركة">
               <input
@@ -945,22 +857,20 @@ export function Settings({ company, refresh, notify }: ViewProps) {
               label="شعار الشركة"
               hint="PNG أو JPEG أو WebP حتى 2 ميجابايت"
             >
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                onChange={(e) => setLogo(e.target.files?.[0] ?? null)}
-              />
+              <label className="upload-box">
+                <ImagePlus size={20} />
+                <span>{logo ? logo.name : "اختر صورة"}</span>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={(e) => setLogo(e.target.files?.[0] ?? null)}
+                />
+              </label>
             </Field>
           </div>
         </section>
         <section className="panel form-panel">
-          <div className="section-title">
-            <Users size={21} />
-            <div>
-              <h2>التوزيع ودفعات العملاء</h2>
-              <p>الجديد له أولوية، والقديم يدخل بعدد تحدده.</p>
-            </div>
-          </div>
+          <h2 className="section-title">التوزيع ودفعات العملاء</h2>
           <div className="form-grid">
             <Field
               label="سياسة توزيع العملاء"
@@ -1028,13 +938,7 @@ export function Settings({ company, refresh, notify }: ViewProps) {
           </div>
         </section>
         <section className="panel form-panel">
-          <div className="section-title">
-            <Link2 size={21} />
-            <div>
-              <h2>دعوة الخصوصية</h2>
-              <p>رسالة واحدة عند منع الإضافة المباشرة بسبب الخصوصية.</p>
-            </div>
-          </div>
+          <h2 className="section-title">دعوة الخصوصية</h2>
           <label className="check-line">
             <input
               type="checkbox"
@@ -1069,17 +973,16 @@ export function Settings({ company, refresh, notify }: ViewProps) {
   );
 }
 export function Connections({ company, refresh, notify }: ViewProps) {
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(false),
+    [editingSource, setEditingSource] = useState(false);
+  const source = company.source;
+  const whatsapp = company.whatsapp;
   async function action(path: string, body = {}) {
     setBusy(true);
     try {
       await post(path, body);
       await refresh();
-      notify(
-        path.includes("sync")
-          ? "اكتمل تحديث بيانات العملاء."
-          : "تم تنفيذ الطلب.",
-      );
+      notify(path.includes("sync") ? "اكتملت المزامنة." : "تم تنفيذ الطلب.");
     } catch (e) {
       notify((e as Error).message, true);
     } finally {
@@ -1089,122 +992,116 @@ export function Connections({ company, refresh, notify }: ViewProps) {
   return (
     <>
       <div className="page-heading">
-        <div>
-          <p className="eyebrow">حالة الاتصالات</p>
-          <h1>البيانات وواتساب</h1>
-          <p>كل اتصال ظاهر بحالته الفعلية. الفحص لا يرسل رسائل للعملاء.</p>
-        </div>
+        <h1>الاتصالات</h1>
       </div>
       <div className="connection-grid">
         <section className="panel form-panel">
           <div className="connection-title">
-            <div className="connection-icon">
-              <Database size={24} />
-            </div>
-            <Badge tone={company.source?.last_error ? "amber" : "neutral"}>
-              {company.source?.kind === "snapshot" ? "نسخة محلية" : company.source?.last_error ? "تعذرت آخر مزامنة" : "آخر مزامنة ناجحة"}
+            <h2>
+              <Database size={18} />
+              قاعدة البيانات
+            </h2>
+            <Badge tone={!source ? "muted" : source.last_error ? "red" : "green"}>
+              {!source ? "غير مربوطة" : source.last_error ? "فشلت آخر مزامنة" : "متصلة"}
             </Badge>
           </div>
-          <h2>{company.source?.kind === "sql" ? "سيرفر ERP · SQL Server" : "نسخة بيانات محلية"}</h2>
-          <p>{company.source?.label || "قاعدة بيانات الروضة"}</p>
-          <div className="info-rows">
-            <div>
-              <span>آخر مزامنة</span>
-              <strong>{dateTime(company.source?.last_sync)}</strong>
-            </div>
-            <div>
-              <span>المزامنة التلقائية</span>
-              <strong>{company.source?.kind === "sql" ? "كل 30 ثانية؛ مراجعة كاملة كل 15 دقيقة" : "تحديث يدوي فقط"}</strong>
-            </div>
-            <div>
-              <span>صلاحيات البرنامج</span>
-              <strong>استعلامات قراءة فقط (Read-Only)</strong>
-            </div>
-          </div>
-          {company.source?.last_error && <Notice tone="error">{company.source.last_error}</Notice>}
-          <Button
-            kind="secondary"
-            busy={busy}
-            onClick={() => void action("/source/sync")}
-          >
-            <RefreshCw size={16} />
-            تحديث ومزامنة البيانات الآن
-          </Button>
-          {company.source?.kind === "sql" && (
-            <Button kind="secondary" busy={busy} onClick={() => void action("/source/sync", { full: true })}>
-              مراجعة كل تعديلات العملاء
-            </Button>
+          {!source || editingSource ? (
+            <SourceSetup
+              refresh={refresh}
+              notify={notify}
+              onCancel={source ? () => setEditingSource(false) : undefined}
+            />
+          ) : (
+            <>
+              <div className="info-rows">
+                <div>
+                  <span>المصدر</span>
+                  <strong>{source.label}</strong>
+                </div>
+                <div>
+                  <span>آخر مزامنة</span>
+                  <strong>{dateTime(source.last_sync)}</strong>
+                </div>
+                <div>
+                  <span>المزامنة التلقائية</span>
+                  <strong>{source.kind === "sql" ? "كل 30 ثانية، ومراجعة كاملة كل ساعة" : "يدوية فقط"}</strong>
+                </div>
+              </div>
+              {source.last_error && <Notice tone="error">{source.last_error}</Notice>}
+              <div className="connection-actions">
+                <Button kind="secondary" busy={busy} onClick={() => void action("/source/sync")}>
+                  <RefreshCw size={15} />
+                  مزامنة الآن
+                </Button>
+                {source.kind === "sql" && (
+                  <Button kind="secondary" busy={busy} onClick={() => void action("/source/sync", { full: true })}>
+                    مراجعة كاملة
+                  </Button>
+                )}
+                <Button kind="secondary" onClick={() => setEditingSource(true)}>
+                  تعديل الاتصال
+                </Button>
+              </div>
+            </>
           )}
         </section>
         <section className="panel form-panel">
           <div className="connection-title">
-            <div className="connection-icon whatsapp">
-              <Wifi size={24} />
-            </div>
-            <Badge
-              tone={company.whatsapp.status === "ready" ? "green" : "muted"}
-            >
-              {company.whatsapp.status === "ready"
-                ? "متصل وجاهز للاستخدام"
-                : company.whatsapp.status === "starting"
-                  ? "جارٍ بدء الاتصال"
-                  : company.whatsapp.status === "qr"
-                    ? "بانتظار مسح الكود"
-                    : "غير متصل"}
+            <h2>
+              <Wifi size={18} />
+              واتساب
+            </h2>
+            <Badge tone={whatsapp.status === "ready" ? "green" : whatsapp.status === "error" ? "red" : "muted"}>
+              {whatsapp.status === "ready"
+                ? "متصل"
+                : whatsapp.status === "starting"
+                  ? "جارٍ الاتصال"
+                  : whatsapp.status === "qr"
+                    ? "بانتظار المسح"
+                    : whatsapp.status === "error"
+                      ? "خطأ"
+                      : "غير متصل"}
             </Badge>
           </div>
-          <h2>حساب واتساب للشركة</h2>
-          <p>
-            {company.whatsapp.status === "ready"
-              ? "جلسة واتساب متصلة ونشطة لإضافة العملاء والتحقق من الأرقام."
-              : "جلسة مستقلة باسم الشركة. يمكنك ربط الحساب لمزامنة وإضافة العملاء."}
-          </p>
-
-          {company.whatsapp.status === "ready" && (
-            <div className="info-rows" style={{ marginBottom: "16px" }}>
-              {company.whatsapp.phone && (
+          {whatsapp.status === "ready" && (
+            <div className="info-rows">
+              {whatsapp.phone && (
                 <div>
-                  <span>الرقم المتصل</span>
-                  <strong dir="ltr">+{company.whatsapp.phone}</strong>
+                  <span>الرقم</span>
+                  <strong dir="ltr">+{whatsapp.phone}</strong>
                 </div>
               )}
-              {company.whatsapp.pushname && (
+              {whatsapp.pushname && (
                 <div>
-                  <span>اسم الحساب (Profile)</span>
-                  <strong>{company.whatsapp.pushname}</strong>
+                  <span>اسم الحساب</span>
+                  <strong>{whatsapp.pushname}</strong>
                 </div>
               )}
-              <div>
-                <span>حالة الجلسة</span>
-                <strong style={{ color: "var(--accent-tone, #10b981)" }}>متصل ونشط</strong>
-              </div>
             </div>
           )}
-
-          {company.whatsapp.qr && (
+          {whatsapp.status === "starting" && !whatsapp.qr && (
+            <p className="subtle">جارٍ تشغيل المتصفح. قد يستغرق ذلك دقيقة.</p>
+          )}
+          {whatsapp.qr && (
             <div className="qr">
-              <img src={company.whatsapp.qr} alt="كود ربط واتساب الحالي" />
+              <img src={whatsapp.qr} alt="كود ربط واتساب" />
               <small>واتساب ← الأجهزة المرتبطة ← ربط جهاز</small>
             </div>
           )}
-          {company.whatsapp.error && (
-            <Notice tone="error">{company.whatsapp.error}</Notice>
-          )}
+          {whatsapp.error && <Notice tone="error">{whatsapp.error}</Notice>}
           <div className="connection-actions">
             <Button
               busy={busy}
-              disabled={["ready", "starting", "qr"].includes(
-                company.whatsapp.status,
-              )}
+              disabled={["ready", "starting", "qr"].includes(whatsapp.status)}
               onClick={() => void action("/whatsapp/connect")}
             >
-              <Link2 size={16} />
+              <Link2 size={15} />
               ربط واتساب
             </Button>
             <Button
               kind="secondary"
               busy={busy}
-              disabled={company.whatsapp.status === "disconnected"}
+              disabled={whatsapp.status === "disconnected"}
               onClick={() => void action("/whatsapp/disconnect")}
             >
               فصل الجلسة
@@ -1212,9 +1109,6 @@ export function Connections({ company, refresh, notify }: ViewProps) {
           </div>
         </section>
       </div>
-      <Notice tone="info">
-        جميع العمليات والتحققات تتم وفق إعدادات الأمان ومواعيد العمل المحددة، ويمكنك التحكم ببدء أو إيقاف المعالجة في أي وقت من الشريط العلوي.
-      </Notice>
     </>
   );
 }

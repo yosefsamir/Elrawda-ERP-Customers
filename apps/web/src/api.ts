@@ -20,10 +20,10 @@ export const post = (path: string, body: unknown = {}) =>
 export const put = (path: string, body: unknown) =>
   api(path, { method: "PUT", body: JSON.stringify(body) });
 export const number = (value: unknown) =>
-  Number(value ?? 0).toLocaleString("ar-EG");
+  Number(value ?? 0).toLocaleString("ar-EG-u-nu-latn");
 export const dateTime = (value: string | null) =>
   value
-    ? new Date(value).toLocaleString("ar-EG", {
+    ? new Date(value).toLocaleString("ar-EG-u-nu-latn", {
         dateStyle: "medium",
         timeStyle: "short",
         timeZone: "Africa/Cairo",

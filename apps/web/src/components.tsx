@@ -73,9 +73,6 @@ export function Notice({
 export function Empty({ title, detail }: { title: string; detail: string }) {
   return (
     <div className="empty">
-      <div className="empty-icon">
-        <ShieldCheck size={26} />
-      </div>
       <h3>{title}</h3>
       <p>{detail}</p>
     </div>
@@ -219,7 +216,7 @@ export function CustomerTable({
       {!report.rows.length && (
         <Empty
           title="لا توجد أرقام في هذا العرض"
-          detail="غيّر التاريخ أو الفلاتر، أو افتح سجل العملاء الموجودين في أول مزامنة."
+          detail="غيّر التاريخ أو الفلاتر، أو تأكد من ربط قاعدة البيانات."
         />
       )}
     </div>
@@ -302,17 +299,7 @@ export function ReportView({
   return (
     <>
       <div className="page-heading">
-        <div>
-          <p className="eyebrow">
-            {isDaily ? "التقارير والمتابعة" : "سجل العملاء"}
-          </p>
-          <h1>{isDaily ? "التقرير اليومي" : "كل عميل، وحالته"}</h1>
-          <p>
-            {isDaily
-              ? "تابع جودة الأرقام ونتيجة فحص واتساب لكل فرع."
-              : "قائمة موحدة للأرقام المسجلة، بدون خلط صحة الرقم بنتيجة الإضافة."}
-          </p>
-        </div>
+        <h1>{isDaily ? "التقرير اليومي" : "العملاء"}</h1>
         <a className="button secondary" href={"/api/reports.csv?" + query}>
           <ArrowDownToLine size={17} />
           تصدير CSV
@@ -320,12 +307,11 @@ export function ReportView({
       </div>
       {isDaily && (
         <Notice>
-          التاريخ هنا هو <strong>أول اكتشاف بواسطة البرنامج</strong>، وليس تاريخ
-          تسجيل الفرع؛ قاعدة البيانات لا توفر تاريخ تسجيل موثوقًا للعميل.
-          الأرقام الموجودة في أول مزامنة تظهر في السجل الكامل.
+          التاريخ هنا هو يوم اكتشاف البرنامج للعميل، وليس تاريخ تسجيله في الفرع.
+          العملاء الموجودون من أول مزامنة يظهرون في السجل الكامل.
         </Notice>
       )}
-      <div className="report-summary">
+      <div className="stat-strip">
         {[
           ["إجمالي الأرقام", "total"],
           ["موبايل مصري صحيح", "valid"],
