@@ -1,4 +1,4 @@
-; WhatsApp-ERP Inno Setup Script
+﻿; WhatsApp-ERP Inno Setup Script
 ; Builds Windows Setup executable: WhatsAppERP-Setup-1.0.0-rc.1.exe
 
 #ifndef MyAppName
@@ -25,6 +25,10 @@
 #define MyReleaseDir "..\release\whatsapp-erp-windows-" + MyAppVersion
 #endif
 
+#ifndef MyPayloadArchive
+#define MyPayloadArchive MyReleaseDir + ".7z"
+#endif
+
 [Setup]
 AppId={{#MyAppId}
 AppName={#MyAppName}
@@ -47,6 +51,7 @@ OutputBaseFilename=WhatsAppERP-Setup-{#MyAppVersion}
 OutputDir=..\release
 Compression=lzma2/max
 SolidCompression=yes
+ArchiveExtraction=enhanced/nopassword
 WizardStyle=modern
 WizardSizePercent=100
 ShowLanguageDialog=auto
@@ -62,6 +67,28 @@ CreateUninstallRegKey=yes
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "arabic"; MessagesFile: "compiler:Languages\Arabic.isl"
 
+[CustomMessages]
+english.InstallTitle=Installing WhatsApp-ERP
+english.InstallDescription=This takes a few minutes. Keep this window open.
+english.StagePrepare=Preparing installation files...
+english.StageVerify=Checking the installation files...
+english.StageCopy=Copying the application...
+english.StageCheck=Checking the database engine and browser...
+english.StageBrowser=Testing the browser under the service account...
+english.StageBackup=Backing up your data...
+english.StageService=Starting the service...
+english.PayloadFailed=The installation files could not be extracted.
+arabic.InstallTitle=جارٍ تثبيت WhatsApp-ERP
+arabic.InstallDescription=التثبيت بياخد كام دقيقة. سيب الشاشة دي مفتوحة.
+arabic.StagePrepare=تجهيز ملفات التثبيت...
+arabic.StageVerify=التحقق من ملفات التثبيت...
+arabic.StageCopy=نسخ البرنامج...
+arabic.StageCheck=فحص قاعدة البيانات والمتصفح...
+arabic.StageBrowser=اختبار المتصفح بحساب الخدمة...
+arabic.StageBackup=أخذ نسخة احتياطية من بياناتك...
+arabic.StageService=تشغيل الخدمة...
+arabic.PayloadFailed=تعذر فك ملفات التثبيت.
+
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut to Web Management Interface"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
@@ -73,8 +100,9 @@ Name: "{app}"; Flags: uninsalwaysuninstall
 ; Shipped uninstallation script and common helpers installed to application directory for reliable task and process cleanup
 Source: "{#MyReleaseDir}\scripts\windows\uninstall.ps1"; DestDir: "{app}\scripts\windows"; Flags: ignoreversion
 Source: "{#MyReleaseDir}\scripts\windows\common.ps1"; DestDir: "{app}\scripts\windows"; Flags: ignoreversion
-; Release payload marked dontcopy: extracted during PrepareToInstall for atomic validation before committing installation
-Source: "{#MyReleaseDir}\*"; DestDir: "{tmp}\WhatsAppERP-Payload"; Flags: dontcopy recursesubdirs createallsubdirs
+; One archive instead of thousands of files: PrepareToInstall must deploy before Setup commits anything,
+; and only archive extraction can show real progress at that point
+Source: "{#MyPayloadArchive}"; DestName: "payload.7z"; Flags: dontcopy nocompression
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}\WhatsApp-ERP Web Interface"; Filename: "{#MyAppURL}"
@@ -92,6 +120,8 @@ var
   IsRepairMode: Boolean;
   ExistingReleaseFound: Boolean;
   CustomExitCode: Integer;
+  ExtractPage: TExtractionWizardPage;
+  DeployPage: TOutputProgressWizardPage;
 
 // [UninstallRun] ignores exit codes, so the helper runs here: Abort at usUninstall stops the
 // uninstall with a non-zero exit code and leaves it registered for a retry.
@@ -192,6 +222,61 @@ begin
   end;
 end;
 
+procedure InitializeWizard;
+begin
+  ExtractPage := CreateExtractionPage(CustomMessage('InstallTitle'), CustomMessage('InstallDescription'), nil);
+  DeployPage := CreateOutputProgressPage(CustomMessage('InstallTitle'), CustomMessage('InstallDescription'));
+end;
+
+procedure ShowStage(const MessageName: String; const Percent: Integer);
+begin
+  DeployPage.SetText(CustomMessage(MessageName), '');
+  DeployPage.SetProgress(Percent, 100);
+end;
+
+// install.ps1 and update.ps1 print "##stage <name>" as they reach each step
+procedure OnDeployOutput(const S: String; const Error, FirstLine: Boolean);
+var
+  Stage: String;
+begin
+  Log(S);
+  if Pos('##stage ', S) <> 1 then
+    Exit;
+  Stage := Trim(Copy(S, 9, Length(S)));
+  if Stage = 'verify' then ShowStage('StageVerify', 10)
+  else if Stage = 'copy' then ShowStage('StageCopy', 30)
+  else if Stage = 'check' then ShowStage('StageCheck', 55)
+  else if Stage = 'browser' then ShowStage('StageBrowser', 70)
+  else if Stage = 'backup' then ShowStage('StageBackup', 80)
+  else if Stage = 'service' then ShowStage('StageService', 90);
+end;
+
+function ExtractPayload(): String;
+begin
+  Result := '';
+  try
+    DeployPage.Show;
+    try
+      ShowStage('StagePrepare', 0);
+      ExtractTemporaryFile('payload.7z');
+    finally
+      DeployPage.Hide;
+    end;
+
+    ExtractPage.Clear;
+    ExtractPage.Add(ExpandConstant('{tmp}\payload.7z'), ExpandConstant('{tmp}\WhatsAppERP-Payload'), True);
+    ExtractPage.Show;
+    try
+      ExtractPage.Extract;
+    finally
+      ExtractPage.Hide;
+    end;
+  except
+    Result := CustomMessage('PayloadFailed') + #13#10#13#10 + GetExceptionMessage;
+    Log(Result);
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   PowerShellExe: String;
@@ -200,28 +285,21 @@ var
   Params: String;
   ResultCode: Integer;
   LogPath: String;
-  ShowMode: Integer;
-  ShowConsole: Boolean;
-  ExtractedCount: Integer;
+  Started: Boolean;
 begin
-  Result := '';
   NeedsRestart := False;
 
-  Log('Extracting self-contained release payload for deployment verification...');
-  ExtractedCount := ExtractTemporaryFiles('*');
-  Log('Extracted ' + IntToStr(ExtractedCount) + ' files to temporary payload.');
+  Result := ExtractPayload();
+  if Result <> '' then
+  begin
+    CustomExitCode := 7;
+    Exit;
+  end;
 
   PowerShellExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   ScriptPath := ExpandConstant('{tmp}\WhatsAppERP-Payload\scripts\windows\install.ps1');
   WorkingDir := ExpandConstant('{tmp}\WhatsAppERP-Payload\scripts\windows');
   LogPath := ExpandConstant('{commonappdata}\WhatsApp-ERP\logs\install.log');
-
-  // Check if user requested console visibility via /SHOWCONSOLE or /DEBUG
-  ShowConsole := ExpandConstant('{param:SHOWCONSOLE|0}') = '1';
-  if ShowConsole then
-    ShowMode := SW_SHOWNORMAL
-  else
-    ShowMode := SW_HIDE;
 
   // Build process-scoped execution policy command
   Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ScriptPath + '" -InstallRoot "' + ExpandConstant('{app}') + '"';
@@ -232,8 +310,16 @@ begin
 
   Log('Executing deployment: ' + PowerShellExe + ' ' + Params);
 
-  // Run powershell.exe and wait until terminated
-  if not Exec(PowerShellExe, Params, WorkingDir, ShowMode, ewWaitUntilTerminated, ResultCode) then
+  // Waits for PowerShell while keeping the window responsive and reading its progress lines
+  DeployPage.Show;
+  try
+    ShowStage('StageVerify', 5);
+    Started := ExecAndLogOutput(PowerShellExe, Params, WorkingDir, SW_HIDE, ewWaitUntilTerminated, ResultCode, @OnDeployOutput);
+  finally
+    DeployPage.Hide;
+  end;
+
+  if not Started then
   begin
     InstallSuccess := False;
     CustomExitCode := 7;

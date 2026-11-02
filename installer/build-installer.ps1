@@ -48,6 +48,20 @@ try {
     }
     Write-Host "Production payload verified in: $releaseDir" -ForegroundColor Green
 
+    # Setup carries one archive so it can show real extraction progress
+    $payloadArchive = "$releaseDir.7z"
+    if (-not $ReusePayload -or -not (Test-Path -LiteralPath $payloadArchive)) {
+        $sevenZip = @(
+            (Get-Command 7z.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+            "$env:ProgramFiles\7-Zip\7z.exe"
+        ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+        if (-not $sevenZip) { throw "7-Zip (7z.exe) is required to build the installer payload." }
+        if (Test-Path -LiteralPath $payloadArchive) { Remove-Item -LiteralPath $payloadArchive -Force }
+        Write-Host "Compressing payload to $payloadArchive..." -ForegroundColor Cyan
+        & $sevenZip a -t7z -mx=7 -mmt=on -bd -bso0 -bsp0 $payloadArchive (Join-Path $releaseDir '*')
+        if ($LASTEXITCODE -ne 0) { throw "7-Zip failed with exit code $LASTEXITCODE." }
+    }
+
     # 3. Locate Inno Setup Compiler (ISCC.exe)
     Write-Host "`n[2/4] Locating Inno Setup 6 Compiler (ISCC.exe)..." -ForegroundColor Cyan
     $isccCandidates = @(
@@ -104,7 +118,7 @@ After installation completes, re-run this script.
         throw "Inno Setup script not found: $issFile"
     }
 
-    & $isccPath "/DMyAppVersion=$version" "/DMyReleaseDir=$releaseDir" $issFile
+    & $isccPath "/DMyAppVersion=$version" "/DMyReleaseDir=$releaseDir" "/DMyPayloadArchive=$payloadArchive" $issFile
     if ($LASTEXITCODE -ne 0) {
         throw "Inno Setup compilation failed with exit code $LASTEXITCODE."
     }

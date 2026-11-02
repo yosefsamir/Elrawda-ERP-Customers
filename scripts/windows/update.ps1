@@ -4,6 +4,7 @@ Assert-Administrator
 
 $config = Read-ServiceConfig $StateRoot
 $packageRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+Write-InstallStage 'verify'
 Verify-Release $packageRoot
 
 $version = (Get-Content (Join-Path $packageRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
@@ -22,7 +23,9 @@ if (Test-Path -LiteralPath $target) {
 $stage = $target + '.staging-' + [guid]::NewGuid().ToString('N')
 try {
     Write-Host "Staging release payload for version $version..." -ForegroundColor Cyan
+    Write-InstallStage 'copy'
     Copy-Release $packageRoot $stage
+    Write-InstallStage 'check'
     Assert-ReleaseReady $stage
     Move-ItemWithRetry $stage $target
 } catch {
@@ -35,6 +38,7 @@ try {
 # Machines installed before the low-privilege identity get their permissions corrected here
 Set-InstallRootAcl $InstallRoot
 Set-StateAcl $StateRoot $config.TaskName
+Write-InstallStage 'browser'
 Assert-ServiceBrowser $target $StateRoot
 
 $oldRelease = $config.ReleasePath
@@ -69,6 +73,7 @@ try {
     Stop-ServiceProcessTree $config
 
     Write-Host "Creating consistent offline pre-update backup..." -ForegroundColor Cyan
+    Write-InstallStage 'backup'
     Invoke-Admin $config @('backup', '--output', $backup, '--offline')
     Invoke-Admin $config @('verify-backup', '--input', $backup)
 
@@ -100,6 +105,7 @@ try {
 
     $switched = $true
     Remove-Item $flag -Force
+    Write-InstallStage 'service'
     Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
     Wait-Ready $config -TimeoutSec 25
 

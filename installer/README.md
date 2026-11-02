@@ -32,7 +32,8 @@ The installer packages a **completely self-contained portable Node.js runtime an
 ### For Building the Installer (Development / CI Runner):
 1. **Windows 10 / 11 / Server (x64)** (or GitHub Actions `windows-latest` runner)
 2. **Node.js 22 LTS (>= 22.22.0, x64)**
-3. **Inno Setup 6**:
+3. **7-Zip** (`7z.exe`): packs the payload so Setup can show real extraction progress
+4. **Inno Setup 6**:
    - Via winget:
      ```powershell
      winget install JRSoftware.InnoSetup
@@ -89,13 +90,6 @@ For automated or remote management deployments:
 
 ```powershell
 .\WhatsAppERP-Setup-1.0.0-rc.1.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-```
-
-### Option C: Debug Mode (Show PowerShell Console)
-To see live console output during installation:
-
-```powershell
-.\WhatsAppERP-Setup-1.0.0-rc.1.exe /SHOWCONSOLE=1
 ```
 
 ---

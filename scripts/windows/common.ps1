@@ -17,6 +17,11 @@ function Get-ConfigProperty($Object, [string]$PropertyName, $Default = $null) {
     return $Default
 }
 
+# Setup reads these lines while the script runs and moves its progress bar
+function Write-InstallStage([string]$Stage) {
+    Write-Host "##stage $Stage"
+}
+
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {

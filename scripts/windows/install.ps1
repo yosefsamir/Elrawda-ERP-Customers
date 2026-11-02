@@ -15,6 +15,7 @@ try { Start-Transcript -Path $logFile -Append -Force | Out-Null } catch {}
 
 try {
     $packageRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    Write-InstallStage 'verify'
     Verify-Release $packageRoot
 
     $version = (Get-Content (Join-Path $packageRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
@@ -48,7 +49,9 @@ try {
         $stage = $target + '.staging-' + [guid]::NewGuid().ToString('N')
         try {
             Write-Host "Staging release payload to $stage..." -ForegroundColor Cyan
+            Write-InstallStage 'copy'
             Copy-Release $packageRoot $stage
+            Write-InstallStage 'check'
             Assert-ReleaseReady $stage
             Copy-Release $stage $target
         } finally {
@@ -56,6 +59,7 @@ try {
         }
 
         Set-StateAcl $StateRoot $existingConfig.TaskName
+        Write-InstallStage 'browser'
         Assert-ServiceBrowser $target $StateRoot
 
         # Refresh launcher and backup scripts
@@ -66,6 +70,7 @@ try {
         Register-ApplicationTasks $existingConfig $StateRoot
 
         # Verify service readiness
+        Write-InstallStage 'service'
         Start-ScheduledTask -TaskName $existingConfig.TaskName -ErrorAction SilentlyContinue
         Wait-Ready $existingConfig
         Write-Host "Repaired WhatsApp-ERP version $version successfully. Customer data preserved." -ForegroundColor Green
@@ -95,7 +100,9 @@ try {
     $stage = $target + '.staging-' + [guid]::NewGuid().ToString('N')
     try {
         Write-Host "Staging release payload to $stage..." -ForegroundColor Cyan
+        Write-InstallStage 'copy'
         Copy-Release $packageRoot $stage
+        Write-InstallStage 'check'
         Assert-ReleaseReady $stage
         Copy-Release $stage $target
     } finally {
@@ -104,6 +111,7 @@ try {
 
     # 5. Create persistent state directory structure (preserve existing customer data if reinstalling)
     Set-StateAcl $StateRoot 'WhatsAppERPOperations'
+    Write-InstallStage 'browser'
     Assert-ServiceBrowser $target $StateRoot
 
     $config = [pscustomobject]@{
@@ -130,6 +138,7 @@ try {
     Register-ApplicationTasks $config $StateRoot
 
     # Start service task and wait for HTTP readiness
+    Write-InstallStage 'service'
     Start-ScheduledTask -TaskName $config.TaskName
     try {
         Wait-Ready $config

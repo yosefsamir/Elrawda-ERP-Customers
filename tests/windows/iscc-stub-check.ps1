@@ -51,6 +51,8 @@ try {
         Set-Content -LiteralPath (Join-Path $stubDir 'scripts\windows\common.ps1') -Value '# stub' -Encoding UTF8
     }
     Set-Content -LiteralPath (Join-Path $stubDir 'runtime\node.exe') -Value 'stub' -Encoding UTF8
+    # ISCC only packs this file, so a stub is enough for a compile check
+    Set-Content -LiteralPath "$stubDir.7z" -Value 'stub' -Encoding UTF8
 
     $issFile = Join-Path $RepoRoot 'installer\WhatsAppERP.iss'
     Write-Host "Compiling $issFile against stub payload..." -ForegroundColor Cyan
@@ -69,6 +71,7 @@ finally {
     if (Test-Path -LiteralPath $stubDir) {
         Remove-Item -LiteralPath $stubDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+    Remove-Item -LiteralPath "$stubDir.7z" -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $outDir) {
         Remove-Item -LiteralPath $outDir -Recurse -Force -ErrorAction SilentlyContinue
     }
