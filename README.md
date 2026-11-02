@@ -2,7 +2,7 @@
 
 A secure, local multi-company customer operations platform built with **React**, **Fastify**, and **SQLite (WAL mode)**. It connects directly to retail and ERP Microsoft SQL Server databases in strictly read-only mode to ingest customer phone numbers, validate formats, and automate onboarding into WhatsApp community groups.
 
-Current Candidate Release: **`1.0.0-rc.1`**
+Current Release: **`1.0.0`**
 
 ---
 
@@ -33,7 +33,7 @@ Current Candidate Release: **`1.0.0-rc.1`**
 ```text
 C:\WhatsApp-ERP\
 ├── releases\
-│   └── 1.0.0-rc.1\               # Immutable versioned release files
+│   └── 1.0.0\               # Immutable versioned release files
 │       ├── dist\
 │       │   ├── runtime\          # Compiled Fastify server & WhatsApp worker JS
 │       │   └── web\              # Pre-built React production frontend
@@ -66,9 +66,9 @@ C:\ProgramData\WhatsApp-ERP\       # Persistent state across upgrades
 ### Option 1: One-Click Windows Installer (`Setup.exe`) — Recommended
 
 1. **Download & Transfer:**
-   Copy `WhatsAppERP-Setup-1.0.0-rc.1.exe` to the customer machine (via USB or remote transfer).
+   Copy `WhatsAppERP-Setup-1.0.0.exe` to the customer machine (via USB or remote transfer).
 2. **Run as Administrator:**
-   Right-click `WhatsAppERP-Setup-1.0.0-rc.1.exe` and select **Run as administrator** (accept the UAC prompt).
+   Right-click `WhatsAppERP-Setup-1.0.0.exe` and select **Run as administrator** (accept the UAC prompt).
 3. **Follow the Setup Wizard:**
    - Click **Next** and proceed with the default settings (`C:\WhatsApp-ERP`).
    - The installer verifies the environment, extracts files, installs dependencies, and registers the background services.
@@ -76,7 +76,7 @@ C:\ProgramData\WhatsApp-ERP\       # Persistent state across upgrades
 
 *To run silently without user interaction:*
 ```powershell
-.\WhatsAppERP-Setup-1.0.0-rc.1.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+.\WhatsAppERP-Setup-1.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 ---
@@ -86,19 +86,19 @@ C:\ProgramData\WhatsApp-ERP\       # Persistent state across upgrades
 If you are deploying directly using the pre-packaged ZIP archive:
 
 1. **Download & Extract:**
-   Download `whatsapp-erp-windows-1.0.0-rc.1.zip` from the release artifacts and extract it to a temporary folder (e.g. `C:\Temp\whatsapp-erp-windows-1.0.0-rc.1`).
+   Download `whatsapp-erp-windows-1.0.0.zip` from the release artifacts and extract it to a temporary folder (e.g. `C:\Temp\whatsapp-erp-windows-1.0.0`).
 2. **Open PowerShell as Administrator:**
    Press `Win + X`, select **Terminal (Admin)** or **PowerShell (Run as administrator)**.
 3. **Run the Automated Installer:**
    Navigate into the extracted `scripts\windows` directory and execute:
    ```powershell
-   cd "C:\Path\To\Extracted\whatsapp-erp-windows-1.0.0-rc.1\scripts\windows"
+   cd "C:\Path\To\Extracted\whatsapp-erp-windows-1.0.0\scripts\windows"
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
    ```
 
 #### What Happens Automatically in the Background:
 - **Node.js 22 Detection:** If Node.js is missing, the script automatically downloads and silently installs official `Node.js 22 LTS (node-v22.23.4-x64.msi)`.
-- **Target Directories:** Copies release files to immutable `C:\WhatsApp-ERP\releases\1.0.0-rc.1`.
+- **Target Directories:** Copies release files to immutable `C:\WhatsApp-ERP\releases\1.0.0`.
 - **Protected State:** Creates `C:\ProgramData\WhatsApp-ERP`, writable only by `SYSTEM`, `Administrators`, and the service's task SID in its working folders.
 - **Automated Tasks:** Registers two Windows Scheduled Tasks:
   - `WhatsAppERPOperations`: Automatically starts at machine boot under `NT AUTHORITY\LOCAL SERVICE` with a per-task SID and restarts on unexpected exits.
@@ -140,7 +140,7 @@ Perform the following 4 initial configuration steps:
   ```
 - **Run Diagnostics:**
   ```powershell
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\WhatsApp-ERP\releases\1.0.0-rc.1\scripts\windows\diagnose.ps1"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\WhatsApp-ERP\releases\1.0.0\scripts\windows\diagnose.ps1"
   ```
 - **Log Locations:**
   - Installation Transcript: `C:\ProgramData\WhatsApp-ERP\logs\install.log`

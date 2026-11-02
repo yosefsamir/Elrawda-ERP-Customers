@@ -1,12 +1,12 @@
 ﻿; WhatsApp-ERP Inno Setup Script
-; Builds Windows Setup executable: WhatsAppERP-Setup-1.0.0-rc.1.exe
+; Builds Windows Setup executable: WhatsAppERP-Setup-1.0.0.exe
 
 #ifndef MyAppName
 #define MyAppName "WhatsApp-ERP"
 #endif
 
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.0-rc.1"
+#define MyAppVersion "1.0.0"
 #endif
 
 #ifndef MyAppPublisher

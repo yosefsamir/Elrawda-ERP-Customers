@@ -2,7 +2,7 @@
 
 This directory contains the Inno Setup packaging configuration and automation for creating the standalone Windows installer:
 
-`WhatsAppERP-Setup-1.0.0-rc.1.exe`
+`WhatsAppERP-Setup-1.0.0.exe`
 
 ---
 
@@ -62,11 +62,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "installer\build-install
 3. Compiles `installer\WhatsAppERP.iss` with dynamic version synchronization from `package.json`.
 4. Outputs the final executable to:
    ```
-   release\WhatsAppERP-Setup-1.0.0-rc.1.exe
+   release\WhatsAppERP-Setup-1.0.0.exe
    ```
 5. Calculates the SHA-256 checksum and saves it to:
    ```
-   release\WhatsAppERP-Setup-1.0.0-rc.1.exe.sha256
+   release\WhatsAppERP-Setup-1.0.0.exe.sha256
    ```
 
 ---
@@ -74,7 +74,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "installer\build-install
 ## 4. How to Install at Customer Machine
 
 ### Option A: Standard Interactive Installation (Recommended)
-1. Copy `WhatsAppERP-Setup-1.0.0-rc.1.exe` to the customer server.
+1. Copy `WhatsAppERP-Setup-1.0.0.exe` to the customer server.
 2. Double-click and accept the UAC prompt (or right-click and choose **Run as administrator**).
 3. Follow the wizard steps:
    - The installer verifies 64-bit Windows architecture.
@@ -89,7 +89,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "installer\build-install
 For automated or remote management deployments:
 
 ```powershell
-.\WhatsAppERP-Setup-1.0.0-rc.1.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+.\WhatsAppERP-Setup-1.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
 ---
@@ -114,10 +114,10 @@ When `WhatsAppERP-Setup-*.exe` is run on a machine where WhatsApp-ERP is already
 ### Verification Commands:
 - **Web UI:** Navigate to `http://127.0.0.1:3211`
 - **Health Endpoint:** Run `curl http://127.0.0.1:3211/healthz`
-  Expected response: `{"ok":true,"version":"1.0.0-rc.1",...}`
+  Expected response: `{"ok":true,"version":"1.0.0",...}`
 - **Diagnostic Script:**
   ```powershell
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\WhatsApp-ERP\releases\1.0.0-rc.1\scripts\windows\diagnose.ps1"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\WhatsApp-ERP\releases\1.0.0\scripts\windows\diagnose.ps1"
   ```
 
 ### Log File Locations:
