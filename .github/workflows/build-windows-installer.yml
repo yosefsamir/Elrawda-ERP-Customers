@@ -51,6 +51,9 @@ jobs:
       - name: Run test suite
         run: npm run test:core
 
+      - name: Verify real Chromium session lifecycle with offline fixtures
+        run: npm run test:whatsapp:browser
+
       - name: Package self-contained Windows release payload
         shell: powershell
         run: |
