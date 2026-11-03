@@ -182,6 +182,10 @@ export async function createApp(options: {
       companyId: wa.state.companyId,
       error: wa.state.error ?? null,
       workerPid: wa.state.workerPid ?? null,
+      reason: wa.state.reason ?? null,
+      requiresReauth: wa.state.requiresReauth ?? false,
+      recoveryBlocked: wa.state.recoveryBlocked ?? false,
+      retryAttempt: wa.state.retryAttempt ?? 0,
     },
   }));
   const syncTimer = setInterval(() => {

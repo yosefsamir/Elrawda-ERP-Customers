@@ -1,10 +1,15 @@
 import { createRequire } from "node:module";
 import { resolve, join } from "node:path";
-import { existsSync, readdirSync, statSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { WhatsAppSession } from "./session.js";
+import { reliableWhatsAppClasses } from "./reliable-client.js";
+import { errorCode, whatsappLog } from "../../packages/runtime/whatsapp-log.js";
 
 const require = createRequire(import.meta.url);
 const { Client, LocalAuth } = require("whatsapp-web.js");
+const version = require("whatsapp-web.js/package.json").version;
+if (version !== "1.34.7") throw new Error("Review the WhatsApp lifecycle adapter before changing whatsapp-web.js");
+const { ReliableClient, PersistentAuth } = reliableWhatsAppClasses(Client, LocalAuth);
 const QRCode = require("qrcode");
 const { createPilotClient } = require("../../scripts/whatsapp-test/groups.cjs");
 const { addOne, inspectTarget } = require("../../scripts/whatsapp-test/operations.cjs");
@@ -36,245 +41,47 @@ function resolveChromeExecutable(): string | undefined {
   return undefined;
 }
 
-let client: any = null;
-let pilot: any = null;
-let companyId: string | null = null;
-let state: any = { companyId: null, status: "disconnected" };
 
-const publish = (extra: any) => {
-  state = { ...state, ...extra, companyId };
-  process.send?.({ type: "state", state });
-};
-
-async function killBrowserProcess() {
-  try {
-    if (client?.pupBrowser?.process) {
-      const proc = client.pupBrowser.process();
-      if (proc && proc.pid) {
-        if (process.platform === "win32") {
-          try { execSync(`taskkill /PID ${proc.pid} /T /F`, { stdio: "ignore" }); } catch {}
-        } else {
-          try { proc.kill("SIGKILL"); } catch {}
-        }
-      }
-    }
-  } catch {}
-}
+let stopping = false;
+let shutdownPromise: Promise<void> | undefined;
+const session = new WhatsAppSession({
+  dataDir: process.env.EMOJI_DATA_DIR!,
+  createClient: profile => {
+    const chromeExec = resolveChromeExecutable();
+    const args = ["--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-accelerated-2d-canvas", "--no-first-run", "--disable-gpu"];
+    if (process.env.CHROME_NO_SANDBOX === "true") args.unshift("--no-sandbox");
+    return new ReliableClient({
+      authStrategy: new PersistentAuth({ clientId: profile.companyId, dataPath: profile.root }),
+      webVersionCache: { type: "local", path: resolve(process.env.PUPPETEER_CACHE_DIR || resolve(process.env.EMOJI_DATA_DIR!, "..", "cache"), "wwebjs_cache") },
+      authTimeoutMs: 30000,
+      puppeteer: { headless: true, protocolTimeout: 30000, args, ...(chromeExec ? { executablePath: chromeExec } : {}) },
+    });
+  },
+  qr: value => QRCode.toDataURL(value),
+  publish: state => { if (process.connected) process.send?.({ type: "state", state }); },
+  fatal: error => { whatsappLog("fatal_cleanup", { errorCode: errorCode(error) }); void shutdown(1); },
+});
 
 let commandQueue = Promise.resolve();
 process.on("message", (message: any) => {
-  commandQueue = commandQueue.then(() => handleMessage(message));
+  // Shutdown bypasses long-running business commands and invalidates pending init immediately.
+  if (message.action === "shutdown") { void shutdown(); return; }
+  commandQueue = commandQueue.then(() => handleMessage(message)).catch(error => {
+    whatsappLog("command_queue_failure", { errorCode: errorCode(error) });
+    void shutdown(1);
+  });
 });
 async function handleMessage(message: any) {
   try {
+    if (stopping) throw new Error("WhatsApp worker is stopping");
     const { id, action, payload } = message;
-    if (companyId && companyId !== message.companyId) {
-      throw new Error("Another company WhatsApp session is currently active");
-    }
-
-    let result: any = {};
-
-    if (action === "shutdown") {
-      await shutdown();
-      return;
-    }
-    if (action === "connect") {
-      if (client && ["starting", "qr"].includes(state.status)) {
-        process.send?.({ id, result: state });
-        return;
-      }
-      if (client && state.status === "ready") {
-        const info = (client as any)?.info;
-        if (info) {
-          state.phone = info.wid?.user || state.phone;
-          state.pushname = info.pushname || state.pushname;
-          state.platform = info.platform || state.platform;
-        }
-        process.send?.({ id, result: state });
-        return;
-      }
-
-      if (client) {
-        await killBrowserProcess();
-        try {
-          await client.destroy();
-        } catch {
-          // Ignore destroy errors
-        }
-        client = null;
-        pilot = null;
-      }
-
-      companyId = message.companyId;
-      publish({ status: "starting", qr: null, error: null });
-
-      const authDataPath = resolve(process.env.EMOJI_DATA_DIR!, "whatsapp-auth");
-      const sessionDir = resolve(authDataPath, `session-${companyId}`);
-      if (!existsSync(sessionDir)) {
-        mkdirSync(sessionDir, { recursive: true });
-      }
-
-      // WhatsApp Session Lock & Stale Lock Cleanup (L8)
-      const lockPath = resolve(sessionDir, "session.lock");
-      if (existsSync(lockPath)) {
-        let isStale = false;
-        try {
-          const lockContent = readFileSync(lockPath, "utf8");
-          const lockData = JSON.parse(lockContent);
-          if (lockData.pid && lockData.pid !== process.pid) {
-            try {
-              process.kill(lockData.pid, 0); // Check if PID is actively running
-              throw new Error(`جلسة واتساب لهذه الشركة قيد الاستخدام بواسطة عملية أخرى (PID ${lockData.pid})`);
-            } catch (e: any) {
-              if (e.message && e.message.includes("قيد الاستخدام")) throw e;
-              isStale = true;
-            }
-          } else {
-            isStale = true;
-          }
-        } catch (e: any) {
-          if (e.message && e.message.includes("قيد الاستخدام")) throw e;
-          isStale = true;
-        }
-
-        if (isStale) {
-          try { rmSync(lockPath, { force: true }); } catch {}
-          // Also clean up any stale Chromium SingletonLock from crashed browser (M7)
-          for (const targetDir of [sessionDir, join(sessionDir, "Default")]) {
-            if (existsSync(targetDir)) {
-              for (const item of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
-                try { rmSync(join(targetDir, item), { force: true }); } catch {}
-              }
-            }
-          }
-        }
-      }
-
-      try {
-        writeFileSync(lockPath, JSON.stringify({ pid: process.pid, companyId, createdAt: new Date().toISOString() }));
-      } catch {}
-
-      // Dedicated persistent web version cache path (L9)
-      const cacheDir = process.env.PUPPETEER_CACHE_DIR || resolve(process.env.EMOJI_DATA_DIR!, "..", "cache");
-      const webCacheDir = resolve(cacheDir, "wwebjs_cache");
-      if (!existsSync(webCacheDir)) {
-        mkdirSync(webCacheDir, { recursive: true });
-      }
-
-      const chromeExec = resolveChromeExecutable();
-      const puppeteerArgs = [
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas",
-        "--no-first-run",
-        "--disable-gpu",
-      ];
-      // Only for Linux hosts without user namespaces. Windows always runs with the sandbox on.
-      if (process.env.CHROME_NO_SANDBOX === "true") puppeteerArgs.unshift("--no-sandbox");
-
-      client = new Client({
-        authStrategy: new LocalAuth({
-          clientId: companyId,
-          dataPath: authDataPath,
-        }),
-        webVersionCache: {
-          type: "local",
-          path: webCacheDir,
-        },
-        puppeteer: {
-          headless: true,
-          protocolTimeout: 30000,
-          args: puppeteerArgs,
-          ...(chromeExec ? { executablePath: chromeExec } : {}),
-        },
-      });
-
-      pilot = createPilotClient(client);
-
-      client.on("qr", async (qr: string) =>
-        publish({ status: "qr", qr: await QRCode.toDataURL(qr) }),
-      );
-      client.on("ready", () => {
-        const info = (client as any)?.info;
-        publish({
-          status: "ready",
-          qr: null,
-          error: null,
-          phone: info?.wid?.user || null,
-          pushname: info?.pushname || null,
-          platform: info?.platform || null,
-        });
-      });
-      client.on("auth_failure", () =>
-        publish({
-          status: "error",
-          qr: null,
-          error: "WhatsApp session authentication failed",
-        }),
-      );
-      client.on("disconnected", () =>
-        publish({ status: "disconnected", qr: null }),
-      );
-
-      // A killed worker leaves its browser running, so the server needs the PID on disk (M7)
-      const recordBrowser = setInterval(() => {
-        const browserPid = client?.pupBrowser?.process?.()?.pid;
-        if (!browserPid) return;
-        clearInterval(recordBrowser);
-        try {
-          writeFileSync(lockPath, JSON.stringify({ pid: process.pid, browserPid, companyId, createdAt: new Date().toISOString() }));
-        } catch {}
-      }, 250);
-      recordBrowser.unref();
-
-      void client
-        .initialize()
-        .catch(async (err: any) => {
-          console.error("WhatsApp client initialization failed:", err);
-          // A browser left running keeps the profile locked, and every retry then fails forever
-          clearInterval(recordBrowser);
-          await killBrowserProcess();
-          try {
-            await client?.destroy();
-          } catch {
-            // Ignore destroy errors
-          }
-          client = null;
-          pilot = null;
-    
-          publish({
-            status: "error",
-            error: err?.message || "Failed to initialize browser or WhatsApp session",
-          });
-        });
-
-      result = state;
-    } else if (action === "disconnect") {
-      await killBrowserProcess();
-      if (client) {
-        try {
-          await client.destroy();
-        } catch {
-          // Ignore destroy errors
-        }
-      }
-      if (companyId) {
-        const authDataPath = resolve(process.env.EMOJI_DATA_DIR!, "whatsapp-auth");
-        const sessionDir = resolve(authDataPath, `session-${companyId}`);
-        const lockPath = resolve(sessionDir, "session.lock");
-        if (existsSync(lockPath)) {
-          try { rmSync(lockPath, { force: true }); } catch {}
-        }
-      }
-      client = null;
-      pilot = null;
-      companyId = null;
-      publish({ status: "disconnected", qr: null, error: null, phone: null, pushname: null });
-    } else {
-      if (state.status !== "ready") {
-        throw new Error("WhatsApp client is not ready. Please connect first.");
-      }
-
+    let result: any;
+    if (action === "connect") result = await session.connect(message.companyId, !payload?.automatic);
+    else if (action === "disconnect") result = await session.disconnect();
+    else {
+      if (session.state.companyId !== message.companyId || session.state.status !== "ready") throw new Error("WhatsApp client is not ready. Please connect first.");
+      const client = session.client;
+      const pilot = createPilotClient(client);
       if (action === "lookup") {
         const number = await client.getNumberId(payload.phone);
         result = {
@@ -335,47 +142,27 @@ async function handleMessage(message: any) {
         throw new Error(`Unsupported WhatsApp worker action: ${action}`);
       }
     }
-
-    process.send?.({ id, result });
+    if (process.connected) process.send?.({ id, result });
   } catch (error) {
-    process.send?.({
-      id: message.id,
-      error:
-        error instanceof Error ? error.message : "Operation execution failed",
-    });
+    whatsappLog("command_failed", { action: message.action, errorCode: errorCode(error) });
+    if (process.connected) process.send?.({ id: message.id, error: error instanceof Error ? error.message : "Operation execution failed" });
   }
 }
 
-async function shutdown() {
-  try {
-    await killBrowserProcess();
-    if (client) {
-      await client.destroy();
-    }
-    if (companyId) {
-      const authDataPath = resolve(process.env.EMOJI_DATA_DIR!, "whatsapp-auth");
-      const sessionDir = resolve(authDataPath, `session-${companyId}`);
-      const lockPath = resolve(sessionDir, "session.lock");
-      if (existsSync(lockPath)) {
-        try { rmSync(lockPath, { force: true }); } catch {}
-      }
-    }
-  } catch {
-    // Ignore errors during shutdown
-  } finally {
-    process.exit(0);
-  }
+function shutdown(code = 0): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  stopping = true;
+  shutdownPromise = (async () => {
+    whatsappLog("worker_shutdown", { workerPid: process.pid, code });
+    const timeout = setTimeout(() => process.exit(1), 35000);
+    try { await session.stop(); }
+    catch (error) { code = 1; whatsappLog("shutdown_incomplete", { errorCode: errorCode(error) }); }
+    finally { clearTimeout(timeout); process.exit(code); }
+  })();
+  return shutdownPromise;
 }
-
-process.on("uncaughtException", async (err) => {
-  console.error("[WhatsApp Worker] Uncaught exception:", err);
-  await shutdown();
-});
-process.on("unhandledRejection", async (reason) => {
-  console.error("[WhatsApp Worker] Unhandled rejection:", reason);
-  await shutdown();
-});
-
+process.on("uncaughtException", error => { whatsappLog("uncaught_exception", { errorCode: errorCode(error) }); void shutdown(1); });
+process.on("unhandledRejection", error => { whatsappLog("unhandled_rejection", { errorCode: errorCode(error) }); void shutdown(1); });
 process.on("disconnect", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());

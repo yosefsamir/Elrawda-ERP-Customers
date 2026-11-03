@@ -1,8 +1,8 @@
-import { fork, execFileSync, execSync, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { fork, execFileSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { WhatsAppRecovery } from "../../packages/runtime/whatsapp-recovery.js";
+import { whatsappLog } from "../../packages/runtime/whatsapp-log.js";
 
 export class WhatsAppBridge {
   private child?: ChildProcess;
@@ -15,7 +15,9 @@ export class WhatsAppBridge {
     }
   >();
   private targetCompanyId: string | null = null;
-  private watchdogTimer?: NodeJS.Timeout;
+  private recoveryTimer?: NodeJS.Timeout;
+  private recovery = new WhatsAppRecovery();
+  private connectInFlight?: Promise<any>;
   private stopping = false;
 
   state: {
@@ -27,21 +29,32 @@ export class WhatsAppBridge {
     pushname?: string;
     platform?: string;
     workerPid?: number;
+    reason?: string;
+    requiresReauth?: boolean;
+    recoveryBlocked?: boolean;
+    retryAttempt?: number;
   } = { companyId: null, status: "disconnected" };
 
-  constructor(private dataDir: string) {
-    this.startWatchdog();
-  }
+  constructor(private dataDir: string, private forkWorker: typeof fork = fork) {}
 
-  private killRecordedBrowser(companyId: string | null) {
-    if (process.platform !== "win32" || !companyId) return;
-    try {
-      const lockPath = resolvePath(this.dataDir, "whatsapp-auth", `session-${companyId}`, "session.lock");
-      const { browserPid } = JSON.parse(readFileSync(lockPath, "utf8"));
-      if (!Number.isInteger(browserPid)) return;
-      const listed = execFileSync("tasklist.exe", ["/FI", `PID eq ${browserPid}`, "/FI", "IMAGENAME eq chrome.exe", "/NH", "/FO", "CSV"], { encoding: "utf8", windowsHide: true });
-      if (listed.toLowerCase().includes("chrome.exe")) execFileSync("taskkill.exe", ["/PID", String(browserPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-    } catch {}
+  private scheduleRecovery() {
+    if (this.stopping || !this.targetCompanyId || this.recoveryTimer || this.state.recoveryBlocked ||
+      ["ready", "starting", "qr", "reconnecting"].includes(this.state.status)) return;
+    const delayMs = this.recovery.nextDelay();
+    if (delayMs === null) {
+      this.state = { ...this.state, status: "error", recoveryBlocked: true,
+        error: "تعذر استرداد واتساب بعد 8 محاولات. راجع السجل ثم اضغط ربط واتساب للمحاولة مجددًا." };
+      whatsappLog("recovery_exhausted", { companyId: this.targetCompanyId, attempts: this.recovery.attempts });
+      return;
+    }
+    this.state.retryAttempt = this.recovery.attempts;
+    whatsappLog("recovery_scheduled", { companyId: this.targetCompanyId, attempt: this.recovery.attempts, delayMs });
+    this.recoveryTimer = setTimeout(() => {
+      this.recoveryTimer = undefined;
+      const companyId = this.targetCompanyId;
+      if (companyId && !this.stopping) void this.call(companyId, "connect", { automatic: true }).catch(() => this.scheduleRecovery());
+    }, delayMs);
+    this.recoveryTimer.unref();
   }
 
   getWorkerPid(): number | undefined {
@@ -49,42 +62,41 @@ export class WhatsAppBridge {
   }
 
   autoConnect(companyId: string) {
-    this.targetCompanyId = companyId;
-    this.call(companyId, "connect").catch((err) => {
-      console.error(`[WhatsAppBridge] Auto-connect attempt failed:`, err.message);
-    });
+    void this.call(companyId, "connect", { automatic: true }).catch(() => this.scheduleRecovery());
   }
 
-  private startWatchdog() {
-    this.watchdogTimer = setInterval(() => {
-      if (
-        this.targetCompanyId &&
-        this.state.status !== "ready" &&
-        this.state.status !== "starting" &&
-        this.state.status !== "qr"
-      ) {
-        console.log(
-          `[WhatsApp Watchdog] Status is '${this.state.status}'. Auto-reconnecting company ${this.targetCompanyId}...`,
-        );
-        this.call(this.targetCompanyId, "connect").catch((err) => {
-          console.error("[WhatsApp Watchdog] Auto-reconnect failed:", err.message);
-        });
-      }
-    }, 15000);
-    this.watchdogTimer.unref();
-  }
-
-  async call(companyId: string, action: string, payload: unknown = {}) {
-    if (this.stopping) throw new Error("جارٍ إغلاق عامل واتساب");
-    if (this.state.companyId && this.state.companyId !== companyId) throw new Error("جلسة شركة أخرى نشطة؛ افصلها أولًا.");
+  call(companyId: string, action: string, payload: any = {}): Promise<any> {
+    if (this.stopping) return Promise.reject(new Error("جارٍ إغلاق عامل واتساب"));
+    if ((this.targetCompanyId && this.targetCompanyId !== companyId) ||
+        (this.state.companyId && this.state.companyId !== companyId)) return Promise.reject(new Error("جلسة شركة أخرى نشطة؛ افصلها أولًا."));
     if (action === "connect") {
+      if (this.connectInFlight) return this.connectInFlight;
+      if (!payload.automatic) {
+        clearTimeout(this.recoveryTimer);
+        this.recoveryTimer = undefined;
+        this.recovery.reset();
+      }
       this.targetCompanyId = companyId;
-    } else if (action === "disconnect") {
-      this.targetCompanyId = null;
+      const request = this.request(companyId, action, payload).catch(error => {
+        this.state = { ...this.state, status: "error", error: "تعذر تشغيل جلسة واتساب؛ راجع سجل الخدمة." };
+        this.scheduleRecovery();
+        throw error;
+      });
+      this.connectInFlight = request;
+      void request.finally(() => { if (this.connectInFlight === request) this.connectInFlight = undefined; }).catch(() => {});
+      return request;
     }
+    if (action === "disconnect") {
+      this.targetCompanyId = null;
+      clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = undefined;
+    }
+    return this.request(companyId, action, payload);
+  }
 
+  private async request(companyId: string, action: string, payload: unknown) {
     if (!this.child) {
-      this.child = fork(
+      this.child = this.forkWorker(
         fileURLToPath(new URL(`../whatsapp-worker/index.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url)),
         [],
         {
@@ -92,11 +104,20 @@ export class WhatsAppBridge {
           stdio: ["ignore", "inherit", "inherit", "ipc"],
         },
       );
-      this.state.workerPid = this.child.pid;
+      const child = this.child;
+      this.state.workerPid = child.pid;
+      whatsappLog("worker_started", { workerPid: child.pid, companyId });
 
       this.child.on("message", (message: any) => {
+        if (this.child !== child) return;
         if (message.type === "state") {
-          this.state = { ...message.state, workerPid: this.child?.pid };
+          this.state = { ...message.state, workerPid: child.pid };
+          this.recovery.observe(this.state.status);
+          if (["ready", "qr"].includes(this.state.status) || this.state.recoveryBlocked) {
+            clearTimeout(this.recoveryTimer);
+            this.recoveryTimer = undefined;
+          }
+          this.scheduleRecovery();
         }
         if (message.id) {
           const item = this.pending.get(message.id);
@@ -110,38 +131,29 @@ export class WhatsAppBridge {
         }
       });
       this.child.on("error", (error) => {
+        if (this.child !== child) return;
+        whatsappLog("worker_error", { workerPid: child.pid, errorCode: (error as any).code });
         this.state = { ...this.state, status: "error", error: error.message };
+        this.scheduleRecovery();
       });
-      this.child.on("exit", (code) => {
-        const exitedCompanyId = this.state.companyId ?? this.targetCompanyId;
+      const workerExited = (code: number | null, signal: NodeJS.Signals | null) => {
+        if (this.child !== child) return;
         this.child = undefined;
-        this.state = {
-          companyId: null,
-          status: "disconnected",
-          error: "توقف عامل واتساب؛ جارٍ استعادة الاتصال تلقائيًا...",
-          workerPid: undefined,
-        };
+        whatsappLog("worker_exit", { workerPid: child.pid, companyId: this.targetCompanyId, code, signal });
+        this.state = { ...this.state, status: this.state.recoveryBlocked ? "error" : "disconnected",
+          qr: undefined, workerPid: undefined,
+          error: this.state.recoveryBlocked ? this.state.error : "توقف عامل واتساب؛ جارٍ استعادة الاتصال تلقائيًا..." };
         for (const item of this.pending.values()) {
           clearTimeout(item.timer);
           item.reject(new Error("عامل واتساب غير متاح"));
         }
         this.pending.clear();
-
-        // Process cleanup for orphaned Chromium / child processes on Windows (M7)
-        this.killRecordedBrowser(exitedCompanyId);
-
-        // Automatic immediate recovery if session was active (H7)
-        if (this.targetCompanyId && !this.stopping) {
-          console.log(`[WhatsApp Bridge] Worker exited with code ${code}. Auto-recovering session for company ${this.targetCompanyId}...`);
-          setTimeout(() => {
-            if (this.targetCompanyId && !this.stopping && !this.child) {
-              this.call(this.targetCompanyId, "connect").catch((err) => {
-                console.error("[WhatsApp Bridge] Auto-recovery connect failed:", err.message);
-              });
-            }
-          }, 2000).unref();
-        }
-      });
+        // The next worker obtains the OS-backed profile lease and verifies browser command
+        // line ownership before cleaning orphans. Never kill a stale recorded PID by name.
+        this.scheduleRecovery();
+      };
+      child.on("exit", workerExited);
+      child.on("close", workerExited);
     }
     if (this.state.companyId && this.state.companyId !== companyId)
       throw new Error(
@@ -152,9 +164,13 @@ export class WhatsAppBridge {
       const timer = setTimeout(
         () => {
           this.pending.delete(id);
+          if (action === "connect") {
+            this.state = { ...this.state, status: "error" };
+            void this.retireUnresponsiveWorker().catch(() => {});
+          }
           reject(new Error("انتهت مهلة العملية؛ لم نكرر الطلب."));
         },
-        action === "connect" ? 15000 : 25000,
+        action === "connect" ? 45000 : 25000,
       );
       this.pending.set(id, { resolve, reject, timer });
       this.child!.send({ id, companyId, action, payload }, (error) => {
@@ -163,40 +179,29 @@ export class WhatsAppBridge {
     });
   }
 
+  private async retireUnresponsiveWorker() {
+    const child = this.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise<void>((resolve, reject) => {
+      const force = () => {
+        whatsappLog("worker_force_stop", { workerPid: child.pid });
+        if (process.platform === "win32" && child.pid) {
+          try { execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 10000 }); }
+          catch (error) { reject(error); }
+        } else child.kill("SIGKILL");
+      };
+      const timeout = setTimeout(force, 40000);
+      child.once("exit", () => { clearTimeout(timeout); resolve(); });
+      if (child.connected) child.send({ action: "shutdown" }, error => { if (error) force(); });
+      else child.kill("SIGTERM");
+    }).catch(error => { whatsappLog("worker_stop_failed", { workerPid: child.pid }); throw error; });
+  }
+
   async stop() {
     this.stopping = true;
-    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
-    this.watchdogTimer = undefined;
+    clearTimeout(this.recoveryTimer);
+    this.recoveryTimer = undefined;
     this.targetCompanyId = null;
-    const child = this.child;
-    if (!child) return;
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        if (process.platform === "win32" && child.pid) {
-          try { execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: "ignore" }); } catch {}
-        } else {
-          child.kill("SIGKILL");
-        }
-      }, 5000);
-      child.once("exit", () => { clearTimeout(timeout); resolve(); });
-      // Graceful shutdown via IPC
-      if (child.connected) {
-        child.send({ action: "shutdown" }, (error) => {
-          if (error) {
-            if (process.platform === "win32" && child.pid) {
-              try { execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: "ignore" }); } catch {}
-            } else {
-              child.kill();
-            }
-          }
-        });
-      } else {
-        if (process.platform === "win32" && child.pid) {
-          try { execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: "ignore" }); } catch {}
-        } else {
-          child.kill();
-        }
-      }
-    });
+    await this.retireUnresponsiveWorker();
   }
 }
