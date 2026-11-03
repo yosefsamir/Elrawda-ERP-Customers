@@ -221,7 +221,7 @@ function Wait-OwnedProcessExit($InstallRoot, [int]$TimeoutSec) {
 
 # Stops the whole service: supervisor first so nothing respawns, then a graceful server
 # shutdown, then a forced stop limited to our own binaries. Throws if anything survives.
-function Stop-ServiceProcessTree($Config) {
+function Stop-ServiceProcessTree($Config, [bool]$AllowForce = $true) {
     $taskName = Get-ConfigProperty $Config 'TaskName'
     $releasePath = Get-ConfigProperty $Config 'ReleasePath'
     $dataDir = Get-ConfigProperty $Config 'DataDir'
@@ -245,6 +245,7 @@ function Stop-ServiceProcessTree($Config) {
     }
 
     if (-not (Wait-OwnedProcessExit $installRoot 45)) {
+        if (-not $AllowForce) { throw 'Graceful shutdown incomplete. Update aborted without force-stopping in-flight work.' }
         foreach ($proc in (Get-OwnedProcess $installRoot)) {
             Write-Warning "Forcing stop of $($proc.Name) (PID $($proc.ProcessId)): $($proc.ExecutablePath)"
             Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue

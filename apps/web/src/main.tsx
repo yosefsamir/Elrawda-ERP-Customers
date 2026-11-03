@@ -5,8 +5,6 @@ import {
     FileChartColumn,
   LayoutDashboard,
   LogOut,
-  Pause,
-  Play,
   Plus,
   Settings2,
   Users,
@@ -20,7 +18,6 @@ import {
   Overview,
   Branches,
   Settings,
-  Connections,
 } from "./views";
 import "./styles.css";
 
@@ -102,10 +99,7 @@ function App() {
       null,
     ),
     [fatal, setFatal] = useState(""),
-    [addingCompany, setAddingCompany] = useState(false),
-    [pauseModal, setPauseModal] = useState(false),
-    [pauseTime, setPauseTime] = useState(""),
-    [busy, setBusy] = useState(false);
+    [addingCompany, setAddingCompany] = useState(false);
   const notify = useCallback((message: string, error = false) => {
     setToast({ message, error });
   }, []);
@@ -162,29 +156,6 @@ function App() {
     } catch (e) {
       notify((e as Error).message, true);
       setLoading(false);
-    }
-  }
-  async function processing(paused: boolean, mode?: "preview" | "live") {
-    setBusy(true);
-    try {
-      await post("/processing", {
-        paused,
-        until: paused && pauseTime ? new Date(pauseTime).toISOString() : null,
-        mode,
-      });
-      await refresh();
-      setPauseModal(false);
-      notify(
-        paused
-          ? "تم إيقاف المعالجة مؤقتًا؛ الواجهة والمزامنة تظل متاحة."
-          : (mode ?? company.runMode) === "live"
-          ? "تم تفعيل التشغيل الفعلي (Live Mode) بنجاح."
-          : "تم تفعيل وضع المعاينة.",
-      );
-    } catch (e) {
-      notify((e as Error).message, true);
-    } finally {
-      setBusy(false);
     }
   }
   if (fatal)
@@ -245,7 +216,8 @@ function App() {
   const props = { company, refresh, notify };
   const whatsappReady = company.whatsapp.status === "ready";
   const databaseReady = Boolean(company.source) && !company.source.last_error;
-  const running = company.runMode === "live" && !company.paused;
+  const activeServices=Object.values(company.workers??{}).filter(Boolean).length;
+  const running = activeServices>0;
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -325,52 +297,8 @@ function App() {
       </aside>
       <div className="main-shell">
         <header className="topbar">
-          <div className={"run-state " + (running ? "live" : "idle")}>
-            <i />
-            <div>
-              <strong>
-                {running
-                  ? "التشغيل الفعلي"
-                  : company.runMode === "live"
-                  ? "التشغيل الفعلي متوقف"
-                  : "المعاينة"}
-              </strong>
-              <span>
-                {running
-                  ? whatsappReady
-                    ? "الإضافة التلقائية للعملاء تعمل."
-                    : "الإضافة متوقفة حتى يتصل واتساب."
-                  : "يقرأ البرنامج العملاء ويصنفهم، ولا يضيف أحدًا على واتساب."}
-              </span>
-            </div>
-          </div>
-          <div className="topbar-actions">
-            {company.runMode === "live" ? (
-              <>
-                <Button kind="secondary" disabled={busy} onClick={() => void processing(company.paused, "preview")}>
-                  رجوع للمعاينة
-                </Button>
-                <Button
-                  kind="secondary"
-                  disabled={busy}
-                  onClick={() => (company.paused ? void processing(false) : setPauseModal(true))}
-                >
-                  {company.paused ? <Play size={15} /> : <Pause size={15} />}
-                  {company.paused ? "استئناف" : "إيقاف مؤقت"}
-                </Button>
-              </>
-            ) : (
-              <Button
-                busy={busy}
-                disabled={!databaseReady || !whatsappReady}
-                title={!databaseReady || !whatsappReady ? "اربط قاعدة البيانات وواتساب أولًا" : undefined}
-                onClick={() => void processing(false, "live")}
-              >
-                <Play size={15} />
-                بدء التشغيل الفعلي
-              </Button>
-            )}
-          </div>
+          <div className={"run-state " + (running && whatsappReady ? "live" : "idle")}><i/><div><strong>{running?"الخدمات مفعلة":"الخدمات متوقفة"}</strong><span>{running?whatsappReady?"تابع حالة كل خدمة من الإعدادات.":"بانتظار اتصال واتساب لاستكمال الخدمات.":"اختار الخدمة المطلوبة وشغّلها من الإعدادات."}</span></div></div>
+          <button type="button" className="text-button" onClick={()=>setPage("settings")}><Settings2 size={16}/>إعدادات الخدمات</button>
         </header>
         <main className="main-content">
           {addingCompany ? (
@@ -404,7 +332,7 @@ function App() {
           ) : page === "settings" ? (
             <Settings key={company.id} {...props} />
           ) : (
-            <Connections {...props} />
+            <Settings key={company.id+"-connections"} {...props} initialTab="database" />
           )}
         </main>
       </div>
@@ -416,49 +344,7 @@ function App() {
           </button>
         </div>
       )}
-      {pauseModal && (
-        <div className="modal-backdrop">
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="pause-title"
-            className="modal"
-          >
-            <button
-              className="modal-close"
-              aria-label="إغلاق"
-              onClick={() => setPauseModal(false)}
-            >
-              <X size={20} />
-            </button>
-            <div className="modal-symbol">
-              <Pause size={24} />
-            </div>
-            <h2 id="pause-title">إيقاف المعالجة مؤقتًا</h2>
-            <p>
-              تظل لوحة المتابعة وقراءة العملاء متاحة. لا يبدأ أي إجراء جديد.
-            </p>
-            <Field
-              label="الاستئناف في وقت محدد — اختياري"
-              hint="اتركه فارغًا للإيقاف حتى تستأنف يدويًا. وقت الإدخال حسب توقيت جهازك."
-            >
-              <input
-                type="datetime-local"
-                value={pauseTime}
-                onChange={(e) => setPauseTime(e.target.value)}
-              />
-            </Field>
-            <div className="modal-actions">
-              <Button kind="secondary" onClick={() => setPauseModal(false)}>
-                رجوع
-              </Button>
-              <Button busy={busy} onClick={() => void processing(true)}>
-                تأكيد الإيقاف
-              </Button>
-            </div>
-          </section>
-        </div>
-      )}
+
     </div>
   );
 }

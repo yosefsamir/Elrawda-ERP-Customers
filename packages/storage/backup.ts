@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, basename } from "node:path";
+import { workflowVersion } from "./compatibility.js";
 import { acquireLock } from "../runtime/lock.js";
 import { localSecretStore } from "../../apps/server/security.js";
 
@@ -39,6 +40,7 @@ export function verifyBackup(folder: string) {
       for (const row of configs) secrets.decrypt(row.config);
     }
     const row = db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as {version:number};
+    if (workflowVersion(db)>2) throw new Error("Backup workflow schema is newer than this release");
     if (row.version > 2) throw new Error("Backup schema is newer than this release");
     return row.version;
   } finally { db.close(); }

@@ -11,10 +11,11 @@ $flag = Join-Path $StateRoot 'data\maintenance.flag'
 [IO.File]::WriteAllText($flag, 'rollback')
 
 try {
-    # If server is running, stop it gracefully
-    if (Test-Path (Join-Path $config.DataDir 'shutdown.json')) {
-        Invoke-Admin $config @('stop')
-    }
+    Stop-ServiceProcessTree $config -AllowForce $false
+
+    $currentNode = Get-NodePath $config.ReleasePath
+    & $currentNode (Join-Path $config.ReleasePath 'dist\runtime\scripts\maintenance\probe.js') $config.DataDir --check-rollback --target-release $config.PreviousRelease
+    if ($LASTEXITCODE -ne 0) { throw 'Previous release cannot resume active workflows. Maintenance remains enabled.' }
 
     $previousNode = Get-NodePath $config.PreviousRelease
     & $previousNode (Join-Path $config.PreviousRelease 'dist\runtime\scripts\maintenance\probe.js') $config.DataDir --readonly
@@ -32,6 +33,7 @@ try {
     Copy-Item (Join-Path $previous 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
 
     Remove-Item $flag -Force
+    Start-ScheduledTask -TaskName $config.TaskName
     Wait-Ready $config
     Write-Host "Previous release started successfully using current customer data. No database backup was restored." -ForegroundColor Green
 } catch {

@@ -70,7 +70,7 @@ $switched = $false
 try {
     Write-Host "Stopping current running service gracefully..." -ForegroundColor Cyan
     $stopped = $true
-    Stop-ServiceProcessTree $config
+    Stop-ServiceProcessTree $config -AllowForce $false
 
     Write-Host "Creating consistent offline pre-update backup..." -ForegroundColor Cyan
     Write-InstallStage 'backup'
@@ -96,6 +96,7 @@ try {
     $config.ReleasePath = $target
     $config.NodePath = $targetNode
     Write-JsonFile (Join-Path $StateRoot 'service.json') $config
+    $switched = $true
 
     Copy-Item (Join-Path $target 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
     Copy-Item (Join-Path $target 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
@@ -135,17 +136,19 @@ try {
     } else {
         # Activation was performed, but server failed to become ready
         [IO.File]::WriteAllText($flag, (([pscustomobject]@{ reason = 'recovery'; pid = $null; startTime = (Get-Date -Format o) }) | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+        # Release the database lock and drain new workers before inspecting rollback compatibility.
+        Stop-ServiceProcessTree $config -AllowForce $false
         $oldNode = Get-NodePath $oldRelease
         $canRollback = $false
         try {
+            & $targetNode (Join-Path $target 'dist\runtime\scripts\maintenance\probe.js') $config.DataDir --check-rollback --target-release $oldRelease
+            if ($LASTEXITCODE -ne 0) { throw 'Previous release does not support the active workflows.' }
             & $oldNode (Join-Path $oldRelease 'dist\runtime\scripts\maintenance\probe.js') $config.DataDir --readonly
             if ($LASTEXITCODE -eq 0) { $canRollback = $true }
         } catch {}
 
         if ($canRollback) {
             Write-Warning "New release failed readiness checks. Database schema is compatible with previous release. Automatically rolling back to $oldRelease..."
-            # Stop failed new release server process tree before switching back (M2)
-            Stop-ServiceProcessTree $config
             $config.ReleasePath = $oldRelease
             $config.NodePath = $oldNode
             Write-JsonFile (Join-Path $StateRoot 'service.json') $config

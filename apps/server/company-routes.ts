@@ -110,7 +110,10 @@ export function registerCompanyRoutes(
       row.whatsapp_name = status.pushname || null;
     }
 
+    const workflow=db.prepare('SELECT * FROM workflow_settings WHERE company_id=?').get(id) as any;
+    const live=row.run_mode==='live' && !row.paused;
     return {
+      workers:{fresh:live&&(workflow?!!workflow.fresh_enabled:true),historical:live&&(workflow?!!workflow.historical_enabled:JSON.parse(row.settings).historicalDailyLimit>0),message:live&&!!workflow?.messages_enabled},
       ...row,
       settings: JSON.parse(row.settings),
       source: source ?? null,
@@ -120,6 +123,7 @@ export function registerCompanyRoutes(
         pushname: status.pushname || row.whatsapp_name || null,
       },
       runMode: row.run_mode || "preview",
+      workflowMode: (db.prepare("SELECT mode FROM workflow_settings WHERE company_id=?").get(id) as any)?.mode ?? "legacy",
       today: cairoDay(),
     };
   });

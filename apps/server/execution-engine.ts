@@ -35,9 +35,11 @@ export class ExecutionEngine {
   }
   private runnable(id: string) {
     if (this.stopping) return false;
-    return Boolean(this.db.prepare("SELECT 1 FROM companies WHERE id=? AND paused=0 AND run_mode='live'").get(id));
+    return Boolean(this.db.prepare("SELECT 1 FROM companies WHERE id=? AND paused=0 AND run_mode='live' AND NOT EXISTS(SELECT 1 FROM workflow_settings WHERE company_id=companies.id AND mode='invoices')").get(id));
   }
   private destinationCurrent(id: string, customer: any, groupId: string) {
+    const controls=this.db.prepare('SELECT fresh_enabled,historical_enabled FROM workflow_settings WHERE company_id=?').get(id) as any;
+    if(customer.is_baseline ? controls?.historical_enabled===0 : controls?.fresh_enabled===0)return false;
     const settings=this.repo.settings(id);
     const branch=this.db.prepare("SELECT enabled,group_id,source_active FROM branches WHERE company_id=? AND program_id=? AND branch_id=?")
       .get(id,customer.program_id,customer.branch_id) as {enabled:number;group_id:string|null;source_active:number}|undefined;
@@ -53,14 +55,16 @@ export class ExecutionEngine {
     const companies = this.db.prepare("SELECT id,name,settings,paused,pause_until FROM companies WHERE run_mode='live'").all() as any[];
     for (const comp of companies) {
       if (this.stopping) break;
+      if (this.db.prepare("SELECT 1 FROM workflow_settings WHERE company_id=? AND mode='invoices'").get(comp.id)) continue;
       if (comp.paused && comp.pause_until && comp.pause_until <= new Date().toISOString()) {
         this.db.prepare("UPDATE companies SET paused=0,pause_until=NULL WHERE id=?").run(comp.id);
         this.repo.audit(comp.id, "processing.resume_scheduled");
       }
       if (!this.runnable(comp.id) || this.wa.state.companyId !== comp.id || this.wa.state.status !== "ready") continue;
+      const workers=this.db.prepare("SELECT fresh_enabled,historical_enabled FROM workflow_settings WHERE company_id=?").get(comp.id) as any;
       const settings: CompanySettings = JSON.parse(comp.settings);
       const day = cairoDay();
-      let allowHistorical = isWithinCairoWorkHours(settings.workStart,settings.workEnd) && settings.historicalDailyLimit > 0;
+      let allowHistorical = isWithinCairoWorkHours(settings.workStart,settings.workEnd) && settings.historicalDailyLimit > 0 && workers?.historical_enabled!==0;
       let eligibleBranchIds: number[] | undefined;
       if (allowHistorical && settings.historicalLimitScope === "total") {
         allowHistorical = this.repo.getDailyUsage(comp.id,day) < settings.historicalDailyLimit;
@@ -70,7 +74,7 @@ export class ExecutionEngine {
           .map(b => b.branch_id).filter(id => this.repo.getDailyUsage(comp.id,day,id) < settings.historicalDailyLimit);
         allowHistorical = eligibleBranchIds.length > 0;
       }
-      const candidate = this.repo.getNextQueueCandidate(comp.id,{allowHistorical,eligibleBranchIds});
+      const candidate = this.repo.getNextQueueCandidate(comp.id,{allowHistorical,eligibleBranchIds,allowFresh:workers?.fresh_enabled!==0});
       if (!candidate) continue;
       const {customer,isNew} = candidate;
       let groupId: string = settings.distributionMode === "global" ? settings.globalGroupId! : customer.group_id;

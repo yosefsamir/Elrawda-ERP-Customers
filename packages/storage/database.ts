@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { migrateWorkflows } from "./workflow-schema.js";
 
 export function openDatabase(filename: string) {
   mkdirSync(dirname(filename), { recursive: true });
@@ -14,7 +15,7 @@ export function openDatabase(filename: string) {
   if (version === 1 && filename !== ":memory:") {
     db.prepare("VACUUM INTO ?").run(`${filename}.pre-v2-${Date.now()}.sqlite`);
   }
-  db.transaction(() => {
+  try { db.transaction(() => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS operators(id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL);
@@ -67,7 +68,8 @@ export function openDatabase(filename: string) {
     );
     INSERT OR IGNORE INTO schema_migrations VALUES(2,datetime('now'));
   `);
-  })();
+  migrateWorkflows(db);
+  })(); } catch(error) { db.close(); throw error; }
   return db;
 }
 export type AppDatabase = ReturnType<typeof openDatabase>;

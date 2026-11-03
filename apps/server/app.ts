@@ -10,6 +10,9 @@ import { CompanyRepository } from "../../packages/storage/company-repository.js"
 import { localSecretStore, tokenHash } from "./security.js";
 import { WhatsAppBridge } from "./whatsapp-bridge.js";
 import { ExecutionEngine } from "./execution-engine.js";
+import { InvoiceWorkers } from "./invoice-workers.js";
+import { invoiceVerifier } from "./invoice-verifier.js";
+import { registerWorkflowRoutes } from "./workflow-routes.js";
 import { SyncService } from "./sync-service.js";
 import { registerAuth } from "./auth-routes.js";
 import { registerCompanyRoutes } from "./company-routes.js";
@@ -24,14 +27,23 @@ export async function createApp(options: {
     wa = new WhatsAppBridge(options.dataDir);
   const sync = new SyncService(db,repo,secrets,options.root);
   const engine = new ExecutionEngine(db, repo, wa);
+  const invoiceWorkers = new InvoiceWorkers(db,repo,wa,invoiceVerifier(db,repo,secrets));
 
+  let dispatchTimer:NodeJS.Timeout|undefined,dispatchInFlight:Promise<void>|undefined,closing=false;
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: 3 * 1024 * 1024,
     disableRequestLogging: true,
   });
   app.addHook("onListen", async () => {
-    engine.start(3500);
+    // One dispatcher owns WhatsApp writes, including legacy mode during migration.
+    dispatchTimer=setInterval(()=>{
+      if(closing||dispatchInFlight)return;
+      dispatchInFlight=(async()=>{await engine.tick();if(!closing)await invoiceWorkers.tick();})()
+        .catch(()=>console.error('Service dispatch cycle failed; persisted tasks retained.'))
+        .finally(()=>{dispatchInFlight=undefined;});
+    },3500);
+    dispatchTimer.unref();
     // Automatically connect WhatsApp on boot if a saved session exists
     try {
       const companies = db
@@ -163,6 +175,7 @@ export async function createApp(options: {
   });
   registerAuth(app, { db, repo, secrets, wa, sync, root: options.root });
   registerCompanyRoutes(app, { db, repo, secrets, wa, sync, root: options.root });
+  registerWorkflowRoutes(app,{db,repo,secrets,wa,sync,root:options.root});
   const dist = resolve(options.root, "dist/web");
   if (existsSync(dist)) {
     await app.register(staticFiles, { root: dist });
@@ -176,6 +189,7 @@ export async function createApp(options: {
   app.get("/healthz", async () => ({
     ok: true,
     schemaVersion: 2,
+    workflowVersion: 2,
     version,
     whatsapp: {
       status: wa.state.status,
@@ -190,11 +204,13 @@ export async function createApp(options: {
   },30000);
   syncTimer.unref();
   app.addHook("onClose", async () => {
+    closing=true;
+    if(dispatchTimer)clearInterval(dispatchTimer);
     clearInterval(syncTimer);
     try {
-      await Promise.allSettled([sync.stop(), engine.stop()]);
+      await Promise.allSettled([sync.stop(), engine.stop(), invoiceWorkers.stop(),dispatchInFlight]);
       await wa.stop();
     } finally { db.close(); }
   });
-  return { app, db, repo, wa, engine, sync };
+  return { app, db, repo, wa, engine, sync, invoiceWorkers };
 }

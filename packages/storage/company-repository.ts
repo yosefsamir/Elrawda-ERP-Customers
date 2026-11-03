@@ -337,6 +337,7 @@ export class CompanyRepository {
     companyId: string,
     options: {
       allowHistorical: boolean;
+      allowFresh?: boolean;
       eligibleBranchIds?: number[];
     },
   ) {
@@ -348,7 +349,7 @@ export class CompanyRepository {
       FROM customers c JOIN branches b ON b.company_id=c.company_id AND b.program_id=c.program_id AND b.branch_id=c.branch_id
       WHERE c.company_id=? AND c.source_active=1 AND b.source_active=1 AND c.phone_state='valid' AND c.membership_state='not_attempted'
       AND b.enabled=1 AND (c.retry_after IS NULL OR c.retry_after <= '${new Date().toISOString()}') AND ${destination}`;
-    const fresh = this.db.prepare(`${select} AND c.is_baseline=0 ORDER BY c.first_seen,c.branch_id,c.person_id LIMIT 1`).get(companyId) as any;
+    const fresh = options.allowFresh===false ? null : this.db.prepare(`${select} AND c.is_baseline=0 ORDER BY c.first_seen,c.branch_id,c.person_id LIMIT 1`).get(companyId) as any;
     if (fresh) return {customer:fresh,isNew:true};
     if (!options.allowHistorical) return null;
     const branchList = options.eligibleBranchIds ?? (this.db.prepare(

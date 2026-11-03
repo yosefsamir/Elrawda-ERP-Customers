@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { ServiceSettings } from "./workflows";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   Database,
@@ -803,176 +804,34 @@ export function Branches({ company, refresh, notify }: ViewProps) {
     </>
   );
 }
-export function Settings({ company, refresh, notify }: ViewProps) {
-  const [settings, setSettings] = useState({ ...company.settings }),
-    [name, setName] = useState(company.name),
-    [logo, setLogo] = useState<File | null>(null),
-    [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    setSettings({ ...company.settings });
-    setName(company.name);
-  }, [company.id]);
-
-  const change = (key: string, value: unknown) =>
-    setSettings({ ...settings, [key]: value });
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      await put("/company", { name });
-      await put("/settings", settings);
-      if (logo) {
-        const form = new FormData();
-        form.append("logo", logo);
-        await api("/company/logo", { method: "POST", body: form });
-      }
-      await refresh();
-      setSettings({ ...settings });
-      notify("تم حفظ إعدادات الشركة.");
-    } catch (e) {
-      notify((e as Error).message, true);
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <>
-      <div className="page-heading">
-        <h1>الإعدادات</h1>
-      </div>
-      <form onSubmit={save} className="settings-form">
-        <section className="panel form-panel">
-          <h2 className="section-title">هوية الشركة</h2>
-          <div className="form-grid">
-            <Field label="اسم الشركة">
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                minLength={2}
-              />
-            </Field>
-            <Field
-              label="شعار الشركة"
-              hint="PNG أو JPEG أو WebP حتى 2 ميجابايت"
-            >
-              <label className="upload-box">
-                <ImagePlus size={20} />
-                <span>{logo ? logo.name : "اختر صورة"}</span>
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(e) => setLogo(e.target.files?.[0] ?? null)}
-                />
-              </label>
-            </Field>
-          </div>
-        </section>
-        <section className="panel form-panel">
-          <h2 className="section-title">التوزيع ودفعات العملاء</h2>
-          <div className="form-grid">
-            <Field
-              label="سياسة توزيع العملاء"
-              hint="يمكنك أيضاً تحديد الجروبات واختيار الجروب الموحد مباشرة من شاشة الفروع والجروبات"
-            >
-              <select
-                value={settings.distributionMode}
-                onChange={(e) => change("distributionMode", e.target.value)}
-              >
-                <option value="per_branch">جروب مستقل لكل فرع</option>
-                <option value="global">جروب عام لكل الفروع</option>
-              </select>
-            </Field>
-            <Field
-              label="حد فتح الجزء التالي"
-              hint="يشمل الأدمن والأعضاء؛ الحد الأقصى للجروب 1024"
-            >
-              <input
-                type="number"
-                min={10}
-                max={1024}
-                value={settings.rolloverThreshold}
-                onChange={(e) =>
-                  change("rolloverThreshold", Number(e.target.value))
-                }
-              />
-            </Field>
-            <Field
-              label="العملاء القدامى يوميًا"
-              hint="صفر يعني إيقاف دفعات القديم"
-            >
-              <input
-                type="number"
-                min={0}
-                max={10000}
-                value={settings.historicalDailyLimit}
-                onChange={(e) =>
-                  change("historicalDailyLimit", Number(e.target.value))
-                }
-              />
-            </Field>
-            <Field label="العدد محسوب على">
-              <select
-                value={settings.historicalLimitScope}
-                onChange={(e) => change("historicalLimitScope", e.target.value)}
-              >
-                <option value="total">إجمالي كل الفروع</option>
-                <option value="per_branch">لكل فرع على حدة</option>
-              </select>
-            </Field>
-            <Field label="بداية وقت العمل">
-              <input
-                type="time"
-                value={settings.workStart}
-                onChange={(e) => change("workStart", e.target.value)}
-              />
-            </Field>
-            <Field label="نهاية وقت العمل" hint="كل المواعيد بتوقيت القاهرة">
-              <input
-                type="time"
-                value={settings.workEnd}
-                onChange={(e) => change("workEnd", e.target.value)}
-              />
-            </Field>
-          </div>
-        </section>
-        <section className="panel form-panel">
-          <h2 className="section-title">دعوة الخصوصية</h2>
-          <label className="check-line">
-            <input
-              type="checkbox"
-              checked={settings.inviteOnPrivacy}
-              onChange={(e) => change("inviteOnPrivacy", e.target.checked)}
-            />
-            استخدام دعوة خاصة بالرابط عند تفعيل التشغيل الفعلي
-          </label>
-          <Field
-            label="نص الدعوة"
-            hint="المتغيرات: {customerName} · {companyName} · {destinationName} · {inviteLink}"
-          >
-            <textarea
-              rows={4}
-              value={settings.inviteTemplate}
-              onChange={(e) => change("inviteTemplate", e.target.value)}
-            />
-          </Field>
-          <Notice>
-            تُرسل الدعوة عند تفعيل Live فقط، وبعد منع الإضافة بسبب الخصوصية.
-            لن تُرسل أي دعوة أثناء المعاينة.
-          </Notice>
-        </section>
-        <div className="settings-save">
-          <Button busy={busy}>
-            <Save size={17} />
-            حفظ الإعدادات
-          </Button>
-        </div>
-      </form>
-    </>
-  );
+const settingsPages=[
+  {id:"company",label:"الشركة"},{id:"database",label:"قاعدة البيانات"},{id:"whatsapp",label:"ربط واتساب"},
+  {id:"groups",label:"الجروبات"},{id:"fresh",label:"إضافة المشترين"},{id:"message",label:"رسائل واتساب"},{id:"historical",label:"العملاء القدامى"},
+];
+export function Settings({company,refresh,notify,initialTab="company"}:ViewProps&{initialTab?:string}) {
+  const [tab,setTab]=useState(initialTab);
+  const tabs=useRef<HTMLElement>(null);
+  useEffect(()=>setTab(initialTab),[company.id,initialTab]);
+  useEffect(()=>{tabs.current?.querySelector('[aria-current="page"]')?.scrollIntoView({block:'nearest',inline:'nearest'});},[tab]);
+  const props={company,refresh,notify};
+  return <>
+    <div className="page-heading"><div><h1>الإعدادات</h1><p className="settings-intro">اختار الخدمة لإدارة إعداداتها وتشغيلها.</p></div></div>
+    <nav ref={tabs} className="settings-tabs" aria-label="أقسام الإعدادات">{settingsPages.map(p=><button type="button" key={p.id} aria-current={tab===p.id?'page':undefined} className={tab===p.id?'active':''} onClick={()=>setTab(p.id)}>{p.label}</button>)}</nav>
+    <div key={company.id+tab} className="settings-page-content">
+      {tab==='company'?<CompanySettings {...props}/>:tab==='database'||tab==='whatsapp'?<Connections {...props} section={tab==='database'?'sql':'whatsapp'}/>:tab==='groups'?<><Branches {...props}/><GroupCapacitySettings {...props}/></>:<ServiceSettings {...props} service={tab as 'fresh'|'message'|'historical'} navigate={setTab}/>}
+    </div>
+  </>;
 }
-export function Connections({ company, refresh, notify }: ViewProps) {
+function CompanySettings({company,refresh,notify}:ViewProps) {
+  const [name,setName]=useState(company.name),[logo,setLogo]=useState<File|null>(null),[busy,setBusy]=useState(false);
+  async function save(e:React.FormEvent) {e.preventDefault();setBusy(true);try{await put('/company',{name});if(logo){const form=new FormData();form.append('logo',logo);await api('/company/logo',{method:'POST',body:form});}await refresh();notify('تم حفظ بيانات الشركة.');}catch(e){notify((e as Error).message,true);}finally{setBusy(false);}}
+  return <form onSubmit={save}><section className="panel form-panel"><h2 className="section-title">بيانات الشركة</h2><div className="form-grid"><Field label="اسم الشركة"><input value={name} onChange={e=>setName(e.target.value)} required/></Field><Field label="شعار الشركة" hint="PNG أو JPEG أو WebP، حتى 2 ميجابايت"><label className="upload-box"><ImagePlus size={20}/><span>{logo?.name||'اختر صورة'}</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>setLogo(e.target.files?.[0]??null)}/></label></Field></div></section><div className="settings-save"><Button busy={busy}><Save size={17}/>حفظ بيانات الشركة</Button></div></form>;
+}
+function GroupCapacitySettings({company,refresh,notify}:ViewProps) {
+  const [limit,setLimit]=useState(company.settings.rolloverThreshold),[busy,setBusy]=useState(false);
+  return <form onSubmit={async e=>{e.preventDefault();setBusy(true);try{await put('/settings',{...company.settings,rolloverThreshold:limit});await refresh();notify('تم حفظ سعة الجروبات.');}catch(e){notify((e as Error).message,true);}finally{setBusy(false);}}}><section className="panel form-panel"><h2 className="section-title">سعة الجروبات</h2><Field label="فتح جروب جديد عند وصول الأعضاء إلى" hint="يشمل الأعضاء والأدمن، حتى 1024 عضوًا."><input type="number" min={10} max={1024} value={limit} onChange={e=>setLimit(Number(e.target.value))}/></Field><Button busy={busy}>حفظ سعة الجروبات</Button></section></form>;
+}
+export function Connections({ company, refresh, notify, section }: ViewProps & {section?:"sql"|"whatsapp"}) {
   const [busy, setBusy] = useState(false),
     [editingSource, setEditingSource] = useState(false);
   const source = company.source;
@@ -991,11 +850,9 @@ export function Connections({ company, refresh, notify }: ViewProps) {
   }
   return (
     <>
-      <div className="page-heading">
-        <h1>الاتصالات</h1>
-      </div>
-      <div className="connection-grid">
-        <section className="panel form-panel">
+      {!section&&<div className="page-heading"><h1>الاتصالات</h1></div>}
+      <div className={section ? "connection-single" : "connection-grid"}>
+        {section!=="whatsapp"&&<section className="panel form-panel">
           <div className="connection-title">
             <h2>
               <Database size={18} />
@@ -1024,7 +881,7 @@ export function Connections({ company, refresh, notify }: ViewProps) {
                 </div>
                 <div>
                   <span>المزامنة التلقائية</span>
-                  <strong>{source.kind === "sql" ? "كل 30 ثانية، ومراجعة كاملة كل ساعة" : "يدوية فقط"}</strong>
+                  <strong>{source.kind === "sql" ? (company.workflowMode === "invoices" ? "قراءة الفواتير كل 30 ثانية" : "كل 30 ثانية، ومراجعة كاملة كل ساعة") : "يدوية فقط"}</strong>
                 </div>
               </div>
               {source.last_error && <Notice tone="error">{source.last_error}</Notice>}
@@ -1044,8 +901,8 @@ export function Connections({ company, refresh, notify }: ViewProps) {
               </div>
             </>
           )}
-        </section>
-        <section className="panel form-panel">
+        </section>}
+        {section!=="sql"&&<section className="panel form-panel">
           <div className="connection-title">
             <h2>
               <Wifi size={18} />
@@ -1107,7 +964,7 @@ export function Connections({ company, refresh, notify }: ViewProps) {
               فصل الجلسة
             </Button>
           </div>
-        </section>
+        </section>}
       </div>
     </>
   );
