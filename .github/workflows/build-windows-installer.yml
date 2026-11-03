@@ -3,7 +3,8 @@ name: Build Windows x64 Installer
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    # Validate this production fix before merging or publishing an installer.
+    branches: [ main, codex/whatsapp-session-reliability ]
     tags:
       - 'v*'
 
