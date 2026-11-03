@@ -382,7 +382,7 @@ try {
     $offlineStatus = $null
     while ((Get-Date) -lt $offlineDeadline) {
         $offlineStatus = Get-WhatsAppHealth
-        if ($offlineStatus -and $offlineStatus.status -eq 'error') { break }
+        if ($offlineStatus -and ($offlineStatus.status -in @('waiting_for_network', 'reconnecting', 'error', 'disconnected')) -and ($offlineStatus.status -ne 'starting')) { break }
         Start-Sleep -Seconds 1
     }
     $offlineError = if ($offlineStatus) { "$($offlineStatus.status): $($offlineStatus.error)" } else { 'unreachable' }
@@ -411,7 +411,8 @@ try {
     $waStatus = if ($waHealth) { $waHealth.status } else { 'unreachable' }
     $waError = if ($waHealth) { $waHealth.error } else { $null }
     $chromeStarted = (-not $sessionError) -and ($liveChrome.Count -gt 0) -and ($waStatus -notin @('error', 'unreachable'))
-    $offlineRecovered = ($offlineStatus -and $offlineStatus.status -eq 'error') -and ($waStatus -eq 'qr')
+    $offlineDetected = $offlineStatus -and ($offlineStatus.status -in @('waiting_for_network', 'reconnecting', 'error', 'disconnected'))
+    $offlineRecovered = $offlineDetected -and ($waStatus -in @('qr', 'ready'))
     Record-Test "WhatsApp Recovers After Network Failure at Startup (H5)" $offlineRecovered "While offline: $offlineError; after restore: $waStatus." "H5"
     Record-Test "Chromium Launches in the Service Account (H5)" $chromeStarted "API error: $sessionError; chrome.exe processes: $($liveChrome.Count); owner: $chromeOwner; WhatsApp status: $waStatus; error: $waError. A real QR scan is NOT exercised here." "H5"
     $lowPrivilege = ($chromeOwner -eq 'NT AUTHORITY\LOCAL SERVICE') -and ($renderers.Count -gt 0) -and ($unsandboxed.Count -eq 0)

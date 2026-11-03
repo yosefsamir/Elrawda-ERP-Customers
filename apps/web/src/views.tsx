@@ -1051,16 +1051,20 @@ export function Connections({ company, refresh, notify }: ViewProps) {
               <Wifi size={18} />
               واتساب
             </h2>
-            <Badge tone={whatsapp.status === "ready" ? "green" : whatsapp.status === "error" ? "red" : "muted"}>
+            <Badge tone={whatsapp.status === "ready" ? "green" : (whatsapp.status === "error" || whatsapp.requiresReauth) ? "red" : whatsapp.status === "waiting_for_network" ? "amber" : "muted"}>
               {whatsapp.status === "ready"
                 ? "متصل"
-                : ["starting", "reconnecting"].includes(whatsapp.status)
-                  ? "جارٍ الاتصال"
-                  : whatsapp.status === "qr"
-                    ? "بانتظار المسح"
-                    : whatsapp.status === "error"
-                      ? "خطأ"
-                      : "غير متصل"}
+                : whatsapp.requiresReauth
+                  ? "يلزم إعادة الربط"
+                  : whatsapp.status === "waiting_for_network"
+                    ? "في انتظار الشبكة"
+                    : ["starting", "reconnecting"].includes(whatsapp.status)
+                      ? (whatsapp.status === "reconnecting" ? "جارٍ استعادة الاتصال" : "جارٍ الاتصال")
+                      : whatsapp.status === "qr"
+                        ? "بانتظار المسح"
+                        : whatsapp.status === "error"
+                          ? "خطأ"
+                          : "غير متصل"}
             </Badge>
           </div>
           {whatsapp.status === "ready" && (
@@ -1079,6 +1083,9 @@ export function Connections({ company, refresh, notify }: ViewProps) {
               )}
             </div>
           )}
+          {whatsapp.status === "waiting_for_network" && (
+            <p className="subtle">لا يوجد اتصال بالإنترنت. سيتم استئناف الاتصال تلقائيًا فور توفر الشبكة.</p>
+          )}
           {["starting", "reconnecting"].includes(whatsapp.status) && !whatsapp.qr && (
             <p className="subtle">جارٍ تشغيل المتصفح. قد يستغرق ذلك دقيقة.</p>
           )}
@@ -1092,7 +1099,7 @@ export function Connections({ company, refresh, notify }: ViewProps) {
           <div className="connection-actions">
             <Button
               busy={busy}
-              disabled={["ready", "starting", "qr", "reconnecting"].includes(whatsapp.status)}
+              disabled={["ready", "starting", "qr"].includes(whatsapp.status)}
               onClick={() => void action("/whatsapp/connect")}
             >
               <Link2 size={15} />

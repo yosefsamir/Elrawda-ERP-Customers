@@ -192,11 +192,19 @@ test("unpaired and conflict reasons require attention without takeover or auth d
 });
 
 test("recovery is exponentially backed off, capped, bounded, and only resets after stable ready", () => {
-  const recovery = new WhatsAppRecovery();
+  const recovery = new WhatsAppRecovery(8, null);
   assert.deepEqual(Array.from({ length: 8 }, () => recovery.nextDelay()), [2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
   assert.equal(recovery.nextDelay(), null);
   recovery.readySince = 0; assert.equal(recovery.nextDelay(59999), null);
   recovery.readySince = 0; assert.equal(recovery.nextDelay(60000), 2000);
+});
+
+test("recovery transitions to background interval when backgroundIntervalMs is configured", () => {
+  const recovery = new WhatsAppRecovery(8, 60000);
+  assert.deepEqual(Array.from({ length: 8 }, () => recovery.nextDelay()), [2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
+  assert.equal(recovery.isBackgroundPolling(), true);
+  assert.equal(recovery.nextDelay(), 60000);
+  assert.equal(recovery.nextDelay(), 60000);
 });
 
 class Worker extends EventEmitter {
@@ -213,9 +221,14 @@ class Worker extends EventEmitter {
   }
   kill() { this.exitCode = 1; this.emit("exit", 1, null); }
 }
-function bridgeFixture(t: any) {
+function bridgeFixture(t: any, networkChecker?: () => Promise<boolean>, recoveryOptions?: any) {
   const workers: Worker[] = [];
-  const bridge = new WhatsAppBridge(temp(t), (() => { const c = new Worker(); workers.push(c); return c; }) as any);
+  const bridge = new WhatsAppBridge(
+    temp(t),
+    (() => { const c = new Worker(); workers.push(c); return c; }) as any,
+    networkChecker ?? (async () => true),
+    recoveryOptions ?? { maxAttempts: 8, backgroundIntervalMs: null },
+  );
   cleanup(t, () => bridge.stop()); return { bridge, workers };
 }
 
@@ -288,7 +301,7 @@ test("Windows locked profile archive retries after the file owner releases its h
 
 
 test("a short ready interval followed by a long outage does not reset the recovery budget", () => {
-  const recovery = new WhatsAppRecovery(2);
+  const recovery = new WhatsAppRecovery(2, null);
   assert.equal(recovery.nextDelay(0), 2000);
   recovery.observe("ready", 0); recovery.observe("reconnecting", 5000);
   assert.equal(recovery.nextDelay(70000), 4000);
@@ -332,4 +345,105 @@ test("a delayed QR encoder cannot override authenticated or ready state", async 
   encode("old-qr"); await Promise.resolve();
   assert.equal(f.session.state.status, "starting"); assert.equal(f.session.state.qr, null);
   f.clients[0].emit("ready"); assert.equal(f.session.state.status, "ready");
+});
+
+test("simulated 5-minute, 1-hour, and 24-hour network outages preserve credentials and resume automatically on restoration", async t => {
+  let isOnline = false;
+  const dataDir = temp(t);
+  const credentialsPath = join(dataDir, "whatsapp-auth", "session-company", "credentials");
+  mkdirSync(join(dataDir, "whatsapp-auth", "session-company"), { recursive: true });
+  writeFileSync(credentialsPath, "sentinel-auth-data");
+
+  const workers: Worker[] = [];
+  const bridge = new WhatsAppBridge(
+    dataDir,
+    (() => { const c = new Worker(); workers.push(c); return c; }) as any,
+    async () => isOnline,
+    { maxAttempts: 8, backgroundIntervalMs: 60000 },
+  );
+  cleanup(t, () => bridge.stop());
+
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  await bridge.call("company", "connect");
+
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+  assert.equal(bridge.state.status, "waiting_for_network");
+  assert.equal(Boolean(bridge.state.requiresReauth), false);
+  assert.equal(Boolean(bridge.state.recoveryBlocked), false);
+  const initialWorkerCount = workers.length;
+
+  // 5-minute outage
+  t.mock.timers.tick(300000);
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+  assert.equal(bridge.state.status, "waiting_for_network");
+  assert.equal(workers.length, initialWorkerCount);
+  assert.equal(readFileSync(credentialsPath, "utf8"), "sentinel-auth-data");
+
+  // 1-hour outage
+  t.mock.timers.tick(3600000);
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+  assert.equal(bridge.state.status, "waiting_for_network");
+  assert.equal(workers.length, initialWorkerCount);
+  assert.equal(readFileSync(credentialsPath, "utf8"), "sentinel-auth-data");
+
+  // 24-hour outage
+  t.mock.timers.tick(86400000);
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+  assert.equal(bridge.state.status, "waiting_for_network");
+  assert.equal(workers.length, initialWorkerCount);
+  assert.equal(readFileSync(credentialsPath, "utf8"), "sentinel-auth-data");
+
+  // Network returns
+  isOnline = true;
+  t.mock.timers.tick(5000);
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+
+  assert.ok(workers.length > initialWorkerCount);
+  assert.equal(readFileSync(credentialsPath, "utf8"), "sentinel-auth-data");
+});
+
+test("recovery continues with background retries after 8 fast attempts and recovers when network returns", async t => {
+  let isOnline = true;
+  const { bridge, workers } = bridgeFixture(t, async () => isOnline, { maxAttempts: 8, backgroundIntervalMs: 60000 });
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  await bridge.call("company", "connect");
+
+  for (const ms of [2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]) {
+    workers.at(-1)!.kill();
+    t.mock.timers.tick(ms);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  }
+  assert.equal(workers.length, 9);
+
+  // Attempt 9 uses backgroundIntervalMs (60000ms) rather than blocking permanently
+  workers.at(-1)!.kill();
+  t.mock.timers.tick(60000);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  assert.equal(workers.length, 10);
+  assert.equal(Boolean(bridge.state.recoveryBlocked), false);
+
+  // Worker reports ready
+  workers.at(-1)!.emit("message", { type: "state", state: { companyId: "company", status: "ready" } });
+  assert.equal(bridge.state.status, "ready");
+});
+
+test("simulated Windows restart during an outage preserves saved LocalAuth credentials", async t => {
+  const dir = temp(t);
+  const profileDir = join(dir, "whatsapp-auth", "session-company");
+  mkdirSync(profileDir, { recursive: true });
+  writeFileSync(join(profileDir, "saved-credentials"), "session-tokens-intact");
+
+  const workers: Worker[] = [];
+  const bridge = new WhatsAppBridge(
+    dir,
+    (() => { const c = new Worker(); workers.push(c); return c; }) as any,
+    async () => false,
+  );
+  cleanup(t, () => bridge.stop());
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+
+  bridge.autoConnect("company");
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+  assert.equal(bridge.state.status, "waiting_for_network");
+  assert.equal(readFileSync(join(profileDir, "saved-credentials"), "utf8"), "session-tokens-intact");
 });

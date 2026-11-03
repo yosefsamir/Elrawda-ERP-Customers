@@ -1,5 +1,6 @@
 import { deadline, safeFailure, whatsappLog } from "../../packages/runtime/whatsapp-log.js";
 import { WhatsAppProfile, cleanProfileBrowsers } from "../../packages/runtime/whatsapp-profile.js";
+import { isNetworkError } from "../../packages/runtime/whatsapp-recovery.js";
 
 interface Session {
   client: any;
@@ -59,19 +60,29 @@ export class WhatsAppSession {
       const log = (event: string, fields = {}) => whatsappLog(event, { companyId, workerPid: process.pid, ...fields });
       const fail = (reason: string, reauth = false, blocked = false, error?: unknown) => {
         if (!this.alive(session)) return;
-        log("session_failure", { reason, requiresReauth: reauth, failure: error ? safeFailure(error) : undefined });
+        const isNet = isNetworkError(reason, error);
+        log("session_failure", { reason, requiresReauth: reauth, isNetwork: isNet, failure: error ? safeFailure(error) : undefined });
         if (reauth) {
           try { profile.markReauth(reason); }
           catch (cause) { this.options.fatal(cause); return; }
         }
-        this.publish({ status: reauth || blocked ? "error" : "reconnecting", qr: null, reason,
+        const activeStatus = reauth || blocked ? "error" : isNet ? "waiting_for_network" : "reconnecting";
+        const errorMsg = reauth
+          ? "انتهى ربط واتساب. اضغط ربط واتساب لمسح كود جديد."
+          : blocked
+            ? `توقف اتصال واتساب: ${reason}`
+            : isNet
+              ? "في انتظار اتصال الإنترنت؛ سيتم استعادة الاتصال تلقائيًا فور توفر الشبكة."
+              : "انقطع اتصال واتساب؛ جارٍ الاسترداد.";
+        this.publish({ status: activeStatus, qr: null, reason,
           requiresReauth: reauth, recoveryBlocked: reauth || blocked,
-          error: reauth ? "انتهى ربط واتساب. اضغط ربط واتساب لمسح كود جديد." : blocked ? `توقف اتصال واتساب: ${reason}` : "انقطع اتصال واتساب؛ جارٍ الاسترداد." });
+          error: errorMsg });
         // Invalidate callbacks synchronously; cleanup uses only this captured generation.
         const closing = this.stop();
-        void closing.then(() => this.publish({ status: reauth || blocked ? "error" : "disconnected", qr: null,
+        const settledStatus = reauth || blocked ? "error" : isNet ? "waiting_for_network" : "disconnected";
+        void closing.then(() => this.publish({ status: settledStatus, qr: null,
           reason, requiresReauth: reauth, recoveryBlocked: reauth || blocked,
-          error: reauth ? "انتهى ربط واتساب. اضغط ربط واتساب لمسح كود جديد." : blocked ? `توقف اتصال واتساب: ${reason}` : "انقطع اتصال واتساب؛ جارٍ الاسترداد." }), this.options.fatal);
+          error: errorMsg }), this.options.fatal);
       };
       client.on("qr", (value: string) => {
         if (!this.alive(session)) return;
@@ -150,7 +161,7 @@ export class WhatsAppSession {
         if (!this.alive(session)) return;
         if (reason === "CONNECTED") {
           this.unhealthySince = undefined;
-          if (this.state.status === "reconnecting") this.publish({ status: "ready", error: null });
+          if (["reconnecting", "waiting_for_network"].includes(this.state.status)) this.publish({ status: "ready", error: null });
         } else {
           whatsappLog("health_degraded", { companyId: this.state.companyId, reason });
           this.unhealthySince ??= Date.now();

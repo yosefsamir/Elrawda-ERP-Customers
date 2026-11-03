@@ -1,7 +1,7 @@
 import { fork, execFileSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { WhatsAppRecovery } from "../../packages/runtime/whatsapp-recovery.js";
+import { WhatsAppRecovery, checkNetworkReachability } from "../../packages/runtime/whatsapp-recovery.js";
 import { whatsappLog } from "../../packages/runtime/whatsapp-log.js";
 
 export class WhatsAppBridge {
@@ -16,9 +16,11 @@ export class WhatsAppBridge {
   >();
   private targetCompanyId: string | null = null;
   private recoveryTimer?: NodeJS.Timeout;
+  private networkWatcherTimer?: NodeJS.Timeout;
   private recovery = new WhatsAppRecovery();
   private connectInFlight?: Promise<any>;
   private stopping = false;
+  private checkNetworkFn: () => Promise<boolean>;
 
   state: {
     companyId: string | null;
@@ -35,26 +37,111 @@ export class WhatsAppBridge {
     retryAttempt?: number;
   } = { companyId: null, status: "disconnected" };
 
-  constructor(private dataDir: string, private forkWorker: typeof fork = fork) {}
+  constructor(
+    private dataDir: string,
+    private forkWorker: typeof fork = fork,
+    networkChecker?: () => Promise<boolean>,
+    recoveryOptions?: { maxAttempts?: number; backgroundIntervalMs?: number | null },
+  ) {
+    this.checkNetworkFn = networkChecker ?? checkNetworkReachability;
+    if (recoveryOptions) {
+      this.recovery = new WhatsAppRecovery(
+        recoveryOptions.maxAttempts ?? 8,
+        recoveryOptions.backgroundIntervalMs !== undefined ? recoveryOptions.backgroundIntervalMs : 60000,
+      );
+    }
+  }
 
   private scheduleRecovery() {
     if (this.stopping || !this.targetCompanyId || this.recoveryTimer || this.state.recoveryBlocked ||
-      ["ready", "starting", "qr", "reconnecting"].includes(this.state.status)) return;
+      ["ready", "starting", "qr"].includes(this.state.status)) return;
+
+    if (this.state.status === "waiting_for_network") {
+      this.ensureNetworkWatcher();
+      return;
+    }
+
     const delayMs = this.recovery.nextDelay();
     if (delayMs === null) {
-      this.state = { ...this.state, status: "error", recoveryBlocked: true,
-        error: "تعذر استرداد واتساب بعد 8 محاولات. راجع السجل ثم اضغط ربط واتساب للمحاولة مجددًا." };
+      this.state = {
+        ...this.state,
+        status: "error",
+        recoveryBlocked: true,
+        error: "تعذر استرداد واتساب بعد 8 محاولات. راجع السجل ثم اضغط ربط واتساب للمحاولة مجددًا.",
+      };
       whatsappLog("recovery_exhausted", { companyId: this.targetCompanyId, attempts: this.recovery.attempts });
       return;
     }
+    const isBackground = this.recovery.isBackgroundPolling();
     this.state.retryAttempt = this.recovery.attempts;
-    whatsappLog("recovery_scheduled", { companyId: this.targetCompanyId, attempt: this.recovery.attempts, delayMs });
+    whatsappLog(isBackground ? "recovery_background_scheduled" : "recovery_scheduled", {
+      companyId: this.targetCompanyId,
+      attempt: this.recovery.attempts,
+      delayMs,
+      isBackground,
+    });
+
     this.recoveryTimer = setTimeout(() => {
       this.recoveryTimer = undefined;
       const companyId = this.targetCompanyId;
-      if (companyId && !this.stopping) void this.call(companyId, "connect", { automatic: true }).catch(() => this.scheduleRecovery());
+      if (!companyId || this.stopping) return;
+
+      void this.checkNetworkFn().then((online) => {
+        if (this.stopping || this.targetCompanyId !== companyId) return;
+        if (!online) {
+          this.state = {
+            ...this.state,
+            status: "waiting_for_network",
+            reason: "NETWORK_UNAVAILABLE",
+            error: "في انتظار اتصال الإنترنت؛ سيتم استعادة الاتصال تلقائيًا فور توفر الشبكة.",
+          };
+          whatsappLog("waiting_for_network", { companyId, attempt: this.recovery.attempts });
+          this.ensureNetworkWatcher();
+          return;
+        }
+        void this.call(companyId, "connect", { automatic: true }).catch(() => this.scheduleRecovery());
+      }).catch(() => {
+        if (this.stopping || this.targetCompanyId !== companyId) return;
+        this.state = {
+          ...this.state,
+          status: "waiting_for_network",
+          reason: "NETWORK_UNAVAILABLE",
+          error: "في انتظار اتصال الإنترنت؛ سيتم استعادة الاتصال تلقائيًا فور توفر الشبكة.",
+        };
+        this.ensureNetworkWatcher();
+      });
     }, delayMs);
     this.recoveryTimer.unref();
+  }
+
+  private ensureNetworkWatcher(intervalMs = 5000) {
+    if (this.networkWatcherTimer || this.stopping) return;
+    this.networkWatcherTimer = setInterval(() => {
+      if (this.stopping || !this.targetCompanyId) {
+        this.clearNetworkWatcher();
+        return;
+      }
+      void this.checkNetworkFn().then((online) => {
+        if (online && !this.stopping && this.targetCompanyId) {
+          this.clearNetworkWatcher();
+          whatsappLog("network_restored", { companyId: this.targetCompanyId });
+          this.state = {
+            ...this.state,
+            status: "reconnecting",
+            error: "تم استعادة الاتصال بالإنترنت؛ جارٍ إعادة تشغيل واتساب...",
+          };
+          void this.call(this.targetCompanyId, "connect", { automatic: true }).catch(() => this.scheduleRecovery());
+        }
+      }).catch(() => {});
+    }, intervalMs);
+    this.networkWatcherTimer.unref();
+  }
+
+  private clearNetworkWatcher() {
+    if (this.networkWatcherTimer) {
+      clearInterval(this.networkWatcherTimer);
+      this.networkWatcherTimer = undefined;
+    }
   }
 
   getWorkerPid(): number | undefined {
@@ -62,7 +149,31 @@ export class WhatsAppBridge {
   }
 
   autoConnect(companyId: string) {
-    void this.call(companyId, "connect", { automatic: true }).catch(() => this.scheduleRecovery());
+    this.targetCompanyId = companyId;
+    void this.checkNetworkFn().then((online) => {
+      if (!online) {
+        this.state = {
+          ...this.state,
+          companyId,
+          status: "waiting_for_network",
+          reason: "NETWORK_UNAVAILABLE",
+          error: "في انتظار اتصال الإنترنت؛ سيتم استعادة الاتصال تلقائيًا فور توفر الشبكة.",
+        };
+        whatsappLog("waiting_for_network", { companyId, startup: true });
+        this.ensureNetworkWatcher();
+        return;
+      }
+      void this.call(companyId, "connect", { automatic: true }).catch(() => this.scheduleRecovery());
+    }).catch(() => {
+      this.state = {
+        ...this.state,
+        companyId,
+        status: "waiting_for_network",
+        reason: "NETWORK_UNAVAILABLE",
+        error: "في انتظار اتصال الإنترنت؛ سيتم استعادة الاتصال تلقائيًا فور توفر الشبكة.",
+      };
+      this.ensureNetworkWatcher();
+    });
   }
 
   call(companyId: string, action: string, payload: any = {}): Promise<any> {
@@ -74,10 +185,25 @@ export class WhatsAppBridge {
       if (!payload.automatic) {
         clearTimeout(this.recoveryTimer);
         this.recoveryTimer = undefined;
+        this.clearNetworkWatcher();
         this.recovery.reset();
       }
       this.targetCompanyId = companyId;
-      const request = this.request(companyId, action, payload).catch(error => {
+      const request = this.checkNetworkFn().then(online => {
+        if (!online) {
+          this.state = {
+            ...this.state,
+            companyId,
+            status: "waiting_for_network",
+            reason: "NETWORK_UNAVAILABLE",
+            error: "في انتظار اتصال الإنترنت؛ سيتم استعادة الاتصال تلقائيًا فور توفر الشبكة.",
+          };
+          whatsappLog("waiting_for_network", { companyId });
+          this.ensureNetworkWatcher();
+          return this.state;
+        }
+        return this.request(companyId, action, payload);
+      }).catch(error => {
         this.state = { ...this.state, status: "error", error: "تعذر تشغيل جلسة واتساب؛ راجع سجل الخدمة." };
         this.scheduleRecovery();
         throw error;
@@ -90,6 +216,7 @@ export class WhatsAppBridge {
       this.targetCompanyId = null;
       clearTimeout(this.recoveryTimer);
       this.recoveryTimer = undefined;
+      this.clearNetworkWatcher();
     }
     return this.request(companyId, action, payload);
   }
@@ -116,6 +243,7 @@ export class WhatsAppBridge {
           if (["ready", "qr"].includes(this.state.status) || this.state.recoveryBlocked) {
             clearTimeout(this.recoveryTimer);
             this.recoveryTimer = undefined;
+            this.clearNetworkWatcher();
           }
           this.scheduleRecovery();
         }
@@ -140,16 +268,16 @@ export class WhatsAppBridge {
         if (this.child !== child) return;
         this.child = undefined;
         whatsappLog("worker_exit", { workerPid: child.pid, companyId: this.targetCompanyId, code, signal });
-        this.state = { ...this.state, status: this.state.recoveryBlocked ? "error" : "disconnected",
+        const isNetworkWaiting = this.state.status === "waiting_for_network";
+        this.state = { ...this.state,
+          status: this.state.recoveryBlocked ? "error" : isNetworkWaiting ? "waiting_for_network" : "disconnected",
           qr: undefined, workerPid: undefined,
-          error: this.state.recoveryBlocked ? this.state.error : "توقف عامل واتساب؛ جارٍ استعادة الاتصال تلقائيًا..." };
+          error: this.state.recoveryBlocked ? this.state.error : isNetworkWaiting ? this.state.error : "توقف عامل واتساب؛ جارٍ استعادة الاتصال تلقائيًا..." };
         for (const item of this.pending.values()) {
           clearTimeout(item.timer);
           item.reject(new Error("عامل واتساب غير متاح"));
         }
         this.pending.clear();
-        // The next worker obtains the OS-backed profile lease and verifies browser command
-        // line ownership before cleaning orphans. Never kill a stale recorded PID by name.
         this.scheduleRecovery();
       };
       child.on("exit", workerExited);
@@ -201,6 +329,7 @@ export class WhatsAppBridge {
     this.stopping = true;
     clearTimeout(this.recoveryTimer);
     this.recoveryTimer = undefined;
+    this.clearNetworkWatcher();
     this.targetCompanyId = null;
     await this.retireUnresponsiveWorker();
   }
