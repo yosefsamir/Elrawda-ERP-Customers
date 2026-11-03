@@ -33,7 +33,17 @@ export function checkNetworkReachability(
 }
 
 export function isNetworkError(reason?: string | null, error?: unknown): boolean {
-  if (reason && ["NETWORK_UNAVAILABLE", "WAITING_FOR_NETWORK", "SOCKET_UNAVAILABLE", "HEALTH_TIMEOUT"].includes(reason)) {
+  if (
+    reason &&
+    [
+      "NETWORK_UNAVAILABLE",
+      "WAITING_FOR_NETWORK",
+      "SOCKET_UNAVAILABLE",
+      "HEALTH_TIMEOUT",
+      "INJECTION_FAILED",
+      "INITIALIZATION_TIMEOUT",
+    ].includes(reason)
+  ) {
     return true;
   }
   if (!error) return false;
@@ -48,6 +58,10 @@ export function isNetworkError(reason?: string | null, error?: unknown): boolean
     msg.includes("err_connection_reset") ||
     msg.includes("err_connection_closed") ||
     msg.includes("navigation timeout") ||
+    msg.includes("waiting failed") ||
+    msg.includes("auth timeout") ||
+    msg.includes("timeouterror") ||
+    msg.includes("timed out") ||
     msg.includes("enotfound") ||
     msg.includes("econnrefused") ||
     msg.includes("etimedout") ||

@@ -389,7 +389,7 @@ try {
     [IO.File]::WriteAllText($HostsPath, $HostsOriginal, [Text.Encoding]::ASCII)
     Write-Host "Network restored after startup failure ($offlineError)" -ForegroundColor White
 
-    $chromeDeadline = (Get-Date).AddSeconds(120)
+    $chromeDeadline = (Get-Date).AddSeconds(180)
     $waHealth = $null
     while ((Get-Date) -lt $chromeDeadline) {
         $waHealth = Get-WhatsAppHealth

@@ -53,8 +53,8 @@ const session = new WhatsAppSession({
     return new ReliableClient({
       authStrategy: new PersistentAuth({ clientId: profile.companyId, dataPath: profile.root }),
       webVersionCache: { type: "local", path: resolve(process.env.PUPPETEER_CACHE_DIR || resolve(process.env.EMOJI_DATA_DIR!, "..", "cache"), "wwebjs_cache") },
-      authTimeoutMs: 30000,
-      puppeteer: { headless: true, protocolTimeout: 30000, args, ...(chromeExec ? { executablePath: chromeExec } : {}) },
+      authTimeoutMs: 60000,
+      puppeteer: { headless: true, protocolTimeout: 60000, args, ...(chromeExec ? { executablePath: chromeExec } : {}) },
     });
   },
   qr: value => QRCode.toDataURL(value),

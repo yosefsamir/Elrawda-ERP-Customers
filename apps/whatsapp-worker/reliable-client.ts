@@ -57,7 +57,7 @@ export function reliableWhatsAppClasses(Client: any, LocalAuth: any) {
                 window.require('WAWebCompanionRegClientUtils') && window.require('WAWebAdvSignatureApi') &&
                 window.require('WAWebUserPrefsInfoStore') && window.require('WAWebSignalStoreApi'));
             } catch { return false; }
-          })()`, { polling: 200, timeout: this.options.authTimeoutMs || 30000 });
+          })()`, { polling: 200, timeout: this.options.authTimeoutMs || 60000 });
           if (!this.retired) await super.inject();
         } catch (error) {
           // Applies to initial and later navigation injections. A handled owner event avoids
