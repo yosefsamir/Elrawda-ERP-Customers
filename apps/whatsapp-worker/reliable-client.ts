@@ -1,3 +1,6 @@
+import { normalizeRestriction, readRestrictionInPage } from "../../packages/runtime/whatsapp-restriction.js";
+import { installSyncGuard } from "../../packages/runtime/whatsapp-sync-guard.js";
+
 /** Application-owned adapter for the installed whatsapp-web.js 1.34.7.
  * No node_modules edits. Upstream inject waits for Debug.VERSION but dereferences
  * WAWebSocketModel even while it is null; navigation listeners also ignore rejected promises.
@@ -25,6 +28,14 @@ export function reliableWhatsAppClasses(Client: any, LocalAuth: any) {
     private retired = false;
     private injection?: Promise<void>;
     private destruction?: Promise<void>;
+    private guardedPages = new WeakSet<object>();
+    emit(event: string, ...args: any[]) {
+      if (["ready", "authenticated"].includes(event) && (this.retired || this.lastLoggedOut)) return false;
+      return super.emit(event, ...args);
+    }
+    async fetchAccountRestriction(refresh = true) {
+      return normalizeRestriction(await this.pupPage.evaluate(readRestrictionInPage, refresh));
+    }
     async destroy() {
       if (this.destruction) return this.destruction;
       this.destruction = (async () => {
@@ -58,7 +69,15 @@ export function reliableWhatsAppClasses(Client: any, LocalAuth: any) {
                 window.require('WAWebUserPrefsInfoStore') && window.require('WAWebSignalStoreApi'));
             } catch { return false; }
           })()`, { polling: 200, timeout: this.options.authTimeoutMs || 60000 });
-          if (!this.retired) await super.inject();
+          if (!this.retired) {
+            const page = this.pupPage;
+            if (typeof page.exposeFunction === "function" && !this.guardedPages.has(page)) {
+              installSyncGuard(page, () => !this.retired && !this.lastLoggedOut,
+                error => this.emit("lifecycle_error", error));
+              this.guardedPages.add(page);
+            }
+            await super.inject();
+          }
         } catch (error) {
           // Applies to initial and later navigation injections. A handled owner event avoids
           // the upstream async EventEmitter listener becoming an unhandled rejection.

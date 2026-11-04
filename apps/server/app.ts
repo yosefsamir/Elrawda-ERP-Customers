@@ -21,7 +21,11 @@ export async function createApp(options: {
   const db = openDatabase(resolve(options.dataDir, "app.sqlite"));
   const repo = new CompanyRepository(db),
     secrets = localSecretStore(options.dataDir),
-    wa = new WhatsAppBridge(options.dataDir);
+    wa = new WhatsAppBridge(options.dataDir, undefined, undefined, undefined, state => {
+      if (state.companyId && (state.requiresReauth || state.recoveryBlocked || state.processingBlocked)) {
+        repo.pauseForWhatsApp(state.companyId, state.reason || "WHATSAPP_RECOVERY_BLOCKED");
+      }
+    });
   const sync = new SyncService(db,repo,secrets,options.root);
   const engine = new ExecutionEngine(db, repo, wa);
 
@@ -185,6 +189,8 @@ export async function createApp(options: {
       reason: wa.state.reason ?? null,
       requiresReauth: wa.state.requiresReauth ?? false,
       recoveryBlocked: wa.state.recoveryBlocked ?? false,
+      processingBlocked: wa.state.processingBlocked ?? false,
+      restriction: wa.state.restriction ?? null,
       retryAttempt: wa.state.retryAttempt ?? 0,
     },
   }));

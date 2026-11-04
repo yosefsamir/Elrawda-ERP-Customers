@@ -15,10 +15,10 @@ function canonical(id) {
     (id?.user && id?.server ? `${id.user}@${id.server}` : '')).replace(/@s\.whatsapp\.net$/, '@c.us');
 }
 
-async function inspectTarget(client, input, groupId) {
+async function inspectTarget(client, input, groupId, loadedGroup) {
   const phone = normalizePhone(input);
   if (typeof groupId !== 'string' || !/^\d+(?:-\d+)?@g\.us$/.test(groupId)) throw new Error('اختار جروب من القائمة.');
-  const group = await client.getChatById(groupId);
+  const group = loadedGroup || await client.getChatById(groupId);
   if (!group.isGroup) throw new Error('المحادثة المختارة ليست جروبًا.');
   const number = await client.getNumberId(phone);
   if (!number) return { status: 'not_on_whatsapp', phone, groupName: group.name };
@@ -48,20 +48,40 @@ async function inspectTarget(client, input, groupId) {
     participantCount: participants.length, isAdmin: admin, membershipUnknown, targetId: target };
 }
 
-async function addOne(client, input, groupId, confirmed) {
+async function addOne(client, input, groupId, confirmed, options = {}) {
   if (confirmed !== true) throw new Error('أكد أن الرقم يخص شخصًا موافقًا على تجربة الإضافة.');
-  const before = await inspectTarget(client, input, groupId);
+  // Validate before the remote read; reuse this metadata for the write rather
+  // than refreshing the same group a second time immediately.
+  normalizePhone(input);
+  if (typeof groupId !== 'string' || !/^\d+(?:-\d+)?@g\.us$/.test(groupId)) throw new Error('اختار جروب من القائمة.');
+  const group = await client.getChatById(groupId);
+  const before = await inspectTarget(client, input, groupId, group);
   if (before.status !== 'ready_to_add') return before;
   if (!before.isAdmin) return { status: 'not_admin', detail: 'رقم واتساب المتصل لازم يكون أدمن في جروب الاختبار؛ لم ننفذ إضافة.' };
   if (before.membershipUnknown) return { status: 'membership_unknown', detail: 'تعذر التأكد من العضوية بسبب معرفات الخصوصية؛ لم ننفذ إضافة. راجع الأعضاء يدويًا.' };
-  const group = await client.getChatById(groupId);
+
+  // Human Action Delay (3 to 7 seconds):
+  // Simulate human hesitation and reading group info before pressing the add button.
+  const isTest = process.env.WHATSAPP_FAST_TEST === '1' ||
+    process.env.NODE_ENV === 'test' ||
+    Boolean(process.env.npm_lifecycle_event?.includes('test'));
+  const delayMs = options.delayMs !== undefined
+    ? options.delayMs
+    : isTest
+      ? 0
+      : Math.floor(Math.random() * 4001) + 3000;
+
+  if (delayMs > 0) {
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+
   const raw = await group.addParticipants([before.targetId], { autoSendInviteV4: false });
   if (typeof raw === 'string') return { status: 'refused', detail: raw };
   const entries = Object.values(raw || {});
   if (entries.length !== 1) return { status: 'outcome_unknown', detail: 'الاستجابة غير حاسمة؛ راجع أعضاء الجروب قبل أي محاولة أخرى.' };
   const item = entries[0];
   const code = Number(item.code);
-  const states = { 403: 'invite_required', 404: 'not_on_whatsapp', 408: 'recently_left', 409: 'already_member', 419: 'group_full' };
+  const states = { 403: 'invite_required', 404: 'not_on_whatsapp', 408: 'recently_left', 409: 'already_member', 419: 'group_full', 429: 'account_restricted', 463: 'account_restricted' };
   if (code !== 200) return { status: states[code] || 'refused', code, inviteSent: Boolean(item.isInviteV4Sent), detail: item.message };
   try {
     const after = await inspectTarget(client, input, groupId);
@@ -71,7 +91,7 @@ async function addOne(client, input, groupId, confirmed) {
   }
 }
 
-async function runManualAddition(client, input, groupId, confirmed, attempts) {
+async function runManualAddition(client, input, groupId, confirmed, attempts, options = {}) {
   if (confirmed !== true) throw new Error('أكد أن الرقم يخص شخصًا موافقًا على تجربة الإضافة.');
   const key = `${groupId}:${normalizePhone(input)}`;
   const previous = attempts.get(key);
@@ -88,7 +108,7 @@ async function runManualAddition(client, input, groupId, confirmed, attempts) {
   // explicit click must recheck WhatsApp, so removal/leave permits another add.
   attempts.set(key, { status: 'outcome_unknown' });
   try {
-    const result = await addOne(client, input, groupId, confirmed);
+    const result = await addOne(client, input, groupId, confirmed, options);
     attempts.set(key, result);
     return result;
   } catch (error) {

@@ -24,8 +24,11 @@ const settingsSchema = z.object({
   rolloverThreshold: z.number().int().min(10).max(1024),
   workStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   workEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-  inviteOnPrivacy: z.boolean(),
-  inviteTemplate: z.string().min(5).max(2000),
+  additionMinIntervalSeconds: z.number().int().min(0).max(86400).default(60),
+  additionDailyLimit: z.number().int().min(0).max(10000).default(100),
+  inviteOnPrivacy: z.boolean().optional(),
+  inviteTemplate: z.string().optional(),
+  additionOnlyMode: z.boolean().optional(),
 });
 function company(request: FastifyRequest) {
   if (!request.companyId)
@@ -112,7 +115,8 @@ export function registerCompanyRoutes(
 
     return {
       ...row,
-      settings: JSON.parse(row.settings),
+      settings: repo.settings(id),
+      additionBudget: repo.additionBudget(id),
       source: source ?? null,
       whatsapp: {
         ...status,
@@ -203,6 +207,9 @@ export function registerCompanyRoutes(
       throw Object.assign(new Error("اختار وقتًا في المستقبل"), {
         statusCode: 400,
       });
+    if (!input.paused && wa.state.companyId === id && wa.state.processingBlocked) {
+      throw Object.assign(new Error("واتساب يقيّد الإضافات حاليًا؛ حدّث حالة التقييد قبل الاستئناف."), { statusCode: 409 });
+    }
 
     const targetRunMode = input.mode;
 
@@ -395,11 +402,21 @@ export function registerCompanyRoutes(
         "\uFEFF" + lines.map((row) => row.map(csvCell).join(",")).join("\r\n"),
       );
   });
-  app.post("/api/whatsapp/connect", async (request) =>
-    wa.call(company(request), "connect"),
-  );
+  app.post("/api/whatsapp/connect", async (request) => {
+    const id = company(request);
+    // Relinking must not silently resume a previously live queue, even if the
+    // connection fails or the server restarts before pairing finishes.
+    db.transaction(() => {
+      db.prepare("UPDATE companies SET paused=1,pause_until=NULL WHERE id=?").run(id);
+      repo.audit(id, "processing.paused", { reason: "whatsapp_connect", until: null });
+    })();
+    return wa.call(id, "connect");
+  });
   app.post("/api/whatsapp/disconnect", async (request) =>
     wa.call(company(request), "disconnect"),
+  );
+  app.post("/api/whatsapp/restriction/refresh", async request =>
+    wa.call(company(request), "check_restriction"),
   );
   app.get("/api/whatsapp/groups", async (request) =>
     wa.call(company(request), "groups"),

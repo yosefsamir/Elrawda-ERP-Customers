@@ -921,6 +921,16 @@ export function Settings({ company, refresh, notify }: ViewProps) {
                 <option value="per_branch">لكل فرع على حدة</option>
               </select>
             </Field>
+            <Field label="الفاصل بين محاولات الإضافة بالثواني" hint="يشمل العملاء الجدد والقدام؛ صفر يلغي الفاصل">
+              <input type="number" min={0} max={86400}
+                value={settings.additionMinIntervalSeconds}
+                onChange={e => change("additionMinIntervalSeconds", Number(e.target.value))} />
+            </Field>
+            <Field label="حد محاولات الإضافة خلال ٢٤ ساعة" hint="إجمالي الشركة؛ يشمل المحاولات غير المؤكدة. صفر يوقف الإضافات">
+              <input type="number" min={0} max={10000}
+                value={settings.additionDailyLimit}
+                onChange={e => change("additionDailyLimit", Number(e.target.value))} />
+            </Field>
             <Field label="بداية وقت العمل">
               <input
                 type="time"
@@ -936,31 +946,6 @@ export function Settings({ company, refresh, notify }: ViewProps) {
               />
             </Field>
           </div>
-        </section>
-        <section className="panel form-panel">
-          <h2 className="section-title">دعوة الخصوصية</h2>
-          <label className="check-line">
-            <input
-              type="checkbox"
-              checked={settings.inviteOnPrivacy}
-              onChange={(e) => change("inviteOnPrivacy", e.target.checked)}
-            />
-            استخدام دعوة خاصة بالرابط عند تفعيل التشغيل الفعلي
-          </label>
-          <Field
-            label="نص الدعوة"
-            hint="المتغيرات: {customerName} · {companyName} · {destinationName} · {inviteLink}"
-          >
-            <textarea
-              rows={4}
-              value={settings.inviteTemplate}
-              onChange={(e) => change("inviteTemplate", e.target.value)}
-            />
-          </Field>
-          <Notice>
-            تُرسل الدعوة عند تفعيل Live فقط، وبعد منع الإضافة بسبب الخصوصية.
-            لن تُرسل أي دعوة أثناء المعاينة.
-          </Notice>
         </section>
         <div className="settings-save">
           <Button busy={busy}>
@@ -1051,9 +1036,9 @@ export function Connections({ company, refresh, notify }: ViewProps) {
               <Wifi size={18} />
               واتساب
             </h2>
-            <Badge tone={whatsapp.status === "ready" ? "green" : (whatsapp.status === "error" || whatsapp.requiresReauth) ? "red" : whatsapp.status === "waiting_for_network" ? "amber" : "muted"}>
+            <Badge tone={whatsapp.status === "ready" ? (whatsapp.processingBlocked ? "amber" : "green") : (whatsapp.status === "error" || whatsapp.requiresReauth) ? "red" : whatsapp.status === "waiting_for_network" ? "amber" : "muted"}>
               {whatsapp.status === "ready"
-                ? "متصل"
+                ? (whatsapp.processingBlocked ? "متصل — الإضافات متوقفة" : "متصل")
                 : whatsapp.requiresReauth
                   ? "يلزم إعادة الربط"
                   : whatsapp.status === "waiting_for_network"
@@ -1083,6 +1068,13 @@ export function Connections({ company, refresh, notify }: ViewProps) {
               )}
             </div>
           )}
+          {company.additionBudget && (
+            <p className="subtle">
+              محاولات الإضافة خلال ٢٤ ساعة: {number(company.additionBudget.used)} من {number(company.additionBudget.limit)}.
+              {company.additionBudget.used >= company.additionBudget.limit && " الإضافات متوقفة عند الحد المحدد."}
+              {company.additionBudget.nextAt > Date.now() && " الطابور ينتظر الفاصل بين الإضافات."}
+            </p>
+          )}
           {whatsapp.status === "waiting_for_network" && (
             <p className="subtle">لا يوجد اتصال بالإنترنت. سيتم استئناف الاتصال تلقائيًا فور توفر الشبكة.</p>
           )}
@@ -1096,6 +1088,18 @@ export function Connections({ company, refresh, notify }: ViewProps) {
             </div>
           )}
           {whatsapp.error && <Notice tone="error">{whatsapp.error}</Notice>}
+          {whatsapp.processingBlocked && (
+            <Notice>
+              {whatsapp.restriction?.endsAt
+                ? `موعد انتهاء التقييد المبلّغ: ${dateTime(whatsapp.restriction.endsAt)}.`
+                : "لم يصل موعد مؤكد لانتهاء التقييد."}
+              {" "}تظل المعالجة متوقفة حتى تأكيد رفع التقييد ثم الضغط على «استئناف».
+              {whatsapp.restriction?.source === "unavailable" && " تعذر تحديث الحالة؛ نحتفظ بالتوقف والمعلومات السابقة."}
+            </Notice>
+          )}
+          <p className="subtle">
+            ربط واتساب يوقف المعالجة التلقائية. بعد اكتمال الربط، تظل الإضافات متوقفة حتى تضغط «استئناف».
+          </p>
           <div className="connection-actions">
             <Button
               busy={busy}
@@ -1104,6 +1108,14 @@ export function Connections({ company, refresh, notify }: ViewProps) {
             >
               <Link2 size={15} />
               ربط واتساب
+            </Button>
+            <Button
+              kind="secondary"
+              busy={busy}
+              disabled={whatsapp.status !== "ready"}
+              onClick={() => void action("/whatsapp/restriction/refresh")}
+            >
+              تحديث حالة التقييد
             </Button>
             <Button
               kind="secondary"

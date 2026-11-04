@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { WhatsAppRecovery, checkNetworkReachability } from "../../packages/runtime/whatsapp-recovery.js";
 import { whatsappLog } from "../../packages/runtime/whatsapp-log.js";
+import type { AccountRestriction } from "../../packages/runtime/whatsapp-restriction.js";
 
 export class WhatsAppBridge {
   private child?: ChildProcess;
@@ -34,6 +35,8 @@ export class WhatsAppBridge {
     reason?: string;
     requiresReauth?: boolean;
     recoveryBlocked?: boolean;
+    processingBlocked?: boolean;
+    restriction?: AccountRestriction | null;
     retryAttempt?: number;
   } = { companyId: null, status: "disconnected" };
 
@@ -42,6 +45,7 @@ export class WhatsAppBridge {
     private forkWorker: typeof fork = fork,
     networkChecker?: () => Promise<boolean>,
     recoveryOptions?: { maxAttempts?: number; backgroundIntervalMs?: number | null },
+    private onState?: (state: WhatsAppBridge["state"]) => void,
   ) {
     this.checkNetworkFn = networkChecker ?? checkNetworkReachability;
     if (recoveryOptions) {
@@ -239,6 +243,7 @@ export class WhatsAppBridge {
         if (this.child !== child) return;
         if (message.type === "state") {
           this.state = { ...message.state, workerPid: child.pid };
+          this.onState?.(this.state);
           this.recovery.observe(this.state.status);
           if (["ready", "qr"].includes(this.state.status) || this.state.recoveryBlocked) {
             clearTimeout(this.recoveryTimer);

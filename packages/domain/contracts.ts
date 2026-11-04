@@ -34,8 +34,11 @@ export type CompanySettings = {
   rolloverThreshold: number;
   workStart: string;
   workEnd: string;
-  inviteOnPrivacy: boolean;
-  inviteTemplate: string;
+  additionMinIntervalSeconds: number;
+  additionDailyLimit: number;
+  inviteOnPrivacy?: boolean;
+  inviteTemplate?: string;
+  additionOnlyMode?: boolean;
 };
 export const defaultSettings: CompanySettings = {
   distributionMode: "per_branch",
@@ -46,9 +49,8 @@ export const defaultSettings: CompanySettings = {
   rolloverThreshold: 950,
   workStart: "09:00",
   workEnd: "21:00",
-  inviteOnPrivacy: true,
-  inviteTemplate:
-    "أهلًا {customerName}، معاك {companyName}. ده رابط جروب {destinationName}: {inviteLink}",
+  additionMinIntervalSeconds: 60,
+  additionDailyLimit: 100,
 };
 export const whatsappLabels: Record<string, string> = {
   unchecked: "لم يُفحص",

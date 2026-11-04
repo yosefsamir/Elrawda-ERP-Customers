@@ -66,6 +66,7 @@ export function openDatabase(filename: string) {
       PRIMARY KEY(company_id,kind,dedup_key)
     );
     INSERT OR IGNORE INTO schema_migrations VALUES(2,datetime('now'));
+    CREATE INDEX IF NOT EXISTS operations_addition_budget ON operations(company_id,kind,created_at);
   `);
   })();
   return db;

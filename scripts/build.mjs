@@ -6,4 +6,4 @@ for (const args of [['node_modules/typescript/bin/tsc','-p','tsconfig.server.jso
   if(result.status!==0) process.exit(result.status||1);
 }
 mkdirSync('dist/runtime/scripts/whatsapp-test',{recursive:true});
-for(const name of ['groups.cjs','operations.cjs']) cpSync(`scripts/whatsapp-test/${name}`,`dist/runtime/scripts/whatsapp-test/${name}`);
+for(const name of ['groups.cjs','operations.cjs','browser.cjs']) cpSync(`scripts/whatsapp-test/${name}`,`dist/runtime/scripts/whatsapp-test/${name}`);

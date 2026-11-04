@@ -101,3 +101,13 @@ test('an uncertain previous write is reconciled with current membership before a
     assert.equal(calls.length, 0);
   }
 });
+
+test('human action delay waits specified duration before sending addition command', async () => {
+  const { client, calls } = fixture();
+  const start = Date.now();
+  const result = await addOne(client, '01012345678', groupId, true, { delayMs: 60 });
+  const elapsed = Date.now() - start;
+  assert.equal(result.status, 'joined');
+  assert.equal(calls.length, 1);
+  assert.ok(elapsed >= 50, `Expected elapsed time >= 50ms, got ${elapsed}ms`);
+});

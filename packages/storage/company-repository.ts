@@ -7,6 +7,19 @@ import {
 } from "../domain/contracts.js";
 import { cairoDay, selectPhone } from "../domain/phone.js";
 
+export function calculateAdditionInterval(baseSeconds: number, seed: string | null): number {
+  if (baseSeconds <= 0 || !seed) return baseSeconds;
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  // Up to +50% variable jitter (e.g. 0-30s extra for 60s base) so intervals vary naturally like human actions
+  const maxJitter = Math.max(1, Math.floor(baseSeconds * 0.5));
+  const jitter = Math.abs(hash) % (maxJitter + 1);
+  return baseSeconds + jitter;
+}
+
 export class CompanyRepository {
   constructor(readonly db: AppDatabase) {}
   audit(companyId: string | null, event: string, details: unknown = {}) {
@@ -37,13 +50,36 @@ export class CompanyRepository {
     return id;
   }
   settings(id: string): CompanySettings {
-    return JSON.parse(
+    return { ...defaultSettings, ...JSON.parse(
       (
         this.db
           .prepare("SELECT settings FROM companies WHERE id=?")
           .get(id) as { settings: string }
       ).settings,
+    ) };
+  }
+
+  additionBudget(id: string, now = Date.now()) {
+    const settings = this.settings(id);
+    const { used, latest } = this.db.prepare(`SELECT COUNT(*) used, MAX(created_at) latest
+      FROM operations WHERE company_id=? AND kind='add' AND created_at>?`)
+      .get(id, new Date(now - 86400000).toISOString()) as { used: number; latest: string | null };
+    const intervalSeconds = calculateAdditionInterval(
+      settings.additionMinIntervalSeconds,
+      latest ? `${id}:${latest}` : null,
     );
+    const nextAt = latest && settings.additionMinIntervalSeconds > 0
+      ? Date.parse(latest) + intervalSeconds * 1000
+      : 0;
+    return { used, limit: settings.additionDailyLimit, nextAt,
+      allowed: used < settings.additionDailyLimit && now >= nextAt };
+  }
+
+  pauseForWhatsApp(id: string, reason: string) {
+    this.db.transaction(() => {
+      const changed = this.db.prepare("UPDATE companies SET paused=1,pause_until=NULL WHERE id=? AND (paused=0 OR pause_until IS NOT NULL)").run(id);
+      if (changed.changes) this.audit(id, "processing.paused", { reason, until: null });
+    })();
   }
 
   /**

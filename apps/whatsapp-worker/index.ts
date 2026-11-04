@@ -13,6 +13,7 @@ const { ReliableClient, PersistentAuth } = reliableWhatsAppClasses(Client, Local
 const QRCode = require("qrcode");
 const { createPilotClient } = require("../../scripts/whatsapp-test/groups.cjs");
 const { addOne, inspectTarget } = require("../../scripts/whatsapp-test/operations.cjs");
+const { browserOptions } = require("../../scripts/whatsapp-test/browser.cjs");
 
 function resolveChromeExecutable(): string | undefined {
   if (process.env.WHATSAPP_CHROME_PATH && existsSync(process.env.WHATSAPP_CHROME_PATH)) {
@@ -48,13 +49,13 @@ const session = new WhatsAppSession({
   dataDir: process.env.EMOJI_DATA_DIR!,
   createClient: profile => {
     const chromeExec = resolveChromeExecutable();
-    const args = ["--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-accelerated-2d-canvas", "--no-first-run", "--disable-gpu"];
-    if (process.env.CHROME_NO_SANDBOX === "true") args.unshift("--no-sandbox");
+    const browser = browserOptions(chromeExec);
+    whatsappLog("browser_configuration", { headless: browser.puppeteer.headless, nativeUserAgent: true });
     return new ReliableClient({
+      ...browser,
       authStrategy: new PersistentAuth({ clientId: profile.companyId, dataPath: profile.root }),
       webVersionCache: { type: "local", path: resolve(process.env.PUPPETEER_CACHE_DIR || resolve(process.env.EMOJI_DATA_DIR!, "..", "cache"), "wwebjs_cache") },
       authTimeoutMs: 60000,
-      puppeteer: { headless: true, protocolTimeout: 60000, args, ...(chromeExec ? { executablePath: chromeExec } : {}) },
     });
   },
   qr: value => QRCode.toDataURL(value),
@@ -81,8 +82,19 @@ async function handleMessage(message: any) {
     else {
       if (session.state.companyId !== message.companyId || session.state.status !== "ready") throw new Error("WhatsApp client is not ready. Please connect first.");
       const client = session.client;
+      if (["add_participant", "create_group"].includes(action)) {
+        await session.refreshRestriction();
+        if (session.state.status !== "ready" || session.client !== client) throw new Error("واتساب غير جاهز؛ لم ننفذ الطلب.");
+        if (session.state.processingBlocked) {
+          if (process.connected) process.send?.({ id, result: { status: "account_restricted", attempted: false } });
+          return;
+        }
+      }
       const pilot = createPilotClient(client);
-      if (action === "lookup") {
+      if (action === "check_restriction") {
+        await session.refreshRestriction(true);
+        result = { processingBlocked: Boolean(session.state.processingBlocked), restriction: session.state.restriction ?? null };
+      } else if (action === "lookup") {
         const number = await client.getNumberId(payload.phone);
         result = {
           registered: Boolean(number),
@@ -109,22 +121,7 @@ async function handleMessage(message: any) {
           link: `https://chat.whatsapp.com/${code}`,
         };
       } else if (action === "send_message") {
-        const { phone, text } = payload;
-        const number = await client.getNumberId(phone);
-
-        if (!number) {
-          result = { status: "not_on_whatsapp", phone };
-        } else {
-          const targetId = number._serialized.replace(
-            /@s\.whatsapp\.net$/,
-            "@c.us",
-          );
-          const sent = await client.sendMessage(targetId, text);
-          result = {
-            status: "sent",
-            messageId: sent?.id?._serialized,
-          };
-        }
+        throw new Error("إرسال الرسائل الفردية للعملاء ملغي وممنوع.");
       } else if (action === "create_group") {
         const { title } = payload;
         const res = await client.createGroup(title, [], {
@@ -142,8 +139,10 @@ async function handleMessage(message: any) {
         throw new Error(`Unsupported WhatsApp worker action: ${action}`);
       }
     }
+    if ([429, 463].includes(Number(result?.code))) await session.pauseForRestriction(Number(result.code));
     if (process.connected) process.send?.({ id, result });
   } catch (error) {
+    if ([429, 463].includes(Number((error as any)?.code))) await session.pauseForRestriction(Number((error as any).code));
     whatsappLog("command_failed", { action: message.action, errorCode: errorCode(error) });
     if (process.connected) process.send?.({ id: message.id, error: error instanceof Error ? error.message : "Operation execution failed" });
   }

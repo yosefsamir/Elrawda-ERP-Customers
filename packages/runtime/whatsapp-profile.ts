@@ -74,6 +74,7 @@ export class WhatsAppProfile {
   readonly root: string;
   readonly directory: string;
   readonly marker: string;
+  readonly recoveryMarker: string;
   private lease: Database.Database;
   private closed = false;
 
@@ -84,6 +85,7 @@ export class WhatsAppProfile {
     const locks = join(this.root, ".locks");
     mkdirSync(locks, { recursive: true });
     this.marker = join(locks, `${companyId}.reauth.json`);
+    this.recoveryMarker = join(locks, `${companyId}.blocked.json`);
     // SQLite's exclusive OS lock is atomic across processes, is released on a crash/reboot,
     // and avoids racing stale-PID lock-file deletion. Never unlink this database.
     this.lease = new Database(join(locks, `${companyId}.sqlite`), { timeout: 0 });
@@ -108,6 +110,20 @@ export class WhatsAppProfile {
     writeFileSync(this.marker, JSON.stringify({ reason, at: new Date().toISOString() }), { mode: 0o600, flush: true });
   }
   authenticated() { rmSync(this.marker, { force: true }); }
+  get recoveryBlockReason(): string | undefined {
+    if (!existsSync(this.recoveryMarker)) return undefined;
+    let data;
+    try { data = JSON.parse(readFileSync(this.recoveryMarker, "utf8")); }
+    catch (error) {
+      if (error instanceof SyntaxError) return "RECOVERY_MARKER_INVALID";
+      throw error;
+    }
+    return typeof data.reason === "string" ? data.reason : "RECOVERY_BLOCKED";
+  }
+  markRecoveryBlocked(reason: string) {
+    writeFileSync(this.recoveryMarker, JSON.stringify({ reason, at: new Date().toISOString() }), { mode: 0o600, flush: true });
+  }
+  clearRecoveryBlock() { rmSync(this.recoveryMarker, { force: true }); }
 
   async prepare(explicit: boolean) {
     await cleanProfileBrowsers(this.directory);

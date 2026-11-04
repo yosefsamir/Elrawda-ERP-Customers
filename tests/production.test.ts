@@ -19,7 +19,7 @@ function fixture(t:any) {
  const repo=new CompanyRepository(db);db.prepare('INSERT INTO operators VALUES(?,?,?)').run('op','op','hash');const id=repo.create('op','QA');
  t.after(()=>{if(db.open)db.close();rmSync(dir,{recursive:true,force:true});});
  db.prepare("UPDATE companies SET paused=0,run_mode='live' WHERE id=?").run(id);
- db.prepare('UPDATE companies SET settings=? WHERE id=?').run(JSON.stringify({...repo.settings(id),workStart:'00:00',workEnd:'23:59',historicalDailyLimit:50}),id);
+ db.prepare('UPDATE companies SET settings=? WHERE id=?').run(JSON.stringify({...repo.settings(id),workStart:'00:00',workEnd:'23:59',historicalDailyLimit:50,additionMinIntervalSeconds:0}),id);
  const ingest=(customers:any[])=>repo.ingest(id,{identity:'qa',label:'qa',branches,customers},'snapshot');
  const calls:any[]=[];const wa:any={state:{companyId:id,status:'ready'},call:async(_id:string,action:string,payload:any)=>{calls.push({action,payload});if(action==='get_group_info')return {participantCount:1};if(action==='add_participant')return {status:'joined'};return {};}};
  const link=()=>db.prepare("UPDATE branches SET group_id='120363000000000001@g.us' WHERE company_id=?").run(id);
@@ -34,12 +34,12 @@ for(const scope of ['total','per_branch'])test(`historical global queue works wi
  const f=fixture(t);f.ingest([row(1)]);f.db.prepare('UPDATE companies SET settings=? WHERE id=?').run(JSON.stringify({...f.repo.settings(f.id),distributionMode:'global',globalGroupId:'120363000000000002@g.us',historicalLimitScope:scope}),f.id);
  await f.engine().tick();assert.equal(f.calls.find(c=>c.action==='add_participant').payload.groupId,'120363000000000002@g.us');
 });
-test('same phone/destination receives a single privacy invite and consumes quota once',async t=>{
+test('same phone/destination marks review and consumes quota once without sending messages',async t=>{
  const f=fixture(t);f.ingest([row(1),row(2)]);f.link();
- f.wa.call=async(_id:string,action:string,payload:any)=>{f.calls.push({action,payload});return action==='get_group_info'?{participantCount:1}:action==='add_participant'?{status:'invite_required'}:action==='get_invite_link'?{link:'https://chat.whatsapp.com/Test123'}:{status:'sent',messageId:'msg1'};};
+ f.wa.call=async(_id:string,action:string,payload:any)=>{f.calls.push({action,payload});return action==='get_group_info'?{participantCount:1}:action==='add_participant'?{status:'invite_required'}:{};};
  const engine=f.engine();await engine.tick();await engine.tick();
- assert.equal(f.calls.filter(c=>c.action==='add_participant').length,1);assert.equal(f.calls.filter(c=>c.action==='send_message').length,1);
- assert.equal((f.db.prepare("SELECT count(*) n FROM customers WHERE membership_state='invitation_sent'").get() as any).n,2);
+ assert.equal(f.calls.filter(c=>c.action==='add_participant').length,1);assert.equal(f.calls.filter(c=>c.action==='send_message').length,0);
+ assert.equal((f.db.prepare("SELECT count(*) n FROM customers WHERE membership_state='review'").get() as any).n,2);
  assert.equal((f.db.prepare('SELECT sum(count) n FROM daily_usage').get() as any).n,1);
 });
 test('a timed-out addition stays unknown across restart and is never sent again',async t=>{
@@ -52,9 +52,10 @@ test('accepted addition without membership observation is pending, not joined',a
  const f=fixture(t);f.ingest([]);f.ingest([row(1)]);f.link();f.wa.call=async(_id:string,action:string)=>action==='get_group_info'?{participantCount:1}:{status:'addition_accepted'};
  await f.engine().tick();assert.equal((f.db.prepare('SELECT membership_state FROM customers').get() as any).membership_state,'pending');
 });
-test('unconfirmed invite response never becomes invitation_sent',async t=>{
- const f=fixture(t);f.ingest([]);f.ingest([row(1)]);f.link();f.wa.call=async(_id:string,action:string)=>action==='get_group_info'?{participantCount:1}:action==='add_participant'?{status:'invite_required'}:action==='get_invite_link'?{link:'https://chat.whatsapp.com/Test'}:{status:'not_on_whatsapp'};
+test('privacy refusal marks customer as review without sending invite',async t=>{
+ const f=fixture(t);f.ingest([]);f.ingest([row(1)]);f.link();f.wa.call=async(_id:string,action:string)=>action==='get_group_info'?{participantCount:1}:action==='add_participant'?{status:'invite_required'}:{};
  await f.engine().tick();assert.equal((f.db.prepare('SELECT membership_state FROM customers').get() as any).membership_state,'review');
+ assert.equal(f.calls.filter(c=>c.action==='send_message').length,0);
 });
 test('stop waits for in-flight remote work, records its result, and starts no further work',async t=>{
  const f=fixture(t);f.ingest([]);f.ingest([row(1)]);f.link();let finish!:(v:any)=>void;let entered!:()=>void;const started=new Promise<void>(r=>entered=r);
@@ -102,6 +103,47 @@ test('resume preserves preview and saving branch/settings never requeues uncerta
  const saved=await x.app.inject({method:'PUT',url:'/api/branches',headers,payload:[{programId:9,branchId:39,enabled:true,groupId:'120363000000000001@g.us',baseName:'QA',nextCounter:2}]});assert.equal(saved.statusCode,200);
  await x.app.inject({method:'PUT',url:'/api/settings',headers,payload:{...x.repo.settings(id),distributionMode:'global',globalGroupId:'120363000000000002@g.us'}});
  assert.equal((x.db.prepare('SELECT membership_state FROM customers').get() as any).membership_state,'review');
+});
+for (const connectionFails of [false, true]) test(`manual WhatsApp linking keeps the queue paused until explicit resume (connection fails: ${connectionFails})`, async t => {
+ const dir=mkdtempSync(join(tmpdir(),'elrawda-relink-'));
+ const x=await createApp({dataDir:dir,root:process.cwd()});
+ await x.engine.stop();
+ t.after(async()=>{await x.app.close();rmSync(dir,{recursive:true,force:true});});
+ const headers:any={host:'localhost','x-emoji-request':'1'};
+ const auth=await x.app.inject({method:'POST',url:'/api/auth/bootstrap',headers,payload:{username:'qauser',password:'ReviewOnly2026!'}});
+ headers.cookie=auth.cookies.map(c=>`${c.name}=${c.value}`).join(';');
+ const created=await x.app.inject({method:'POST',url:'/api/companies',headers,payload:{name:'Relink QA'}});
+ const id=created.json().id;
+ x.repo.ingest(id,{identity:'qa',label:'qa',branches,customers:[]},'snapshot');
+ x.repo.ingest(id,{identity:'qa',label:'qa',branches,customers:[row(1)]},'snapshot');
+ x.db.prepare("UPDATE branches SET enabled=1,group_id='120363000000000001@g.us' WHERE company_id=?").run(id);
+ x.db.prepare("UPDATE companies SET paused=0,run_mode='live',pause_until='2000-01-01T00:00:00.000Z' WHERE id=?").run(id);
+ const actions:string[]=[];
+ x.wa.call=async(companyId,action)=>{
+   actions.push(action);
+   if(action==='connect') {
+     // The pause must already be committed before the connection can become ready.
+     const observer=new Database(join(dir,'app.sqlite'),{readonly:true});
+     try { assert.deepEqual(observer.prepare('SELECT paused,pause_until FROM companies WHERE id=?').get(id),{paused:1,pause_until:null}); }
+     finally { observer.close(); }
+     if(connectionFails) throw new Error('واتساب: تعذر الربط');
+     x.wa.state={companyId,status:'ready'};
+     return x.wa.state;
+   }
+   return action==='get_group_info'?{participantCount:1}:{status:'joined'};
+ };
+ const linked=await x.app.inject({method:'POST',url:'/api/whatsapp/connect',headers});
+ assert.equal(linked.statusCode,connectionFails?500:200);
+ // A later automatic recovery must also respect the saved pause.
+ x.wa.state={companyId:id,status:'ready'};
+ const engine=new ExecutionEngine(x.db,x.repo,x.wa);
+ await engine.tick();
+ assert.deepEqual(actions,['connect']);
+ assert.equal((x.db.prepare('SELECT membership_state FROM customers WHERE company_id=?').get(id) as any).membership_state,'not_attempted');
+ const resumed=await x.app.inject({method:'POST',url:'/api/processing',headers,payload:{paused:false}});
+ assert.equal(resumed.statusCode,200);
+ await engine.tick();
+ assert.deepEqual(actions,['connect','get_group_info','add_participant']);
 });
 test('an in-flight addition result cannot attach old phone evidence to a corrected customer',async t=>{
  const f=fixture(t);f.ingest([]);f.ingest([row(1)]);f.link();f.wa.call=async(_id:string,action:string)=>{if(action==='get_group_info')return {participantCount:1};f.ingest([row(1,39,'01112345678')]);return {status:'joined'};};

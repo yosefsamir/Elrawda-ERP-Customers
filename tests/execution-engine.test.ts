@@ -19,6 +19,9 @@ function setupFixture(t: any) {
   db.prepare("INSERT INTO operators VALUES(?,?,?)").run("admin", "admin", "hash");
   const repo = new CompanyRepository(db);
   const companyId = repo.create("admin", "الروضة");
+  // These cases isolate routing/idempotency; pacing has its own clocked tests.
+  db.prepare("UPDATE companies SET settings=? WHERE id=?")
+    .run(JSON.stringify({ ...repo.settings(companyId), additionMinIntervalSeconds: 0 }), companyId);
 
   // Enable live mode and unpause
   db.prepare("UPDATE companies SET paused = 0, run_mode = 'live' WHERE id = ?").run(companyId);
@@ -81,7 +84,7 @@ test("ExecutionEngine: new customer is processed immediately regardless of worki
   assert.equal(dailyUsage, 0, "New customers must not consume historical daily quota");
 });
 
-test("ExecutionEngine: privacy refusal (403) triggers 1:1 invite message with group link", async (t) => {
+test("ExecutionEngine: privacy refusal (403) sets state to review without sending 1:1 messages", async (t) => {
   const { db, repo, companyId } = setupFixture(t);
 
   // Set working hours to cover all day so historical customer is allowed
@@ -89,8 +92,6 @@ test("ExecutionEngine: privacy refusal (403) triggers 1:1 invite message with gr
   settings.workStart = "00:00";
   settings.workEnd = "23:59";
   settings.historicalDailyLimit = 50;
-  settings.inviteOnPrivacy = true;
-  settings.inviteTemplate = "أهلًا {customerName}، معاك {companyName}. الرابط: {inviteLink}";
   db.prepare("UPDATE companies SET settings = ? WHERE id = ?").run(JSON.stringify(settings), companyId);
 
   // Insert a historical customer (is_baseline = 1)
@@ -110,12 +111,6 @@ test("ExecutionEngine: privacy refusal (403) triggers 1:1 invite message with gr
       if (action === "add_participant") {
         return { status: "invite_required", code: 403 };
       }
-      if (action === "get_invite_link") {
-        return { code: "TESTCODE123", link: "https://chat.whatsapp.com/TESTCODE123" };
-      }
-      if (action === "send_message") {
-        return { status: "sent", messageId: "msg_123" };
-      }
       return {};
     },
   };
@@ -123,18 +118,13 @@ test("ExecutionEngine: privacy refusal (403) triggers 1:1 invite message with gr
   const engine = new ExecutionEngine(db, repo, mockWa as any);
   await engine.tick();
 
-  // Verify get_invite_link and send_message were called
-  const inviteCall = mockCalls.find((c) => c.action === "get_invite_link");
-  const msgCall = mockCalls.find((c) => c.action === "send_message");
+  // Verify get_invite_link and send_message were NOT called
+  assert.equal(mockCalls.find((c) => c.action === "get_invite_link"), undefined);
+  assert.equal(mockCalls.find((c) => c.action === "send_message"), undefined);
 
-  assert.ok(inviteCall, "Expected get_invite_link to be called");
-  assert.ok(msgCall, "Expected send_message to be called");
-  assert.equal(msgCall?.payload.phone, "201198765432");
-  assert.ok(msgCall?.payload.text.includes("https://chat.whatsapp.com/TESTCODE123"));
-
-  // Verify customer state updated to invitation_sent
+  // Verify customer state updated to review
   const customer: any = db.prepare("SELECT * FROM customers WHERE company_id = ? AND person_id = 5001").get(companyId);
-  assert.equal(customer.membership_state, "invitation_sent");
+  assert.equal(customer.membership_state, "review");
 
   // Verify daily usage for historical was recorded
   const dailyUsage = repo.getDailyUsage(companyId, cairoDay());

@@ -11,8 +11,9 @@ export class ExecutionEngine {
   private stopping = false;
   private operations: Operations;
 
-  constructor(private db: AppDatabase, private repo: CompanyRepository, private wa: WhatsAppBridge) {
-    this.operations = new Operations(db);
+  constructor(private db: AppDatabase, private repo: CompanyRepository, private wa: WhatsAppBridge,
+    private now: () => number = Date.now) {
+    this.operations = new Operations(db, now);
     this.operations.recover();
   }
   start(intervalMs = 4000) {
@@ -35,6 +36,7 @@ export class ExecutionEngine {
   }
   private runnable(id: string) {
     if (this.stopping) return false;
+    if (this.wa.state.companyId === id && this.wa.state.processingBlocked) return false;
     return Boolean(this.db.prepare("SELECT 1 FROM companies WHERE id=? AND paused=0 AND run_mode='live'").get(id));
   }
   private destinationCurrent(id: string, customer: any, groupId: string) {
@@ -58,7 +60,10 @@ export class ExecutionEngine {
         this.repo.audit(comp.id, "processing.resume_scheduled");
       }
       if (!this.runnable(comp.id) || this.wa.state.companyId !== comp.id || this.wa.state.status !== "ready") continue;
-      const settings: CompanySettings = JSON.parse(comp.settings);
+      const settings: CompanySettings = this.repo.settings(comp.id);
+      // Count persisted attempts (including uncertain writes), across all branches
+      // and both new/backlog customers. Restarting cannot reset this budget.
+      if (!this.repo.additionBudget(comp.id, this.now()).allowed) continue;
       const day = cairoDay();
       let allowHistorical = isWithinCairoWorkHours(settings.workStart,settings.workEnd) && settings.historicalDailyLimit > 0;
       let eligibleBranchIds: number[] | undefined;
@@ -125,6 +130,16 @@ export class ExecutionEngine {
             return this.wa.call(comp.id,"add_participant",{groupId,phone:customer.phone});
           });
         const result = addition.value;
+        if (result.status === "account_restricted" || [429, 463].includes(Number(result.code))) {
+          this.repo.pauseForWhatsApp(comp.id, `ACCOUNT_RESTRICTED_${result.code ?? "UNKNOWN"}`);
+          if (result.attempted === false && addition.fresh) {
+            // The worker refused before any WhatsApp write. Keep this customer
+            // queued and remove only the unsent intent, never an uncertain write.
+            this.db.prepare("DELETE FROM operations WHERE company_id=? AND kind='add' AND dedup_key=? AND status='started'")
+              .run(comp.id, key);
+            continue;
+          }
+        }
         let state = result.status === "addition_accepted" ? "pending"
           : result.status === "joined" ? "joined" : result.status === "already_member" ? "already_member" : "review";
         const whatsapp = result.status === "not_on_whatsapp" ? "not_registered"
@@ -132,26 +147,7 @@ export class ExecutionEngine {
         this.db.transaction(() => {
           this.operations.complete(comp.id,"add",key,result);
           this.update(comp.id,customer,state,whatsapp);
-
         })();
-        if (result.status === "invite_required" && settings.inviteOnPrivacy && this.runnable(comp.id)) {
-          const invite = await this.operations.run(comp.id,"invite",key,{groupId,phone:customer.phone},async () => {
-            const data = await this.wa.call(comp.id,"get_invite_link",{groupId});
-            if (!/^https:\/\/chat\.whatsapp\.com\/[A-Za-z0-9_-]+$/.test(data?.link || "")) throw new Error("رابط الدعوة غير صالح");
-            if (!this.runnable(comp.id) || !this.destinationCurrent(comp.id,customer,groupId)) throw new Error("تغيرت الوجهة أو توقفت المعالجة قبل إرسال الدعوة");
-            const text = settings.inviteTemplate.replaceAll("{customerName}",customer.name || "")
-              .replaceAll("{companyName}",comp.name).replaceAll("{destinationName}",settings.distributionMode === "global" ? settings.globalGroupTitle || "العملاء" : customer.branch_name || "")
-              .replaceAll("{inviteLink}",data.link).trim();
-            const sent = await this.wa.call(comp.id,"send_message",{phone:customer.phone,text});
-            if (sent?.status !== "sent" || !sent.messageId) throw new Error("لم تتأكد نتيجة إرسال الدعوة");
-            return sent;
-          });
-          this.db.transaction(() => {
-            this.operations.complete(comp.id,"invite",key,invite.value);
-            this.update(comp.id,customer,"invitation_sent","registered");
-
-          })();
-        }
       } catch (error) {
         this.update(comp.id,customer,"review");
         this.repo.audit(comp.id,"processing.review",{reason:(error as Error).message});

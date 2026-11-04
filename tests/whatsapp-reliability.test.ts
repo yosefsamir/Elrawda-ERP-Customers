@@ -191,6 +191,79 @@ test("unpaired and conflict reasons require attention without takeover or auth d
   }
 });
 
+for (const source of ["change_state", "disconnected", "command"]) test(`explicit restriction from ${source} survives a new session owner without deleting auth`, async t => {
+  const f = fixture(t);
+  await f.session.connect("company");
+  f.clients[0].emit("ready");
+  const directory = f.session.current!.profile.directory;
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "credentials"), "preserved");
+  if (source === "command") f.session.restrict("ACCOUNT_RESTRICTED_463");
+  else f.clients[0].emit(source, "TOS_BLOCK");
+  await until(() => !f.session.current);
+  assert.equal(f.session.state.recoveryBlocked, true);
+  // Simulate losing all in-memory state after a worker/server restart.
+  const next = new WhatsAppSession({ dataDir: f.dir, createClient: () => {
+    throw new Error("automatic retry must not create a browser");
+  }, qr: async () => "", publish: () => {}, fatal: error => { throw error; } });
+  cleanup(t, () => next.stop());
+  await next.connect("company", false);
+  assert.equal(next.state.recoveryBlocked, true);
+  assert.equal(readFileSync(join(directory, "credentials"), "utf8"), "preserved");
+  // An explicit attempt reuses auth; a restriction alone is not a logout.
+  await f.session.connect("company", true);
+  assert.equal(f.clients.length, 2);
+  assert.equal(f.session.current!.profile.recoveryBlockReason, undefined);
+  assert.equal(readFileSync(join(directory, "credentials"), "utf8"), "preserved");
+});
+
+test("soft restriction keeps Chromium/auth alive and only a later server confirmation clears the processing gate", async t => {
+  const f = fixture(t);
+  await f.session.connect("company");
+  const c: any = f.clients[0];
+  const deadline = new Date(Date.now() - 1000).toISOString();
+  let result: any = { active: true, source: "server", enforcementType: "DEFAULT", endsAt: deadline, checkedAt: new Date().toISOString() };
+  const refreshes: boolean[] = [];
+  c.fetchAccountRestriction = async (refresh: boolean) => { refreshes.push(refresh); return result; };
+  c.emit("ready");
+  assert.equal(f.session.state.status, "starting", "initial limit read completes before ready");
+  await until(() => f.session.state.status === "ready");
+  assert.equal(f.session.state.processingBlocked, true);
+  assert.equal(c.destroys, 0);
+  assert.equal(f.session.current!.profile.recoveryBlockReason, undefined);
+  result = { active: null, source: "unavailable", endsAt: null, checkedAt: new Date().toISOString() };
+  await f.session.refreshRestriction();
+  assert.equal(f.session.state.processingBlocked, true);
+  assert.equal(f.session.state.restriction.endsAt, deadline);
+  result = { active: false, source: "cache", endsAt: null, checkedAt: new Date().toISOString() };
+  await f.session.refreshRestriction();
+  assert.equal(f.session.state.processingBlocked, true);
+  result = { ...result, source: "server" };
+  await f.session.pauseForRestriction(463);
+  assert.equal(f.session.state.processingBlocked, true, "a simultaneous rejected write wins over an immediate negative read");
+  await f.session.refreshRestriction(true);
+  assert.equal(f.session.state.processingBlocked, false);
+  assert.equal(f.session.state.status, "ready");
+  assert.equal(c.destroys, 0);
+  assert.deepEqual(refreshes.slice(0, 3), [true, false, false]);
+});
+
+test("a delayed restriction read from a retired generation cannot change the new session", async t => {
+  const f = fixture(t);
+  await f.session.connect("company");
+  let resolveRead!: (value: any) => void;
+  (f.clients[0] as any).fetchAccountRestriction = () => new Promise(resolve => { resolveRead = resolve; });
+  const pending = f.session.refreshRestriction(true);
+  await Promise.resolve();
+  await f.session.stop();
+  await f.session.connect("company");
+  f.clients[1].emit("ready");
+  resolveRead({ active: true, source: "server" });
+  await pending;
+  assert.equal(f.session.state.status, "ready");
+  assert.equal(f.session.state.processingBlocked, false);
+});
+
 test("recovery is exponentially backed off, capped, bounded, and only resets after stable ready", () => {
   const recovery = new WhatsAppRecovery(8, null);
   assert.deepEqual(Array.from({ length: 8 }, () => recovery.nextDelay()), [2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);

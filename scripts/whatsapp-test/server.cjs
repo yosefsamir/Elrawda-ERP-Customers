@@ -6,6 +6,7 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const { inspectTarget, runManualAddition } = require('./operations.cjs');
 const { createPilotClient } = require('./groups.cjs');
+const { browserOptions } = require('./browser.cjs');
 
 const port = Number(process.env.WHATSAPP_TEST_PORT || 3210);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid WHATSAPP_TEST_PORT');
@@ -43,13 +44,9 @@ async function startClient() {
     update({ status: 'starting', qr: null, error: null, account: null });
     await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
     client = new Client({
+      ...browserOptions(process.env.WHATSAPP_CHROME_PATH),
       authStrategy: new LocalAuth({ clientId: 'manual-pilot', dataPath: path.join(dataDir, 'auth') }),
       webVersionCache: { type: 'local', path: path.join(dataDir, 'web-cache') },
-      puppeteer: {
-        headless: true,
-        ...(process.env.WHATSAPP_CHROME_PATH ? { executablePath: process.env.WHATSAPP_CHROME_PATH } : {}),
-        args: process.env.WHATSAPP_TEST_NO_SANDBOX === '1' ? ['--no-sandbox', '--disable-setuid-sandbox'] : [],
-      },
     });
     pilot = createPilotClient(client);
     const current = client;
