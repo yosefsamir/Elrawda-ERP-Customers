@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, readdirSync, rmSync } from "node:fs";
 import Database from "better-sqlite3";
 import { createBackup, restoreBackup, verifyBackup } from "../../packages/storage/backup.js";
 const [command,...args]=process.argv.slice(2);
@@ -16,6 +16,52 @@ try {
   } else if (command === "verify-backup") {
     if (!input) throw new Error("Use verify-backup --input <backup directory>");
     console.log(JSON.stringify({ok:true,schema:verifyBackup(input)}));
+  } else if (command === "reset-company" || command === "reset-all") {
+    const keepAdmin = command === "reset-company";
+    const dbPath = resolve(data, "app.sqlite");
+    if (!existsSync(dbPath)) {
+      console.log(JSON.stringify({ ok: true, message: "No database found." }));
+      process.exit(0);
+    }
+    const db = new Database(dbPath);
+    try {
+      db.transaction(() => {
+        db.exec(`
+          DELETE FROM product_images;
+          DELETE FROM photo_sessions;
+          DELETE FROM photo_users;
+          UPDATE portal_settings SET company_id=NULL, enabled=0, origin='';
+          DELETE FROM operations;
+          DELETE FROM audit_events;
+          DELETE FROM jobs;
+          DELETE FROM daily_usage;
+          DELETE FROM customers;
+          DELETE FROM branches;
+          DELETE FROM sources;
+          DELETE FROM company_access;
+          UPDATE sessions SET company_id=NULL;
+          DELETE FROM companies;
+        `);
+        if (!keepAdmin) {
+          db.exec(`
+            DELETE FROM sessions;
+            DELETE FROM operators;
+          `);
+        }
+      })();
+      db.pragma("vacuum");
+    } finally {
+      db.close();
+    }
+    const imgDir = resolve(data, "product-images");
+    if (existsSync(imgDir)) {
+      for (const f of readdirSync(imgDir)) rmSync(resolve(imgDir, f), { recursive: true, force: true });
+    }
+    const waDir = resolve(data, "whatsapp-auth");
+    if (existsSync(waDir)) {
+      for (const f of readdirSync(waDir)) rmSync(resolve(waDir, f), { recursive: true, force: true });
+    }
+    console.log(JSON.stringify({ ok: true, reset: keepAdmin ? "company_only" : "all" }));
   } else if (command === "stop") {
     const file=resolve(data,"shutdown.json");
     if (!existsSync(file)) throw new Error("No server shutdown metadata found; check whether the server is running");
@@ -39,5 +85,5 @@ try {
     try { if (db.pragma("integrity_check",{simple:true})!=="ok") throw new Error("Database integrity failed"); }
     finally {db.close();}
     console.log(JSON.stringify({ok:true}));
-  } else throw new Error("Commands: backup, restore, verify-backup, stop, check");
+  } else throw new Error("Commands: backup, restore, verify-backup, reset-company, reset-all, stop, check");
 } catch(error) {console.error((error as Error).message);process.exitCode=1;}

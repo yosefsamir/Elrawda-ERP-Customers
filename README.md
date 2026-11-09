@@ -8,6 +8,8 @@ Current Release: **`1.0.0`**
 
 ## Key Features
 
+- **EMOJI Product Lookup & Photos**: A separate public listener on `127.0.0.1:3212` searches `mainfarz.ffarz` or `maindet.iddet` and reads selling prices from `mainunits.fpr_r1`. The main administrator selects the published company and manages dedicated photo accounts in Settings. Product photos are validated, stored outside release files, and included in backups. See [Arabic setup and Cloudflare guide](docs/product-portal-deployment.ar.md).
+
 - **Strictly Read-Only ERP Integration**: Executes parameterized queries on SQL Server with zero triggers, schema modifications, or write permissions required.
 - **Dual-Strategy Sync Pipeline**:
   - **Fast Incremental Sync (Every 30 Seconds)**: Clustered index seeks based on branch watermarks to ingest new customer registrations near-instantly.
@@ -197,6 +199,6 @@ npm start
 ## Security & Verification
 
 - **Read-Only Database Permissions**: Dedicated database credentials should only possess `db_datareader` membership on the target ERP database.
-- **Localhost Boundary**: The web application and API bind strictly to `127.0.0.1` and reject non-local Host headers and Cross-Origin requests.
+- **Localhost Boundary**: The administrative application binds to `127.0.0.1` and rejects non-local Host headers and Cross-Origin requests. The separate product portal also binds to loopback and accepts its configured public hostname through Cloudflare Tunnel; it does not register administrative routes.
 - **Zero-Vulnerability Baseline**: Production runtime dependencies maintain `0 vulnerabilities` under `npm audit --omit=dev`.
 - **Credential Storage**: Database passwords and connection details are encrypted at rest with AES-256-GCM using a locally generated machine key.

@@ -70,6 +70,7 @@ function Set-ServiceEnvironment($Config) {
     if ($dataDir) { $env:EMOJI_DATA_DIR = $dataDir }
     if ($cacheDir) { $env:PUPPETEER_CACHE_DIR = $cacheDir }
     $env:PORT = [string]$port
+    $env:EMOJI_PORTAL_PORT = [string](Get-ConfigProperty $Config 'PortalPort' 3212)
     $env:NODE_ENV = 'production'
 
     if ($releasePath) {

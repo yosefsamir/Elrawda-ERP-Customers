@@ -36,11 +36,13 @@ const env = {
   EMOJI_DATA_DIR: data,
   EMOJI_READY_FILE: ready,
   PORT: '0',
+  EMOJI_PORTAL_PORT: '0',
   NODE_PATH: join(appRoot, 'node_modules'),
 };
 
 let child;
 let logs = '';
+let portalPort;
 
 async function run(args) {
   return new Promise((yes, no) => {
@@ -63,7 +65,9 @@ async function start() {
     if (child.exitCode !== null || Date.now() > deadline) throw new Error(logs);
     await new Promise((r) => setTimeout(r, 100));
   }
-  return JSON.parse(readFileSync(ready, 'utf8')).port;
+  const info = JSON.parse(readFileSync(ready, 'utf8'));
+  portalPort = info.portalPort;
+  return info.port;
 }
 
 async function stop() {
@@ -77,7 +81,12 @@ try {
   let base = `http://127.0.0.1:${port}`;
   const health = await (await fetch(base + '/healthz')).json();
   assert.equal(health.ok, true);
-  assert.equal(health.schemaVersion, 2);
+  assert.equal(health.schemaVersion, 3);
+  assert.ok(portalPort, 'public portal listener must report its bound port');
+  const publicBase = `http://127.0.0.1:${portalPort}`;
+  assert.match(await (await fetch(publicBase + '/')).text(), /EMOJI STORE/);
+  assert.equal((await fetch(publicBase + '/api/company')).status, 404);
+  assert.equal((await fetch(publicBase + '/api/products?code=Z3330')).status, 503);
 
   const auth = await fetch(base + '/api/auth/bootstrap', {
     method: 'POST',

@@ -52,7 +52,15 @@ export function registerCompanyRoutes(
   app: FastifyInstance,
   { db, repo, secrets, wa, sync, root }: Context,
 ) {
-  app.post("/api/companies", async (request) => {
+  app.post("/api/companies", async (request, reply) => {
+    const existing = db
+      .prepare("SELECT id FROM companies LIMIT 1")
+      .get() as { id: string } | undefined;
+    if (existing) {
+      return reply
+        .code(400)
+        .send({ error: "النظام مخصص لشركة واحدة فقط؛ لا يمكن إضافة شركة أخرى." });
+    }
     const { name } = z
       .object({ name: z.string().trim().min(2).max(100) })
       .parse(request.body);
@@ -63,21 +71,10 @@ export function registerCompanyRoutes(
     );
     return { id };
   });
-  app.post("/api/company/switch", async (request, reply) => {
-    const { id } = z.object({ id: z.string().uuid() }).parse(request.body);
-    if (
-      !db
-        .prepare(
-          "SELECT 1 FROM company_access WHERE operator_id=? AND company_id=?",
-        )
-        .get(request.operatorId, id)
-    )
-      return reply.code(403).send({ error: "ليست لديك صلاحية لهذه الشركة" });
-    db.prepare("UPDATE sessions SET company_id=? WHERE token_hash=?").run(
-      id,
-      request.sessionHash,
-    );
-    return { ok: true };
+  app.post("/api/company/switch", async (_request, reply) => {
+    return reply
+      .code(400)
+      .send({ error: "النظام مخصص لشركة واحدة فقط ولا يدعم تبديل الشركات." });
   });
   app.get("/api/company", async (request) => {
     const id = company(request);

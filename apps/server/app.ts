@@ -7,12 +7,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { ZodError } from "zod";
 import { openDatabase } from "../../packages/storage/database.js";
 import { CompanyRepository } from "../../packages/storage/company-repository.js";
-import { localSecretStore, tokenHash } from "./security.js";
+import { isLocalOrLanHost, localSecretStore, tokenHash } from "./security.js";
 import { WhatsAppBridge } from "./whatsapp-bridge.js";
 import { ExecutionEngine } from "./execution-engine.js";
 import { SyncService } from "./sync-service.js";
 import { registerAuth } from "./auth-routes.js";
 import { registerCompanyRoutes } from "./company-routes.js";
+import { registerPortalAdmin } from "./portal-admin.js";
+import { createPortal } from "./portal.js";
 export async function createApp(options: {
   dataDir: string;
   root: string;
@@ -78,7 +80,7 @@ export async function createApp(options: {
     if (!request.url.startsWith("/api/")) return;
     reply.header("Cache-Control", "no-store");
     const hostname = request.hostname;
-    if (!["127.0.0.1", "localhost", "[::1]", "::1"].includes(hostname))
+    if (!isLocalOrLanHost(hostname))
       return reply.code(403).send({ error: "الوصول متاح محليًا فقط" });
     if (!["GET", "HEAD"].includes(request.method)) {
       if (request.headers["x-emoji-request"] !== "1")
@@ -99,22 +101,22 @@ export async function createApp(options: {
       if (session) {
         request.operatorId = session.operator_id;
         request.sessionHash = hash;
-        request.companyId = session.company_id;
+        const singleCompany = db
+          .prepare("SELECT id FROM companies LIMIT 1")
+          .get() as { id: string } | undefined;
+        request.companyId = singleCompany?.id ?? session.company_id ?? null;
       }
     }
     const publicRoute =
       request.url === "/api/session" || request.url.startsWith("/api/auth/");
     if (!publicRoute && !request.operatorId)
       return reply.code(401).send({ error: "سجّل الدخول أولًا" });
-    if (
-      request.companyId &&
-      !db
-        .prepare(
-          "SELECT 1 FROM company_access WHERE operator_id=? AND company_id=?",
-        )
-        .get(request.operatorId, request.companyId)
-    )
-      return reply.code(403).send({ error: "غير مصرح لهذه الشركة" });
+    if (request.companyId && request.operatorId) {
+      db.prepare("INSERT OR IGNORE INTO company_access VALUES(?,?)").run(
+        request.operatorId,
+        request.companyId,
+      );
+    }
   });
   app.setErrorHandler((caught, request, reply) => {
     const error = caught as Error & { statusCode?: number; code?: string };
@@ -167,6 +169,8 @@ export async function createApp(options: {
   });
   registerAuth(app, { db, repo, secrets, wa, sync, root: options.root });
   registerCompanyRoutes(app, { db, repo, secrets, wa, sync, root: options.root });
+  registerPortalAdmin(app, db);
+  const portal = await createPortal({ db, dataDir: options.dataDir, root: options.root, logger: options.logger });
   const dist = resolve(options.root, "dist/web");
   if (existsSync(dist)) {
     await app.register(staticFiles, { root: dist });
@@ -179,7 +183,7 @@ export async function createApp(options: {
   const version = JSON.parse(readFileSync(resolve(options.root,"package.json"),"utf8")).version;
   app.get("/healthz", async () => ({
     ok: true,
-    schemaVersion: 2,
+    schemaVersion: 3,
     version,
     whatsapp: {
       status: wa.state.status,
@@ -202,9 +206,10 @@ export async function createApp(options: {
   app.addHook("onClose", async () => {
     clearInterval(syncTimer);
     try {
+      await portal.close();
       await Promise.allSettled([sync.stop(), engine.stop()]);
       await wa.stop();
     } finally { db.close(); }
   });
-  return { app, db, repo, wa, engine, sync };
+  return { app, portal, db, repo, wa, engine, sync };
 }

@@ -52,6 +52,63 @@ export function Field({
     </div>
   );
 }
+export function ToggleSwitch({
+  checked,
+  onChange,
+  disabled = false,
+  title,
+  description,
+  badgeActive = "مفعّلة",
+  badgeInactive = "متوقفة",
+  id,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  title: string;
+  description?: string;
+  badgeActive?: string;
+  badgeInactive?: string;
+  id?: string;
+}) {
+  return (
+    <div
+      className={`toggle-switch-card ${checked ? "active" : ""}`}
+      onClick={(e) => {
+        if (!disabled && (e.target as HTMLElement).tagName !== "BUTTON") {
+          onChange(!checked);
+        }
+      }}
+    >
+      <div className="toggle-switch-info">
+        <span className="toggle-switch-title">{title}</span>
+        {description && <span className="toggle-switch-desc">{description}</span>}
+      </div>
+      <div className="toggle-switch-action" onClick={(e) => e.stopPropagation()}>
+        <span
+          className={`toggle-badge ${checked ? "active" : "inactive"}`}
+          onClick={() => !disabled && onChange(!checked)}
+        >
+          <i className="toggle-dot" />
+          <span>{checked ? badgeActive : badgeInactive}</span>
+        </span>
+        <button
+          type="button"
+          role="switch"
+          dir="ltr"
+          id={id}
+          aria-checked={checked}
+          disabled={disabled}
+          className={`toggle-switch-btn ${checked ? "checked" : ""}`}
+          onClick={() => !disabled && onChange(!checked)}
+          title={checked ? badgeActive : badgeInactive}
+        >
+          <span className="toggle-switch-slider" />
+        </button>
+      </div>
+    </div>
+  );
+}
 export function Notice({
   children,
   tone = "info",

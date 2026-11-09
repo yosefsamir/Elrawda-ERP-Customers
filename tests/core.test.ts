@@ -198,7 +198,18 @@ test("HTTP API requires authentication and same-origin mutation headers; bootstr
         cookie,
       )
     ).statusCode,
-    403,
+    400,
+  );
+  assert.equal(
+    (
+      await request(
+        "POST",
+        "/api/companies",
+        { name: "Second Company" },
+        cookie,
+      )
+    ).statusCode,
+    400,
   );
   assert.equal(
     (

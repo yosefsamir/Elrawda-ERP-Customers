@@ -79,14 +79,14 @@ test('global rollover keeps a stable base title and increments its counter',asyn
 test('online backup includes committed WAL data and the matching SQL encryption key; offline restore preserves them',async t=>{
  const f=fixture(t);f.ingest([row(1)]);const secrets=localSecretStore(f.dir);f.db.prepare('UPDATE sources SET config=?').run(secrets.encrypt({password:'qa-only'}));
  f.db.pragma('wal_autocheckpoint=0');f.db.prepare("UPDATE companies SET name='Backed up'").run();
- const out=join(f.dir,'backup');await createBackup(f.dir,out);assert.equal(verifyBackup(out),2);const backed=new Database(join(out,'app.sqlite'),{readonly:true});try{assert.equal(localSecretStore(out).decrypt((backed.prepare('SELECT config FROM sources').get() as any).config).password,'qa-only');}finally{backed.close();}
+ const out=join(f.dir,'backup');await createBackup(f.dir,out);assert.equal(verifyBackup(out),3);const backed=new Database(join(out,'app.sqlite'),{readonly:true});try{assert.equal(localSecretStore(out).decrypt((backed.prepare('SELECT config FROM sources').get() as any).config).password,'qa-only');}finally{backed.close();}
  f.db.prepare("UPDATE companies SET name='Later'").run();f.db.close();await restoreBackup(f.dir,out);const restored=new Database(join(f.dir,'app.sqlite'));try{assert.equal((restored.prepare('SELECT name FROM companies').get() as any).name,'Backed up');}finally{restored.close();}
 });
 test('exclusive runtime lock refuses a second server and offline backup while live',async t=>{
  const f=fixture(t);f.ingest([]);const release=acquireLock(join(f.dir,'runtime.lock'));try{assert.throws(()=>acquireLock(join(f.dir,'runtime.lock')));await assert.rejects(createBackup(f.dir,join(f.dir,'backup'),true));}finally{release();}
 });
 test('version 1 upgrade saves a pre-migration database and preserves customer records',t=>{
- const f=fixture(t);f.ingest([row(1)]);f.db.prepare('DELETE FROM schema_migrations WHERE version=2').run();f.db.close();const db=openDatabase(join(f.dir,'app.sqlite'));try{assert.equal((db.prepare('SELECT count(*) n FROM customers').get() as any).n,1);assert.equal((db.prepare('SELECT max(version) n FROM schema_migrations').get() as any).n,2);assert.ok(readdirSync(f.dir).some(n=>n.includes('pre-v2')));}finally{db.close();}
+ const f=fixture(t);f.ingest([row(1)]);f.db.prepare('DELETE FROM schema_migrations WHERE version>=2').run();f.db.close();const db=openDatabase(join(f.dir,'app.sqlite'));try{assert.equal((db.prepare('SELECT count(*) n FROM customers').get() as any).n,1);assert.equal((db.prepare('SELECT max(version) n FROM schema_migrations').get() as any).n,3);assert.ok(readdirSync(f.dir).some(n=>n.includes('pre-v2')));}finally{db.close();}
 });
 test('periodic full reconciliation refreshes a corrected old phone; parallel sync is rejected and stop drains',async t=>{
  const f=fixture(t);const snapshot={identity:'qa',label:'qa',branches,customers:[row(1)]};f.repo.ingest(f.id,snapshot,'sql','unused');f.db.prepare("UPDATE sources SET last_full_sync='2020-01-01T00:00:00Z'").run();

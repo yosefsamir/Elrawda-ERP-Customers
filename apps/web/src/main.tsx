@@ -7,7 +7,6 @@ import {
   LogOut,
   Pause,
   Play,
-  Plus,
   Settings2,
   Users,
   Wifi,
@@ -102,7 +101,6 @@ function App() {
       null,
     ),
     [fatal, setFatal] = useState(""),
-    [addingCompany, setAddingCompany] = useState(false),
     [pauseModal, setPauseModal] = useState(false),
     [pauseTime, setPauseTime] = useState(""),
     [busy, setBusy] = useState(false);
@@ -153,17 +151,6 @@ function App() {
     }, 4000);
     return () => clearInterval(timer);
   }, [company?.id]);
-  async function switchCompany(id: string) {
-    try {
-      setLoading(true);
-      await post("/company/switch", { id });
-      setPage("overview");
-      await refresh();
-    } catch (e) {
-      notify((e as Error).message, true);
-      setLoading(false);
-    }
-  }
   async function processing(paused: boolean, mode?: "preview" | "live") {
     setBusy(true);
     try {
@@ -267,10 +254,9 @@ function App() {
               key={item.id}
               aria-label={item.label}
               title={item.label}
-              className={page === item.id && !addingCompany ? "active" : ""}
+              className={page === item.id ? "active" : ""}
               onClick={() => {
                 setPage(item.id);
-                setAddingCompany(false);
               }}
             >
               <item.icon size={18} />
@@ -289,32 +275,7 @@ function App() {
               واتساب
             </span>
           </button>
-          {(session.companies || []).length > 1 && (
-            <label className="company-switch">
-              <Building2 size={16} />
-              <select
-                aria-label="تبديل الشركة"
-                value={company.id}
-                onChange={(e) => void switchCompany(e.target.value)}
-              >
-                {(session.companies || []).map((c: any) => (
-                  <option value={c.id} key={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
           <div className="sidebar-actions">
-            <button
-              onClick={() => {
-                setAddingCompany(true);
-                setPage("overview");
-              }}
-            >
-              <Plus size={15} />
-              شركة جديدة
-            </button>
             <button onClick={() => void post("/logout").then(refresh)}>
               <LogOut size={15} />
               خروج
@@ -373,24 +334,7 @@ function App() {
           </div>
         </header>
         <main className="main-content">
-          {addingCompany ? (
-            <>
-              <button
-                className="text-button back"
-                onClick={() => setAddingCompany(false)}
-              >
-                العودة لمساحة الشركة
-              </button>
-              <CompanySetup
-                isNew
-                notify={notify}
-                onDone={async () => {
-                  setAddingCompany(false);
-                  await refresh();
-                }}
-              />
-            </>
-          ) : page === "overview" ? (
+          {page === "overview" ? (
             <Overview {...props} navigate={setPage} />
           ) : page === "customers" || page === "reports" ? (
             <ReportView

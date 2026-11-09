@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-erp",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "Local multi-company customer operations and WhatsApp onboarding",
   "engines": {
@@ -11,6 +11,7 @@
     "test": "node --test scripts/whatsapp-test/*.test.cjs",
     "dev": "tsx watch apps/server/index.ts",
     "dev:web": "vite",
+    "dev:portal": "vite --config vite.portal.config.ts",
     "build": "node scripts/build.mjs",
     "start": "node dist/runtime/apps/server/index.js",
     "typecheck": "tsc --noEmit",
@@ -19,6 +20,8 @@
     "package:windows": "node scripts/release.mjs --bundle-runtime",
     "build:installer": "powershell.exe -ExecutionPolicy Bypass -File installer/build-installer.ps1",
     "admin": "node dist/runtime/scripts/maintenance/admin.js",
+    "reset:company": "node dist/runtime/scripts/maintenance/admin.js reset-company",
+    "reset:all": "node dist/runtime/scripts/maintenance/admin.js reset-all",
     "test:release": "node tests/release-smoke.mjs",
     "test:whatsapp:browser": "node --test tests/whatsapp-browser-smoke.mjs"
   },
@@ -26,13 +29,16 @@
     "@fastify/cookie": "11.1.5",
     "@fastify/multipart": "10.1.6",
     "@fastify/static": "10.1.8",
+    "@zxing/library": "^0.21.3",
     "better-sqlite3": "13.0.3",
     "fastify": "5.12.7",
+    "html5-qrcode": "^2.3.8",
     "lucide-react": "1.65.0",
     "mssql": "12.7.13",
     "qrcode": "1.5.4",
     "react": "19.3.1",
     "react-dom": "19.3.1",
+    "sharp": "0.35.5",
     "whatsapp-web.js": "1.34.7",
     "zod": "4.6.7"
   },

@@ -1,16 +1,22 @@
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
+  Building2,
+  Clock,
   Database,
   ImagePlus,
   Link2,
   LoaderCircle,
+  Package,
   RefreshCw,
   Save,
+  ShieldCheck,
+  Users,
   Wifi,
 } from "lucide-react";
 import { api, post, put, number, dateTime } from "./api";
-import { Badge, Button, Empty, Field, Notice } from "./components";
+import { Badge, Button, Empty, Field, Notice, ToggleSwitch } from "./components";
+import { PortalSettings } from "./portal-settings";
 
 type ViewProps = {
   company: any;
@@ -20,11 +26,9 @@ type ViewProps = {
 export function CompanySetup({
   onDone,
   notify,
-  isNew = false,
 }: {
   onDone: () => Promise<void>;
   notify: ViewProps["notify"];
-  isNew?: boolean;
 }) {
   const [name, setName] = useState(""),
     [logo, setLogo] = useState<File | null>(null),
@@ -48,7 +52,7 @@ export function CompanySetup({
   }
   return (
     <div className="setup-page">
-      <h1>{isNew ? "شركة جديدة" : "بيانات الشركة"}</h1>
+      <h1>بيانات الشركة</h1>
       <form className="setup-card" onSubmit={submit}>
         <Field label="اسم الشركة">
           <input
@@ -803,24 +807,60 @@ export function Branches({ company, refresh, notify }: ViewProps) {
     </>
   );
 }
-export function Settings({ company, refresh, notify }: ViewProps) {
+export function CustomerSettings({ company, refresh, notify }: ViewProps) {
   const [settings, setSettings] = useState({ ...company.settings }),
     [name, setName] = useState(company.name),
     [logo, setLogo] = useState<File | null>(null),
     [busy, setBusy] = useState(false);
 
+  const [lastAdditionLimit, setLastAdditionLimit] = useState(
+    company.settings?.additionDailyLimit > 0 ? company.settings.additionDailyLimit : 100,
+  );
+  const [lastHistoricalLimit, setLastHistoricalLimit] = useState(
+    company.settings?.historicalDailyLimit > 0 ? company.settings.historicalDailyLimit : 50,
+  );
+
   useEffect(() => {
     setSettings({ ...company.settings });
     setName(company.name);
+    if (company.settings?.additionDailyLimit > 0) {
+      setLastAdditionLimit(company.settings.additionDailyLimit);
+    }
+    if (company.settings?.historicalDailyLimit > 0) {
+      setLastHistoricalLimit(company.settings.historicalDailyLimit);
+    }
   }, [company.id]);
 
   const change = (key: string, value: unknown) =>
-    setSettings({ ...settings, [key]: value });
+    setSettings((prev: any) => ({ ...prev, [key]: value }));
+
+  const toggleAdditionService = (enabled: boolean) => {
+    if (enabled) {
+      change("additionDailyLimit", lastAdditionLimit || 100);
+    } else {
+      if (settings.additionDailyLimit > 0) {
+        setLastAdditionLimit(settings.additionDailyLimit);
+      }
+      change("additionDailyLimit", 0);
+    }
+  };
+
+  const toggleHistoricalService = (enabled: boolean) => {
+    if (enabled) {
+      change("historicalDailyLimit", lastHistoricalLimit || 50);
+    } else {
+      if (settings.historicalDailyLimit > 0) {
+        setLastHistoricalLimit(settings.historicalDailyLimit);
+      }
+      change("historicalDailyLimit", 0);
+    }
+  };
+
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     try {
-      await put("/company", { name });
+      await put("/company", { name: name.trim() });
       await put("/settings", settings);
       if (logo) {
         const form = new FormData();
@@ -829,131 +869,285 @@ export function Settings({ company, refresh, notify }: ViewProps) {
       }
       await refresh();
       setSettings({ ...settings });
-      notify("تم حفظ إعدادات الشركة.");
+      notify("تم حفظ إعدادات بيانات العملاء بنجاح.");
     } catch (e) {
       notify((e as Error).message, true);
     } finally {
       setBusy(false);
     }
   }
+
+  const additionsEnabled = (settings.additionDailyLimit ?? 0) > 0;
+  const historicalEnabled = (settings.historicalDailyLimit ?? 0) > 0;
+
   return (
-    <>
-      <div className="page-heading">
-        <h1>الإعدادات</h1>
-      </div>
-      <form onSubmit={save} className="settings-form">
-        <section className="panel form-panel">
-          <h2 className="section-title">هوية الشركة</h2>
-          <div className="form-grid">
-            <Field label="اسم الشركة">
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                minLength={2}
-              />
-            </Field>
-            <Field
-              label="شعار الشركة"
-              hint="PNG أو JPEG أو WebP حتى 2 ميجابايت"
-            >
+    <form onSubmit={save} className="settings-form">
+      {/* 1. Quick Service Toggles */}
+      <section className="panel form-panel">
+        <h2 className="section-title">التحكم في خدمات إضافة العملاء</h2>
+        <p className="panel-subtitle">
+          يمكنك تفعيل أو إيقاف خدمات سحب وإضافة العملاء إلى واتساب مباشرة من خلال أزرار التبديل التالية.
+        </p>
+
+        <ToggleSwitch
+          id="addition-service-toggle"
+          title="خدمة إضافة العملاء الجدد إلى واتساب"
+          description="إضافة أرقام العملاء الجدد المقيدين في الـ ERP تلقائياً إلى جروبات واتساب فور تسجيل فواتيرهم."
+          checked={additionsEnabled}
+          onChange={toggleAdditionService}
+          disabled={busy}
+          badgeActive="الخدمة مفعّلة"
+          badgeInactive="الخدمة متوقفة"
+        />
+
+        <ToggleSwitch
+          id="historical-service-toggle"
+          title="خدمة معالجة دفعات العملاء القدامى (الأرشيف)"
+          description="إضافة العملاء المسجلين مسبقًا في الأرشيف على دفعات يومية منتظمة خلال ساعات العمل لتجنب حظر الرقم."
+          checked={historicalEnabled}
+          onChange={toggleHistoricalService}
+          disabled={busy}
+          badgeActive="الخدمة مفعّلة"
+          badgeInactive="الخدمة متوقفة"
+        />
+      </section>
+
+      {/* 2. Company Identity */}
+      <section className="panel form-panel">
+        <h2 className="section-title">هوية الشركة الأساسية</h2>
+        <p className="panel-subtitle">اسم الشركة وشعارها المعتمد في رسائل النظام وتقارير العملاء.</p>
+        <div className="form-grid">
+          <Field label="اسم الشركة">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              minLength={2}
+              placeholder="اسم الشركة…"
+              disabled={busy}
+            />
+          </Field>
+          <Field
+            label="شعار الشركة"
+            hint="PNG أو JPEG أو WebP حتى 2 ميجابايت"
+          >
+            <div className="logo-upload-wrapper">
               <label className="upload-box">
                 <ImagePlus size={20} />
-                <span>{logo ? logo.name : "اختر صورة"}</span>
+                <span>{logo ? logo.name : "اختر صورة الشعار"}</span>
                 <input
                   type="file"
                   accept="image/png,image/jpeg,image/webp"
                   onChange={(e) => setLogo(e.target.files?.[0] ?? null)}
+                  disabled={busy}
                 />
               </label>
-            </Field>
-          </div>
-        </section>
-        <section className="panel form-panel">
-          <h2 className="section-title">التوزيع ودفعات العملاء</h2>
-          <div className="form-grid">
-            <Field
-              label="سياسة توزيع العملاء"
-              hint="يمكنك أيضاً تحديد الجروبات واختيار الجروب الموحد مباشرة من شاشة الفروع والجروبات"
-            >
-              <select
-                value={settings.distributionMode}
-                onChange={(e) => change("distributionMode", e.target.value)}
-              >
-                <option value="per_branch">جروب مستقل لكل فرع</option>
-                <option value="global">جروب عام لكل الفروع</option>
-              </select>
-            </Field>
-            <Field
-              label="حد فتح الجزء التالي"
-              hint="يشمل الأدمن والأعضاء؛ الحد الأقصى للجروب 1024"
-            >
-              <input
-                type="number"
-                min={10}
-                max={1024}
-                value={settings.rolloverThreshold}
-                onChange={(e) =>
-                  change("rolloverThreshold", Number(e.target.value))
-                }
-              />
-            </Field>
-            <Field
-              label="العملاء القدامى يوميًا"
-              hint="صفر يعني إيقاف دفعات القديم"
-            >
-              <input
-                type="number"
-                min={0}
-                max={10000}
-                value={settings.historicalDailyLimit}
-                onChange={(e) =>
-                  change("historicalDailyLimit", Number(e.target.value))
-                }
-              />
-            </Field>
-            <Field label="العدد محسوب على">
-              <select
-                value={settings.historicalLimitScope}
-                onChange={(e) => change("historicalLimitScope", e.target.value)}
-              >
-                <option value="total">إجمالي كل الفروع</option>
-                <option value="per_branch">لكل فرع على حدة</option>
-              </select>
-            </Field>
-            <Field label="الفاصل بين محاولات الإضافة بالثواني" hint="يشمل العملاء الجدد والقدام؛ صفر يلغي الفاصل">
-              <input type="number" min={0} max={86400}
-                value={settings.additionMinIntervalSeconds}
-                onChange={e => change("additionMinIntervalSeconds", Number(e.target.value))} />
-            </Field>
-            <Field label="حد محاولات الإضافة خلال ٢٤ ساعة" hint="إجمالي الشركة؛ يشمل المحاولات غير المؤكدة. صفر يوقف الإضافات">
-              <input type="number" min={0} max={10000}
-                value={settings.additionDailyLimit}
-                onChange={e => change("additionDailyLimit", Number(e.target.value))} />
-            </Field>
-            <Field label="بداية وقت العمل">
-              <input
-                type="time"
-                value={settings.workStart}
-                onChange={(e) => change("workStart", e.target.value)}
-              />
-            </Field>
-            <Field label="نهاية وقت العمل" hint="كل المواعيد بتوقيت القاهرة">
-              <input
-                type="time"
-                value={settings.workEnd}
-                onChange={(e) => change("workEnd", e.target.value)}
-              />
-            </Field>
-          </div>
-        </section>
-        <div className="settings-save">
-          <Button busy={busy}>
-            <Save size={17} />
-            حفظ الإعدادات
-          </Button>
+              {(logo || company.has_logo) && (
+                <div className="logo-preview-box">
+                  <img
+                    src={logo ? URL.createObjectURL(logo) : `/api/company/logo?t=${company.id}`}
+                    alt="معاينة الشعار"
+                    className="logo-preview-img"
+                  />
+                </div>
+              )}
+            </div>
+          </Field>
         </div>
-      </form>
+      </section>
+
+      {/* 3. Safety Limits */}
+      <section className="panel form-panel">
+        <h2 className="section-title">معدلات وحدود الأمان اليومية (حماية واتساب)</h2>
+        <p className="panel-subtitle">ضوابط دقيقة لحماية رقم واتساب من الحظر ومنع إرسال طلبات مكثفة ومفاجئة.</p>
+        <div className="form-grid">
+          <Field
+            label="حد محاولات الإضافة خلال ٢٤ ساعة"
+            hint="إجمالي الشركة؛ يشمل المحاولات غير المؤكدة. صفر يوقف الإضافات تمامًا."
+          >
+            <input
+              type="number"
+              min={0}
+              max={10000}
+              value={settings.additionDailyLimit ?? 0}
+              onChange={(e) =>
+                change("additionDailyLimit", Number(e.target.value))
+              }
+              disabled={busy}
+            />
+          </Field>
+          <Field
+            label="الفاصل بين محاولات الإضافة بالثواني"
+            hint="يشمل العملاء الجدد والقدامى؛ يوصى بـ 60 ثانية لمحاكاة السلوك البشري الطبيعي."
+          >
+            <input
+              type="number"
+              min={0}
+              max={86400}
+              value={settings.additionMinIntervalSeconds ?? 60}
+              onChange={(e) =>
+                change("additionMinIntervalSeconds", Number(e.target.value))
+              }
+              disabled={busy}
+            />
+          </Field>
+          <Field
+            label="العملاء القدامى يوميًا (حجم الدفعة)"
+            hint="عدد العملاء من الأرشيف المسموح بمعالجتهم في اليوم. صفر يعني إيقاف دفعات القديم."
+          >
+            <input
+              type="number"
+              min={0}
+              max={10000}
+              value={settings.historicalDailyLimit ?? 0}
+              onChange={(e) =>
+                change("historicalDailyLimit", Number(e.target.value))
+              }
+              disabled={busy}
+            />
+          </Field>
+          <Field label="نطاق احتساب حد العملاء القدامى">
+            <select
+              value={settings.historicalLimitScope}
+              onChange={(e) => change("historicalLimitScope", e.target.value)}
+              disabled={busy}
+            >
+              <option value="total">إجمالي كل الفروع معًا</option>
+              <option value="per_branch">لكل فرع على حدة مستقلًا</option>
+            </select>
+          </Field>
+        </div>
+      </section>
+
+      {/* 4. Group Distribution Policy */}
+      <section className="panel form-panel">
+        <h2 className="section-title">سياسة التوزيع وتدوير الجروبات</h2>
+        <p className="panel-subtitle">
+          تحديد آلية توزيع العملاء بين جروبات الفروع المستقلة أو الجروب الموحد وحد الانتقال التلقائي للجروب التالي.
+        </p>
+        <div className="form-grid">
+          <Field
+            label="سياسة توزيع العملاء"
+            hint="يمكنك أيضاً تحديد الجروبات واختيار الجروب الموحد مباشرة من شاشة الفروع والجروبات"
+          >
+            <select
+              value={settings.distributionMode}
+              onChange={(e) => change("distributionMode", e.target.value)}
+              disabled={busy}
+            >
+              <option value="per_branch">جروب مستقل لكل فرع</option>
+              <option value="global">جروب عام موحد لكل الفروع</option>
+            </select>
+          </Field>
+          <Field
+            label="حد فتح الجزء التالي (الجروب الجديد)"
+            hint="يشمل المشرفين والأعضاء؛ الحد الأقصى الرسمي للجروب 1024 عضوًا."
+          >
+            <input
+              type="number"
+              min={10}
+              max={1024}
+              value={settings.rolloverThreshold}
+              onChange={(e) =>
+                change("rolloverThreshold", Number(e.target.value))
+              }
+              disabled={busy}
+            />
+          </Field>
+        </div>
+      </section>
+
+      {/* 5. Cairo Working Hours */}
+      <section className="panel form-panel">
+        <h2 className="section-title">أوقات العمل المعتمدة</h2>
+        <p className="panel-subtitle">
+          العمليات غير العاجلة مثل دفعات العملاء القدامى تتم حصرياً خلال ساعات العمل بتوقيت القاهرة.
+        </p>
+        <div className="form-grid">
+          <Field label="بداية وقت العمل">
+            <input
+              type="time"
+              value={settings.workStart}
+              onChange={(e) => change("workStart", e.target.value)}
+              disabled={busy}
+            />
+          </Field>
+          <Field label="نهاية وقت العمل" hint="كل المواعيد تُحسب بتوقيت القاهرة">
+            <input
+              type="time"
+              value={settings.workEnd}
+              onChange={(e) => change("workEnd", e.target.value)}
+              disabled={busy}
+            />
+          </Field>
+        </div>
+      </section>
+
+      <div className="settings-save">
+        <Button busy={busy}>
+          <Save size={17} />
+          حفظ إعدادات بيانات العملاء
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+export function Settings({ company, refresh, notify }: ViewProps) {
+  const [activeTab, setActiveTab] = useState<"products" | "customers">(() => {
+    return (
+      (localStorage.getItem("elrawda_settings_tab") as "products" | "customers") ||
+      "products"
+    );
+  });
+
+  const handleTabChange = (tab: "products" | "customers") => {
+    setActiveTab(tab);
+    localStorage.setItem("elrawda_settings_tab", tab);
+  };
+
+  return (
+    <>
+      <div className="page-heading">
+        <div>
+          <h1>الإعدادات</h1>
+          <p className="page-heading-sub">
+            {activeTab === "products"
+              ? "إعدادات خدمة استعلام الأصناف والأسعار المباشرة وإدارة صور الموديلات"
+              : "إعدادات بيانات وهوية الشركة وتوزيع العملاء ومعدلات الأمان وساعات العمل"}
+          </p>
+        </div>
+      </div>
+
+      <div className="settings-tabs-nav" role="tablist" aria-label="أقسام الإعدادات">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "products"}
+          className={`settings-tab-btn ${activeTab === "products" ? "active" : ""}`}
+          onClick={() => handleTabChange("products")}
+        >
+          <Package size={18} />
+          <span>إعدادات الأصناف وأسعارها</span>
+        </button>
+
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "customers"}
+          className={`settings-tab-btn ${activeTab === "customers" ? "active" : ""}`}
+          onClick={() => handleTabChange("customers")}
+        >
+          <Users size={18} />
+          <span>إعدادات بيانات العملاء</span>
+        </button>
+      </div>
+
+      {activeTab === "products" ? (
+        <PortalSettings companyId={company.id} notify={notify} />
+      ) : (
+        <CustomerSettings company={company} refresh={refresh} notify={notify} />
+      )}
     </>
   );
 }

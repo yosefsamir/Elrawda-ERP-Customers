@@ -25,6 +25,7 @@ for (const path of ['dist', 'package.json', 'package-lock.json', 'scripts/window
   cpSync(path, resolve(dir, path), { recursive: true });
 }
 cpSync('docs/windows-deployment.ar.md', resolve(dir, 'WINDOWS-READ-ME.ar.md'));
+cpSync('docs/product-portal-deployment.ar.md', resolve(dir, 'PRODUCT-PORTAL.ar.md'));
 const validationDoc = `docs/release-validation-${pkg.version}.ar.md`;
 if (existsSync(validationDoc)) {
   writeFileSync(
@@ -64,7 +65,7 @@ const files = (folder) =>
 const allFiles = files(dir);
 const manifest = {
   version: pkg.version,
-  schemaVersion: 2,
+  schemaVersion: 3,
   node: shouldBundleRuntime
     ? '22.23.4 (Windows x64 bundled portable runtime)'
     : '22.22.x or newer 22.x (Windows x64)',

@@ -1,9 +1,14 @@
 import { createRequire } from "node:module";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
+import sharp from "sharp";
 
 const require = createRequire(import.meta.url);
 const Database = require("better-sqlite3");
+
+// Verify the native image decoder/encoder used by product photo uploads.
+const imageProbe = await sharp({create:{width:1,height:1,channels:3,background:"#ffc400"}}).webp().toBuffer();
+if ((await sharp(imageProbe).metadata()).format !== "webp") throw new Error("sharp image verification failed");
 
 // 1. Verify better-sqlite3 loading and read/write operations
 try {

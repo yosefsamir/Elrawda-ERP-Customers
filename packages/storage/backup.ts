@@ -16,6 +16,9 @@ export async function createBackup(dataDir: string, target: string, offline = fa
       await source.backup(resolve(target,"app.sqlite"));
       if (existsSync(resolve(dataDir,"secret.key"))) cpSync(resolve(dataDir,"secret.key"),resolve(target,"secret.key"));
     } finally { source.close(); }
+    // Images are immutable, including deleted blobs: copying after the DB snapshot
+    // guarantees every image referenced by that snapshot remains available.
+    if (existsSync(resolve(dataDir,"product-images"))) cpSync(resolve(dataDir,"product-images"),resolve(target,"product-images"),{recursive:true});
     verifyBackup(target);
     if (offline && existsSync(resolve(dataDir,"whatsapp-auth"))) cpSync(resolve(dataDir,"whatsapp-auth"),resolve(target,"whatsapp-auth"),{
       recursive:true, filter:path => !["SingletonLock","SingletonCookie","SingletonSocket","DevToolsActivePort"].includes(basename(path)),
@@ -39,7 +42,13 @@ export function verifyBackup(folder: string) {
       for (const row of configs) secrets.decrypt(row.config);
     }
     const row = db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as {version:number};
-    if (row.version > 2) throw new Error("Backup schema is newer than this release");
+    if (row.version > 3) throw new Error("Backup schema is newer than this release");
+    if (row.version >= 3) {
+      const images = db.prepare("SELECT id FROM product_images WHERE deleted_at IS NULL").all() as {id:string}[];
+      for (const image of images) {
+        if (!/^[0-9a-f-]{36}$/.test(image.id) || !existsSync(resolve(folder,"product-images",`${image.id}.webp`))) throw new Error("Backup is missing a product image");
+      }
+    }
     return row.version;
   } finally { db.close(); }
 }
@@ -56,13 +65,13 @@ export async function restoreBackup(dataDir: string, backup: string) {
     const previous=resolve(dataDir,`restore-safety-${Date.now()}`);
     mkdirSync(previous);
     writeFileSync(marker,JSON.stringify({previous,backup}));
-    const files=["app.sqlite","app.sqlite-wal","app.sqlite-shm","secret.key",...(manifest.includesWhatsApp ? ["whatsapp-auth"] : [])];
+    const files=["app.sqlite","app.sqlite-wal","app.sqlite-shm","secret.key","product-images",...(manifest.includesWhatsApp ? ["whatsapp-auth"] : [])];
     const moved: string[] = [], installed: string[] = [];
     try {
       for (const name of files) if (existsSync(resolve(dataDir,name))) {
         renameSync(resolve(dataDir,name),resolve(previous,name)); moved.push(name);
       }
-      for (const name of ["app.sqlite","secret.key",...(manifest.includesWhatsApp ? ["whatsapp-auth"] : [])])
+      for (const name of ["app.sqlite","secret.key","product-images",...(manifest.includesWhatsApp ? ["whatsapp-auth"] : [])])
         if (existsSync(resolve(backup,name))) {
           installed.push(name); cpSync(resolve(backup,name),resolve(dataDir,name),{recursive:true});
         }

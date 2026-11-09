@@ -32,10 +32,12 @@ try {
     reply.send({ok:true});
     setImmediate(() => { void close().catch(error => { console.error(error); process.exitCode=1; }); });
   });
-  await app.listen({port,host:"127.0.0.1"});
+  const host = process.env.HOST ?? "0.0.0.0";
+  await app.listen({port,host});
+  await instance.portal.listen({port:Number(process.env.EMOJI_PORTAL_PORT ?? 3212),host});
   const boundPort = (app.server.address() as {port:number}).port;
   writeFileSync(tokenFile,JSON.stringify({port:boundPort,token,pid:process.pid}),{mode:0o600});
-  if (process.env.EMOJI_READY_FILE) writeFileSync(process.env.EMOJI_READY_FILE,JSON.stringify({port:boundPort,version:JSON.parse(readFileSync(resolve(root,"package.json"),"utf8")).version}));
+  if (process.env.EMOJI_READY_FILE) writeFileSync(process.env.EMOJI_READY_FILE,JSON.stringify({port:boundPort,portalPort:(instance.portal.server.address() as {port:number}).port,version:JSON.parse(readFileSync(resolve(root,"package.json"),"utf8")).version}));
   for (const signal of ["SIGINT","SIGTERM"]) process.once(signal,() => { void close().catch(error => { console.error(error); process.exitCode=1; }); });
   const supervisor = Number(process.env.EMOJI_SUPERVISOR_PID);
   if (Number.isInteger(supervisor) && supervisor > 0) watchSupervisor(supervisor,() => {

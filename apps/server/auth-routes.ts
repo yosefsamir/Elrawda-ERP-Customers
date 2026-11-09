@@ -11,17 +11,17 @@ export function registerAuth(app: FastifyInstance, context: Context) {
   const { db } = context;
   const attempts = new Map<string, { count: number; until: number }>();
   app.get("/api/session", async (request) => {
-    const companies = request.operatorId
-      ? db
-          .prepare(
-            "SELECT c.id,c.name,c.logo_type IS NOT NULL has_logo FROM companies c JOIN company_access a ON a.company_id=c.id WHERE a.operator_id=? ORDER BY c.created_at",
-          )
-          .all(request.operatorId)
-      : [];
+    const singleCompany = db
+      .prepare(
+        "SELECT id, name, logo_type IS NOT NULL has_logo FROM companies LIMIT 1",
+      )
+      .get() as any;
+    const companies =
+      singleCompany && request.operatorId ? [singleCompany] : [];
     return {
       authenticated: Boolean(request.operatorId),
       setupRequired: !db.prepare("SELECT id FROM operators LIMIT 1").get(),
-      companyId: request.companyId,
+      companyId: singleCompany?.id ?? null,
       companies,
     };
   });
@@ -72,16 +72,20 @@ export function registerAuth(app: FastifyInstance, context: Context) {
     }
     attempts.delete(ip);
     const token = randomBytes(32).toString("hex");
-    const company: any = db
-      .prepare(
-        "SELECT company_id FROM company_access WHERE operator_id=? LIMIT 1",
-      )
-      .get(user.id);
+    const singleCompany: any = db
+      .prepare("SELECT id FROM companies LIMIT 1")
+      .get();
+    if (singleCompany) {
+      db.prepare("INSERT OR IGNORE INTO company_access VALUES(?,?)").run(
+        user.id,
+        singleCompany.id,
+      );
+    }
     db.prepare("INSERT INTO sessions VALUES(?,?,?,?)").run(
       tokenHash(token),
       user.id,
       new Date(Date.now() + 12 * 3600000).toISOString(),
-      company?.company_id ?? null,
+      singleCompany?.id ?? null,
     );
     reply.setCookie("emoji_session", token, {
       path: "/",

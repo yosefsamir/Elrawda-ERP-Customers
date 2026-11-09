@@ -10,9 +10,12 @@ export function openDatabase(filename: string) {
   db.pragma("busy_timeout = 5000");
   const hasMigrations = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
   const version = hasMigrations ? (db.prepare("SELECT COALESCE(MAX(version),0) version FROM schema_migrations").get() as {version:number}).version : 0;
-  if (version > 2) { db.close(); throw new Error("قاعدة البيانات أحدث من هذا الإصدار؛ استخدم إصدارًا متوافقًا."); }
+  if (version > 3) { db.close(); throw new Error("قاعدة البيانات أحدث من هذا الإصدار؛ استخدم إصدارًا متوافقًا."); }
   if (version === 1 && filename !== ":memory:") {
     db.prepare("VACUUM INTO ?").run(`${filename}.pre-v2-${Date.now()}.sqlite`);
+  }
+  if (version === 2 && filename !== ":memory:") {
+    db.prepare("VACUUM INTO ?").run(`${filename}.pre-v3-${Date.now()}.sqlite`);
   }
   db.transaction(() => {
   db.exec(`
@@ -67,6 +70,15 @@ export function openDatabase(filename: string) {
     );
     INSERT OR IGNORE INTO schema_migrations VALUES(2,datetime('now'));
     CREATE INDEX IF NOT EXISTS operations_addition_budget ON operations(company_id,kind,created_at);
+  `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS portal_settings(id INTEGER PRIMARY KEY CHECK(id=1),company_id TEXT REFERENCES companies(id),enabled INTEGER NOT NULL DEFAULT 0,origin TEXT NOT NULL DEFAULT '');
+    INSERT OR IGNORE INTO portal_settings(id) VALUES(1);
+    CREATE TABLE IF NOT EXISTS photo_users(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),username TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS photo_sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES photo_users(id) ON DELETE CASCADE,expires_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS product_images(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),source_identity TEXT NOT NULL,product_id TEXT NOT NULL,unit_id TEXT NOT NULL,created_by TEXT NOT NULL REFERENCES photo_users(id),created_at TEXT NOT NULL,deleted_at TEXT);
+    CREATE INDEX IF NOT EXISTS product_images_product ON product_images(company_id,source_identity,product_id,unit_id,deleted_at);
+    INSERT OR IGNORE INTO schema_migrations VALUES(3,datetime('now'));
   `);
   })();
   return db;
