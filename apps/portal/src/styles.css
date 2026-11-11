@@ -33,13 +33,13 @@
 .scanner-action-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 16px;border-radius:8px;font-size:12.5px;font-weight:600;background:#27272a;color:#f4f4f5;cursor:pointer;border:1px solid #3f3f46;transition:all .18s;flex:1}
 .scanner-action-btn:hover{background:#3f3f46}
 .scanner-action-btn.active{background:#fbbf24;color:#18181b;border-color:#f59e0b}
-.scanner-action-btn.file-btn{position:relative}
+.scanner-action-btn.file-btn{position:relative;overflow:hidden}
 .scanner-action-btn.file-btn input{position:absolute;opacity:0;width:1px;height:1px}
 .scanner-error-box{text-align:center;padding:18px 16px;background:#27272a;border-radius:12px;border:1px solid #3f3f46}
 .scanner-error-box h4{margin:0 0 8px;font-size:14px;color:#fbbf24;font-weight:700}
 .scanner-error-box p{margin:0 0 14px;font-size:12px;line-height:1.6;color:#d4d4d8}
 .scanner-inline-error{background:#451a1a;border:1px solid #7f1d1d;color:#fca5a5;padding:10px 14px;border-radius:8px;font-size:12px;text-align:center;line-height:1.6}
-.scanner-snap-btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:12px 22px;background:#fbbf24;color:#18181b;font-weight:700;border-radius:8px;font-size:13.5px;cursor:pointer;transition:all .18s;box-shadow:0 3px 10px rgba(251,191,36,0.25)}
+.scanner-snap-btn{position:relative;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:12px 22px;background:#fbbf24;color:#18181b;font-weight:700;border-radius:8px;font-size:13.5px;cursor:pointer;transition:all .18s;box-shadow:0 3px 10px rgba(251,191,36,0.25)}
 .scanner-snap-btn:hover{background:#f59e0b}
 .scanner-snap-btn input{position:absolute;opacity:0;width:1px;height:1px}
 .scanner-captured-container{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#000}
@@ -51,10 +51,32 @@
 .camera-hint-box{margin-top:8px;line-height:1.7;color:#d4d4d8}
 .camera-hint-box ol{margin:6px 0 0;padding-right:20px}
 .camera-hint-box code{background:#27272a;padding:2px 6px;border-radius:4px;color:#fef08a;font-family:monospace;font-size:11px}
+.fab-scan-wrap{position:fixed;bottom:max(24px,env(safe-area-inset-bottom,24px));left:max(24px,env(safe-area-inset-left,24px));z-index:40;display:flex;align-items:center;gap:12px;direction:ltr}
+.fab-scan-btn{position:relative;width:64px;height:64px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#272724 0%,#141413 100%);color:#ffc400;border:2px solid rgba(255,196,0,0.85);box-shadow:0 12px 28px rgba(25,25,24,0.34),0 4px 12px rgba(255,196,0,0.22),inset 0 1px 0 rgba(255,255,255,0.16);transition:transform .22s cubic-bezier(.22,1,.36,1),box-shadow .22s ease,border-color .22s ease;isolation:isolate}
+.fab-scan-btn svg{position:relative;z-index:2;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4))}
+.fab-scan-pulse{position:absolute;inset:-6px;border-radius:50%;border:2px solid rgba(255,196,0,0.55);z-index:0;pointer-events:none;animation:fab-pulse 2.6s cubic-bezier(.22,1,.36,1) infinite}
+@keyframes fab-pulse{0%{transform:scale(0.95);opacity:.75}70%{transform:scale(1.26);opacity:0}100%{transform:scale(1.26);opacity:0}}
+.fab-scan-badge{position:absolute;top:-3px;right:-3px;width:23px;height:23px;border-radius:50%;background:linear-gradient(135deg,#ffd53d 0%,#ffc400 100%);color:#191918;border:2.5px solid #191918;display:flex;align-items:center;justify-content:center;z-index:3;box-shadow:0 2px 6px rgba(0,0,0,0.35)}
+.fab-scan-tooltip{pointer-events:none;background:#191918;color:#fffef9;border:1px solid rgba(255,196,0,0.45);padding:7px 13px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap;box-shadow:0 8px 20px rgba(0,0,0,0.22);opacity:0;transform:translateX(-8px);transition:opacity .2s ease,transform .2s ease;direction:rtl}
+@media(hover:hover){
+  .fab-scan-btn:hover{transform:translateY(-3px) scale(1.06);border-color:#ffd53d;box-shadow:0 16px 34px rgba(25,25,24,0.42),0 6px 18px rgba(255,196,0,0.34),inset 0 1px 0 rgba(255,255,255,0.24)}
+  .fab-scan-wrap:hover .fab-scan-tooltip,.fab-scan-btn:focus-visible+.fab-scan-tooltip{opacity:1;transform:translateX(0)}
+}
+.fab-scan-btn:focus-visible{outline:3px solid #ffc400;outline-offset:4px}
+.fab-scan-btn:active{transform:scale(0.93)}
+@media(prefers-reduced-motion:reduce){
+  .fab-scan-pulse{animation:none;opacity:.35}
+  .fab-scan-btn,.fab-scan-tooltip{transition:none}
+}
 @media(max-width:600px){
   .barcode-scan-btn{width:38px;height:38px;min-width:38px}
   .scanner-dialog{width:calc(100vw - 16px);border-radius:14px}
   .scanner-modal-body{padding:16px 14px 18px;gap:12px}
   .scanner-box-wrapper{aspect-ratio:1/0.95;max-height:280px}
   .scanner-target-reticle{inset:14%}
+  .fab-scan-wrap{bottom:max(18px,env(safe-area-inset-bottom,18px));left:max(18px,env(safe-area-inset-left,18px))}
+  .fab-scan-btn{width:58px;height:58px}
+  .fab-scan-badge{width:21px;height:21px}
+  .fab-scan-tooltip{display:none}
+  footer{padding-bottom:84px}
 }

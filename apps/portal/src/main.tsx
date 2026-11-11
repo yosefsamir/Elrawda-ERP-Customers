@@ -33,6 +33,7 @@ function App() {
   useEffect(()=>{if(deleteId)dialog.current?.showModal();else dialog.current?.close();},[deleteId]);
   useEffect(()=>{if(zoom)zoomDialog.current?.showModal();else zoomDialog.current?.close();},[zoom]);
   useEffect(()=>{if(scannerOpen)scannerDialog.current?.showModal();else scannerDialog.current?.close();},[scannerOpen]);
+  useEffect(()=>{return ()=>{if(capturedPreview)URL.revokeObjectURL(capturedPreview);};},[capturedPreview]);
   useEffect(()=>{if(activeSuggestion>=0)document.getElementById(`model-suggestion-${activeSuggestion}`)?.scrollIntoView({block:"nearest"});},[activeSuggestion]);
   useEffect(()=>{
     if(!suggestionsOpen || !code.trim() || mutating || (manage && !session.authenticated)) {
@@ -589,7 +590,7 @@ function App() {
     </main><footer><span>EMOJI STORE<span className="footer-dot">.</span></span><p>كل التفاصيل، بكود واحد.</p><small>دليل الموديلات للفروع</small></footer>
     <dialog ref={dialog} onCancel={()=>setDeleteId(null)}><div className="dialog-content"><Trash2 size={28}/><h2>حذف الصورة؟</h2><p>هتختفي الصورة من صفحة الاستعلام.</p><div><button className="secondary" disabled={mutating} onClick={()=>setDeleteId(null)}>رجوع</button><button className="danger" disabled={mutating} onClick={remove}>{mutating?"جاري الحذف…":"حذف الصورة"}</button></div></div></dialog>
     <dialog ref={zoomDialog} className="zoom-dialog" onCancel={()=>setZoom(false)}><button className="zoom-close" onClick={()=>setZoom(false)} aria-label="إغلاق الصورة"><X/></button>{product?.images[activeImage] && <img src={product.images[activeImage].url} alt={product.description||product.name}/>}</dialog>
-    <dialog ref={scannerDialog} className="scanner-dialog" onCancel={()=>setScannerOpen(false)}>
+    <dialog ref={scannerDialog} className="scanner-dialog" {...({closedby:"any"} as any)} onCancel={()=>setScannerOpen(false)} onClick={e=>{if(e.target===e.currentTarget)setScannerOpen(false);}}>
       <div className="scanner-modal-body">
         <div className="scanner-modal-header">
           <div className="scanner-modal-title">
@@ -601,7 +602,7 @@ function App() {
           </div>
           <button type="button" className="scanner-close-btn" onClick={()=>setScannerOpen(false)} aria-label="إغلاق الماسح"><X size={20}/></button>
         </div>
-        <div className="scanner-box-wrapper">
+        {(!cameraError || capturedPreview) && <div className="scanner-box-wrapper">
           {capturedPreview ? (
             <div className="scanner-captured-container">
               <img src={capturedPreview} alt="صورة الباركود" className="scanner-captured-preview" />
@@ -624,7 +625,7 @@ function App() {
               </div>
             </>
           )}
-        </div>
+        </div>}
         {cameraError ? (
           <div className="scanner-error-box">
             <h4>الكاميرا المباشرة تتطلب اتصال HTTPS آمن</h4>
@@ -666,6 +667,24 @@ function App() {
         <div id="portal-barcode-scanner-file" style={{display:"none"}}/>
       </div>
     </dialog>
+    {(!manage || session.authenticated) && !scannerOpen && !zoom && !deleteId && (
+      <div className="fab-scan-wrap">
+        <button
+          type="button"
+          className="fab-scan-btn"
+          onClick={()=>setScannerOpen(true)}
+          title="مسح باركود الصنف بالكاميرا"
+          aria-label="مسح باركود الصنف بالكاميرا"
+        >
+          <span className="fab-scan-pulse" aria-hidden="true" />
+          <ScanBarcode size={25} strokeWidth={2.1} />
+          <span className="fab-scan-badge" aria-hidden="true">
+            <Camera size={11} strokeWidth={2.6} />
+          </span>
+        </button>
+        <span className="fab-scan-tooltip" aria-hidden="true">مسح بالكاميرا</span>
+      </div>
+    )}
   </div>;
 }
 createRoot(document.getElementById("root")!).render(<App/>);
