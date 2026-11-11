@@ -168,7 +168,14 @@ test('partial model codes produce suggestions while partial numeric product IDs 
  assert.equal(selected.statusCode,200);assert.equal(selected.json().products[0].code,'Z3330');
  assert.equal((await f.portal.inject({url:'/api/products/186759/99',headers:f.headers})).statusCode,404);
  assert.equal((await f.portal.inject({url:'/api/suggestions?code=',headers:f.headers})).statusCode,400);
- for(const code of ['Z%25','H_2025','H%202025']) {
+ for(const [raw,normalized] of [['V%206302','V 6302'],['V%20%20%206302','V 6302'],['H_2025','H_2025'],['H-2025','H-2025']]) {
+  const sugRes=await f.portal.inject({url:`/api/suggestions?code=${raw}`,headers:f.headers});
+  assert.equal(sugRes.statusCode,200);
+  const prodRes=await f.portal.inject({url:`/api/products?code=${raw}`,headers:f.headers});
+  assert.equal(prodRes.statusCode,200);
+  assert.equal(f.calls.at(-1),normalized);
+ }
+ for(const code of ['Z%25','Z%27','Z%5B1%5D','---','%20%20%20']) {
   assert.equal((await f.portal.inject({url:`/api/suggestions?code=${code}`,headers:f.headers})).statusCode,400);
   assert.equal((await f.portal.inject({url:`/api/products?code=${code}`,headers:f.headers})).statusCode,400);
  }

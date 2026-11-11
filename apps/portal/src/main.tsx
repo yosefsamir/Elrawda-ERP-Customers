@@ -73,36 +73,57 @@ function App() {
   useEffect(()=>{return ()=>{if(capturedPreview)URL.revokeObjectURL(capturedPreview);};},[capturedPreview]);
   useEffect(()=>{if(activeSuggestion>=0)document.getElementById(`model-suggestion-${activeSuggestion}`)?.scrollIntoView({block:"nearest"});},[activeSuggestion]);
   useEffect(()=>{
-    if(!suggestionsOpen || !code.trim() || mutating || (manage && !session.authenticated)) {
+    const clean=code.trim().replace(/\s+/g," ");
+    if(!suggestionsOpen || !clean || mutating || (manage && !session.authenticated)) {
       setSuggestions([]);setSuggesting(false);return;
     }
-    if(!/^[A-Za-z0-9_\-]+$/.test(code.trim())) {
-      setSuggestions([]);setSuggesting(false);setSuggestionError("اكتب حروف وأرقام، بدون مسافات.");return;
+    if(!/^[A-Za-z0-9 _\-]+$/.test(clean) || !/[A-Za-z0-9]/.test(clean)) {
+      setSuggestions([]);setSuggesting(false);setSuggestionError("اكتب حروف إنجليزية وأرقام فقط (مسموح بالمسافات أو -).");return;
     }
     const controller=new AbortController();let current=true;
     setSuggesting(true);setSuggestionError("");
     const timer=setTimeout(()=>{
-      void request(`/suggestions?code=${encodeURIComponent(code.trim())}`,"GET",undefined,controller.signal)
+      void request(`/suggestions?code=${encodeURIComponent(clean)}`,"GET",undefined,controller.signal)
         .then(result=>{if(current){setSuggestions(result.suggestions);setActiveSuggestion(-1);}})
         .catch(e=>{if(current && e.name!=="AbortError")setSuggestionError(e.message);})
         .finally(()=>{if(current)setSuggesting(false);});
     },250);
     return ()=>{current=false;clearTimeout(timer);controller.abort();};
   },[code,suggestionsOpen,mutating,manage,session.authenticated]);
-  function editCode(value:string){setCode(value.trim());setSuggestions([]);setActiveSuggestion(-1);setSuggestionsOpen(true);}
+  function editCode(value:string){
+    searchInput.current?.setCustomValidity("");
+    setCode(value.replace(/^\s+/,"").replace(/\s{2,}/g," "));
+    setSuggestions([]);setActiveSuggestion(-1);setSuggestionsOpen(true);
+  }
+  function dismissSearchInput(){
+    searchInput.current?.blur();
+    if(document.activeElement instanceof HTMLElement && document.activeElement!==document.body){
+      document.activeElement.blur();
+    }
+  }
+  function clearSearch(){
+    searchInput.current?.setCustomValidity("");
+    setCode("");setSuggestions([]);setActiveSuggestion(-1);setSuggestionsOpen(false);setSuggestionError("");
+    searchInput.current?.focus();
+  }
   async function runSearch(value:string,choice?:Product) {
-    if(mutating || !value.trim())return;
-    setSuggestionsOpen(false);setSuggestions([]);setActiveSuggestion(-1);
+    const clean=value.trim().replace(/\s+/g," ");
+    if(mutating || !clean)return;
+    dismissSearchInput();
+    setSuggestionsOpen(false);setSuggestions([]);setActiveSuggestion(-1);setSuggestionError("");
+    if(typeof window!=="undefined" && window.innerWidth<=600 && window.scrollY>36) {
+      window.scrollTo({top:0,behavior:"smooth"});
+    }
     const current=++sequence.current;setBusy(true);setError("");setSuccess("");setProducts([]);setSelected(0);setActiveImage(0);setSearched("");
     try {
-      const path=choice?`/products/${choice.id}/${choice.unitId}`:`/products?code=${encodeURIComponent(value.trim())}`;
+      const path=choice?`/products/${choice.id}/${choice.unitId}`:`/products?code=${encodeURIComponent(clean)}`;
       const result=await request(path);
-      if(current===sequence.current){setProducts(result.products);setTruncated(result.truncated);setSearched(value.trim());}
+      if(current===sequence.current){setProducts(result.products);setTruncated(result.truncated);setSearched(choice?choice.code:clean);}
     }
     catch(e){if(current===sequence.current)setError((e as Error).message);}
     finally{if(current===sequence.current)setBusy(false);}
   }
-  function chooseSuggestion(choice:Product){setCode(choice.code);void runSearch(choice.code,choice);}
+  function chooseSuggestion(choice:Product){searchInput.current?.setCustomValidity("");setCode(choice.code);void runSearch(choice.code,choice);}
   async function search(e:FormEvent) {
     e.preventDefault();await runSearch(code);
   }
@@ -550,23 +571,27 @@ function App() {
   async function remove(){if(!deleteId)return;setMutating(true);setError("");setSuccess("");
     try{await request(`/images/${deleteId}`,"DELETE");setProducts(current=>current.map(p=>({...p,images:p.images.filter(i=>i.id!==deleteId)})));setActiveImage(0);setSuccess("تم حذف الصورة");}
     catch(e){setError((e as Error).message);}finally{setDeleteId(null);setMutating(false);}}
-  return <div className="portal">
+  const mobileCompact=Boolean(searched || busy || error) && (!manage || session.authenticated);
+  return <div className={`portal${mobileCompact?" mobile-compact":""}`}>
     <header className="topbar"><a className="brand" href="/" aria-label="إيموجي ستور — الاستعلام"><img src="/emoji-logo.png" alt="EMOJI STORE"/><span className="brand-divider"/><span>دليل الموديلات<span className="brand-sub">EMOJI STORE CATALOG</span></span></a>
       <nav>{manage?<a href="/">الاستعلام <ArrowLeft size={16}/></a>:<a href="/manage"><LockKeyhole size={15}/> إدارة الصور</a>}{manage && session.authenticated && <button className="nav-logout" onClick={logout} disabled={mutating}><LogOut size={16}/> خروج</button>}</nav></header>
     <main>
-      <section className="hero"><div className="hero-copy"><div className="eyebrow"><span/> {manage?"مساحة إدارة الصور":"كل موديل، في مكان واحد"}</div><h1>{manage?<>صورة أوضح.<br/><span>للموديل الصح.</span></>:<>الموديل اللي بتدور عليه،<br/><span>تفاصيله هنا.</span></>}</h1><p>{manage?"ابحث عن الموديل وأضف صوره ليشاهدها فريق الفروع.":"اكتب كود الموديل أو رقم الصنف، واعرف سعره وتفاصيله وصوره."}</p>
-        {(!manage || session.authenticated) && <form className="search-form" onSubmit={search} onBlur={e=>{if(!e.currentTarget.contains(e.relatedTarget))setSuggestionsOpen(false);}}>
+      <section className="hero"><div className="hero-copy"><div className="hero-intro"><div className="eyebrow"><span/> {manage?"مساحة إدارة الصور":"كل موديل، في مكان واحد"}</div><h1>{manage?<>صورة أوضح.<br/><span>للموديل الصح.</span></>:<>الموديل اللي بتدور عليه،<br/><span>تفاصيله هنا.</span></>}</h1><p>{manage?"ابحث عن الموديل وأضف صوره ليشاهدها فريق الفروع.":"اكتب كود الموديل أو رقم الصنف، واعرف سعره وتفاصيله وصوره."}</p></div>
+        {(!manage || session.authenticated) && <search className="search-wrap"><form className={`search-form${suggestionsOpen && code.trim()?" suggestions-open":""}`} onSubmit={search} onBlur={e=>{if(!e.currentTarget.contains(e.relatedTarget))setSuggestionsOpen(false);}}>
           <label htmlFor="model-code">كود الموديل أو رقم الصنف</label>
           <div className="search-input-wrap"><div className="search-control"><Search size={23}/>
-            <input id="model-code" ref={searchInput} dir="ltr" value={code} onChange={e=>editCode(e.target.value)} onFocus={()=>setSuggestionsOpen(true)} placeholder="Z3330" autoComplete="off" maxLength={100} pattern="[A-Za-z0-9_\-]+" title="حروف إنجليزية وأرقام وكود الباركود" required disabled={mutating}
+            <input id="model-code" name="code" ref={searchInput} type="text" dir="ltr" value={code} onChange={e=>editCode(e.target.value)} onFocus={()=>setSuggestionsOpen(true)} placeholder="V 6302" autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false} enterKeyHint="search" maxLength={100} pattern="[ ]*[A-Za-z0-9_\-][A-Za-z0-9 _\-]*" title="حروف إنجليزية وأرقام فقط (مسموح بالمسافات أو -)، مثال: V 6302" required disabled={mutating}
+              onInvalid={e=>{const el=e.currentTarget;el.setCustomValidity(el.validity.valueMissing?"اكتب كود الموديل أو رقم الصنف أولًا.":"استخدم حروف إنجليزية وأرقام فقط (مسموح بالمسافات أو -)، مثال: V 6302");}}
               role="combobox" aria-autocomplete="list" aria-expanded={suggestionsOpen && Boolean(code.trim())} aria-controls="model-suggestions" aria-activedescendant={suggestionsOpen && activeSuggestion>=0?`model-suggestion-${activeSuggestion}`:undefined}
               onKeyDown={e=>{
+                if(e.nativeEvent.isComposing)return;
                 if(e.key==="Escape"){e.preventDefault();setSuggestionsOpen(false);setActiveSuggestion(-1);}
                 if(e.key==="ArrowDown" || e.key==="ArrowUp"){e.preventDefault();setSuggestionsOpen(true);if(suggestions.length)setActiveSuggestion(i=>e.key==="ArrowDown"?(i+1)%suggestions.length:(i<=0?suggestions.length-1:i-1));}
                 if(e.key==="Enter" && suggestionsOpen && activeSuggestion>=0 && suggestions[activeSuggestion]){e.preventDefault();chooseSuggestion(suggestions[activeSuggestion]);}
               }}/>
+            {code && !busy && !mutating && <button type="button" className="search-clear-btn" onClick={clearSearch} title="مسح البحث" aria-label="مسح البحث"><X size={16}/></button>}
             <button type="button" className="barcode-scan-btn" onClick={()=>setScannerOpen(true)} title="مسح باركود الصنف بالكاميرا" aria-label="مسح باركود الصنف بالكاميرا"><ScanBarcode size={21}/></button>
-            <button type="submit" className="search-submit-btn" disabled={busy||mutating||!code.trim()}>{busy?<LoaderCircle className="spin" size={20}/>:<>ابحث <ArrowLeft size={18}/></>}</button>
+            <button type="submit" className="search-submit-btn" disabled={busy||mutating}>{busy?<LoaderCircle className="spin" size={20}/>:<>ابحث <ArrowLeft size={18}/></>}</button>
           </div>
           {suggestionsOpen && code.trim() && <div className="suggestion-panel"><div className="suggestion-title">اقتراحات كود الموديل</div>
             <div role="listbox" id="model-suggestions" aria-label="اقتراحات كود الموديل" aria-busy={suggesting}>
@@ -575,7 +600,7 @@ function App() {
             {suggesting?<p className="suggestion-status" role="status">جاري تحميل الاقتراحات…</p>:suggestionError?<p className="suggestion-status" role="status">{suggestionError}</p>:!suggestions.length?<p className="suggestion-status" role="status">مفيش كود موديل مطابق. لو بتبحث برقم الصنف، اكتبه كامل واضغط ابحث.</p>:null}
           </div>}
           </div><div className="search-hint">اكتب جزء من كود الموديل واختار من الاقتراحات، أو اكتب رقم الصنف كامل واضغط ابحث.</div>
-        </form>}
+        </form></search>}
         {manage && session.authenticated && <div className="signed-in"><ShieldCheck size={16}/> مسجّل باسم {session.username}</div>}
       </div><div className="hero-art" aria-hidden="true"><div className="art-ring"/><img src="/emoji-logo.png"/><span className="art-caption">FIND YOUR NEXT FAVORITE.</span><span className="art-tag">THE EMOJI EDIT</span></div></section>
       <div className="content">
@@ -627,13 +652,13 @@ function App() {
           busy?<section className="empty" role="status"><LoaderCircle className="spin" size={32}/><h2>بندور على الموديل…</h2></section>:
           !searched?<section className="intro"><div className="intro-icon"><Search size={27}/></div><div><h2>ابدأ بكود الموديل</h2><p>بيانات واضحة، سعر البيع، وصور تساعدك تتأكد من اختيارك.</p></div><span className="intro-label">جاهز للاستعلام <span/></span></section>:
           !products.length?<section className="empty"><Search size={33}/><h2>مفيش نتيجة للكود ده</h2><p>راجع كتابة <bdi>{searched}</bdi> أو جرّب رقم الصنف.</p><button className="secondary" onClick={()=>searchInput.current?.focus()}>بحث مرة تانية</button></section>:
-          <section className="results" aria-label="نتائج الاستعلام"><div className="results-heading"><div><span className="eyebrow muted">نتائج الاستعلام</span><h2>لقينا {products.length===1?"الموديل":"أكتر من نتيجة"} <span className="result-count">{products.length}</span></h2></div><span className="query-chip" dir="ltr">{searched}</span></div>
+          <section className="results" aria-label="نتائج الاستعلام"><div className={`results-heading${products.length===1?" single-result":""}`}><div><span className="eyebrow muted">نتائج الاستعلام</span><h2>لقينا {products.length===1?"الموديل":"أكتر من نتيجة"} <span className="result-count">{products.length}</span></h2></div><span className="query-chip" dir="ltr">{searched}</span></div>
             {truncated && <p role="status">فيه نتائج إضافية؛ استخدم رقم الصنف لتحديد النتيجة.</p>}
             {products.length>1 && <div className="choices">{products.map((p,i)=><button disabled={mutating} className={selected===i?"active":""} key={`${p.id}:${p.unitId}`} onClick={()=>{setSelected(i);setSuccess("");}}><bdi>{p.code}</bdi><span>{p.description||p.name} · {p.unit} · <bdi>{p.id}</bdi></span></button>)}</div>}
             {manage && session.authenticated && queueStatus?.enabled===false && <div className="notice warning" role="status"><Clock size={18}/><span>معالجة الصور التلقائية متوقفة من إعدادات الإدارة؛ الصور المرفوعة تُحفظ وتُعرض فورًا كما هي دون تعديل.</span></div>}
             {manage && session.authenticated && queueStatus?.enabled!==false && queueStatus?.requiresReauth && <div className="notice warning" role="alert"><AlertTriangle size={18}/><span>معالجة الصور متوقفة مؤقتًا لأن جلسة Gemini Web تحتاج لإعادة تسجيل الدخول من لوحة الإدارة. يتم عرض الصور الأصلية ولن تتعطل.</span></div>}
             {manage && session.authenticated && queueStatus?.enabled!==false && queueStatus?.paused && !queueStatus?.requiresReauth && <div className="notice warning" role="status"><Clock size={18}/><span>{queueStatus.pauseReason || "طابور معالجة الصور متوقف مؤقتًا من لوحة الإدارة."}</span></div>}
-            {product && <div className="product-layout"><div className="gallery"><div className={`main-image ${product.images.length?"has-image":""}`}>{activePhoto?<button className="image-zoom" onClick={()=>setZoom(true)} aria-label="تكبير صورة الموديل" title="تكبير صورة الموديل"><img src={activePhoto.url} alt={`${product.description||product.name} — صورة ${activeImage+1}`}/><span><ZoomIn size={18}/></span></button>:<><div className="no-image"><Images size={48} strokeWidth={1}/><h3>الصور لسه بتتجهز</h3><p>{manage?"أضف أول صورة للموديل من الزر بالأسفل.":"بيانات الموديل متاحة، والصور هتظهر بمجرد إضافتها."}</p></div><span className="gallery-code" dir="ltr">{product.code}</span></>}{manage && session.authenticated && activePhoto && (activePhoto.status==="pending"||activePhoto.status==="processing"||activePhoto.status==="failed") && <span className={`image-status-pill status-${activePhoto.status}`} role="status">{activePhoto.status==="pending"&&<><Clock size={14}/><span>في انتظار المعالجة</span></>}{activePhoto.status==="processing"&&<><LoaderCircle size={14} className="spin"/><span>جاري معالجة الصورة…</span></>}{activePhoto.status==="failed"&&<><AlertTriangle size={14}/><span>تعذرت المعالجة</span></>}</span>}</div>
+            {product && <div className="product-layout"><article className="product-details product-summary"><div className="product-kicker">EMOJI STORE {product.kind ? <><span> / </span>{product.kind}</> : null}<span> / </span>{product.name}</div><div className="product-head"><h2>{product.description||product.name}</h2><div className="model-badge"><span>كود الموديل</span><strong dir="ltr">{product.code}</strong></div></div><div className="price-block"><div className="price-main"><span>سعر البيع</span>{product.price===null?<strong className="unpriced">السعر غير متاح حاليًا</strong>:<div><strong>{money(product.price)}</strong><span>ج.م</span></div>}</div><small>سعر الوحدة: {product.unit||"غير محددة"}</small></div></article><div className="gallery"><div className={`main-image ${product.images.length?"has-image":""}`}>{activePhoto?<button className="image-zoom" onClick={()=>setZoom(true)} aria-label="تكبير صورة الموديل" title="تكبير صورة الموديل"><img src={activePhoto.url} alt={`${product.description||product.name} — صورة ${activeImage+1}`}/><span><ZoomIn size={18}/></span></button>:<><div className="no-image"><Images size={48} strokeWidth={1}/><h3>الصور لسه بتتجهز</h3><p>{manage?"أضف أول صورة للموديل من الزر بالأسفل.":"بيانات الموديل متاحة، والصور هتظهر بمجرد إضافتها."}</p></div><span className="gallery-code" dir="ltr">{product.code}</span></>}{manage && session.authenticated && activePhoto && (activePhoto.status==="pending"||activePhoto.status==="processing"||activePhoto.status==="failed") && <span className={`image-status-pill status-${activePhoto.status}`} role="status">{activePhoto.status==="pending"&&<><Clock size={14}/><span>في انتظار المعالجة</span></>}{activePhoto.status==="processing"&&<><LoaderCircle size={14} className="spin"/><span>جاري معالجة الصورة…</span></>}{activePhoto.status==="failed"&&<><AlertTriangle size={14}/><span>تعذرت المعالجة</span></>}</span>}</div>
               {product.images.length>1 && <div className="thumbnails">{product.images.map((photo,i)=><button className={activeImage===i?"selected":""} key={photo.id} onClick={()=>setActiveImage(i)} aria-label={`عرض الصورة ${i+1}`} aria-pressed={activeImage===i}><img src={photo.url} alt=""/>{manage && session.authenticated && (photo.status==="pending"||photo.status==="processing"||photo.status==="failed") && <span className={`thumb-status-dot status-${photo.status}`} aria-hidden="true"/>}</button>)}</div>}
               {manage && <div className="image-actions">
                 <label className={`upload-button camera-btn ${mutating||product.images.length>=10?"disabled":""}`} title="تصوير فوري بكاميرا الهاتف">
@@ -657,7 +682,7 @@ function App() {
                 {activePhoto?.status==="failed" && activePhoto.error && <small className="image-job-error" role="status">{activePhoto.error}</small>}
                 <small>تصوير بالكاميرا أو رفع صورة · JPEG, PNG, WebP</small>
               </div>}
-            </div><article className="product-details"><div className="product-kicker">EMOJI STORE {product.kind ? <><span> / </span>{product.kind}</> : null}<span> / </span>{product.name}</div><h2>{product.description||product.name}</h2><div className="model-badge">كود الموديل <strong dir="ltr">{product.code}</strong></div><div className="price-block"><span>سعر البيع</span>{product.price===null?<strong className="unpriced">السعر غير متاح حاليًا</strong>:<div><strong>{money(product.price)}</strong><span>ج.م</span></div>}<small>سعر الوحدة: {product.unit||"غير محددة"}</small></div><dl>{product.kind && <div><dt>النوع</dt><dd>{product.kind}</dd></div>}<div><dt>القسم</dt><dd>{product.name}</dd></div>{product.category && <div><dt>التصنيف</dt><dd>{product.category}</dd></div>}<div><dt>رقم الصنف</dt><dd dir="ltr">{product.id}</dd></div><div><dt>الوحدة</dt><dd>{product.unit||"—"}</dd></div></dl><div className="detail-note"><ShieldCheck size={20}/><p>بيانات من نظام الشركة<span>السعر المعروض حسب بيانات الصنف وقت الاستعلام.</span></p></div></article></div>}
+            </div><section className="product-specs" aria-label="مواصفات الصنف"><dl>{product.kind && <div><dt>النوع</dt><dd>{product.kind}</dd></div>}<div><dt>القسم</dt><dd>{product.name}</dd></div>{product.category && <div><dt>التصنيف</dt><dd>{product.category}</dd></div>}<div><dt>رقم الصنف</dt><dd dir="ltr">{product.id}</dd></div><div><dt>الوحدة</dt><dd>{product.unit||"—"}</dd></div></dl><div className="detail-note"><ShieldCheck size={20}/><p>بيانات من نظام الشركة<span>السعر المعروض حسب بيانات الصنف وقت الاستعلام.</span></p></div></section></div>}
           </section>}
       </div>
     </main><footer><span>EMOJI STORE<span className="footer-dot">.</span></span><p>كل التفاصيل، بكود واحد.</p><small>دليل الموديلات للفروع</small></footer>
