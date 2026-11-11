@@ -81,7 +81,7 @@ try {
   let base = `http://127.0.0.1:${port}`;
   const health = await (await fetch(base + '/healthz')).json();
   assert.equal(health.ok, true);
-  assert.equal(health.schemaVersion, 3);
+  assert.equal(health.schemaVersion, 4);
   assert.ok(portalPort, 'public portal listener must report its bound port');
   const publicBase = `http://127.0.0.1:${portalPort}`;
   assert.match(await (await fetch(publicBase + '/')).text(), /EMOJI STORE/);

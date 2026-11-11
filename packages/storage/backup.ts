@@ -42,11 +42,36 @@ export function verifyBackup(folder: string) {
       for (const row of configs) secrets.decrypt(row.config);
     }
     const row = db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as {version:number};
-    if (row.version > 3) throw new Error("Backup schema is newer than this release");
+    if (row.version > 4) throw new Error("Backup schema is newer than this release");
     if (row.version >= 3) {
-      const images = db.prepare("SELECT id FROM product_images WHERE deleted_at IS NULL").all() as {id:string}[];
+      const hasStateTable =
+        row.version >= 4 &&
+        Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_image_state'").get());
+      const images = hasStateTable
+        ? (db
+            .prepare(
+              `SELECT pi.id, s.original_image_id, s.processed_image_id
+               FROM product_images pi
+               LEFT JOIN product_image_state s ON s.product_image_id = pi.id
+               WHERE pi.deleted_at IS NULL`,
+            )
+            .all() as {
+            id: string;
+            original_image_id: string | null;
+            processed_image_id: string | null;
+          }[])
+        : (db.prepare("SELECT id FROM product_images WHERE deleted_at IS NULL").all() as { id: string }[]).map((r) => ({
+            ...r,
+            original_image_id: null,
+            processed_image_id: null,
+          }));
       for (const image of images) {
-        if (!/^[0-9a-f-]{36}$/.test(image.id) || !existsSync(resolve(folder,"product-images",`${image.id}.webp`))) throw new Error("Backup is missing a product image");
+        const idsToCheck = [image.id, image.original_image_id, image.processed_image_id].filter((v): v is string => Boolean(v));
+        for (const fileId of idsToCheck) {
+          if (!/^[0-9a-f-]{36}$/.test(fileId) || !existsSync(resolve(folder, "product-images", `${fileId}.webp`))) {
+            throw new Error("Backup is missing a product image");
+          }
+        }
       }
     }
     return row.version;

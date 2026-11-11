@@ -5,7 +5,7 @@ import type { AppDatabase } from "../storage/database.js";
 import type { localSecretStore } from "../../apps/server/security.js";
 
 export type Product = {
-  id: string; unitId: string; code: string; name: string;
+  id: string; unitId: string; code: string; kind?: string; name: string;
   category: string; description: string; unit: string; price: number | null;
 };
 export type ProductReader = {
@@ -18,13 +18,14 @@ export type ProductReader = {
 export const productCodePattern = (code: string) => `%${code.replace(/[\\%_\[]/g, c => `\\${c}`)}%`;
 export const productSelect = `SELECT TOP (31)
   CONVERT(varchar(30),d.iddet) id, CONVERT(varchar(30),u.idunit) unitId,
-  LTRIM(RTRIM(f.ffarz)) code, n.fname name, c.fcolor category,
+  LTRIM(RTRIM(f.ffarz)) code, k.fkind kind, n.fname name, c.fcolor category,
   s.fsize description, u.funit unit, u.fpr_r1 price
  FROM dbo.maindet d
  JOIN dbo.mainfarz f ON f.idfarz=d.idfarz
  JOIN dbo.mainsize s ON s.idsize=f.idsize
  JOIN dbo.maincolor c ON c.idcolor=s.idcolor
  JOIN dbo.main n ON n.idname=c.idname
+ LEFT JOIN dbo.kind k ON k.idkind=n.idkind
  JOIN dbo.mainunits u ON u.iddet=d.iddet
  WHERE 1=1`;
 // Do not infer publication rules from fvis: the confirmed, sold product Z3330
@@ -64,7 +65,8 @@ export function createProductReader(db: AppDatabase, secrets: ReturnType<typeof 
   }
   const map = (r: any): Product => ({
     id: String(r.id), unitId: String(r.unitId), code: r.code?.trim() || "",
-    name: r.name?.trim() || "صنف", category: r.category?.trim() || "",
+    kind: r.kind?.trim() || "", name: r.name?.trim() || "صنف",
+    category: r.category?.trim() || "",
     description: r.description?.trim() || "", unit: r.unit?.trim() || "",
     price: Number.isFinite(Number(r.price)) && Number(r.price) > 0 ? Number(r.price) : null,
   });

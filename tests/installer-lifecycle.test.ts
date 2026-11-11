@@ -107,7 +107,7 @@ test('installer & upgrade lifecycle: clean installation, upgrade, safe rollback,
   const backupDir = join(backupsDir, `before-${v2}-test`);
   await createBackup(dataDir, backupDir, true);
   const verifiedSchema = verifyBackup(backupDir);
-  assert.equal(verifiedSchema, 3, 'Pre-update backup must have schema version 3');
+  assert.equal(verifiedSchema, 4, 'Pre-update backup must have schema version 4');
 
   // Run isolated migration probe on a temporary copy
   const probeDir = join(stateRoot, 'migration-probe-test');
@@ -117,7 +117,7 @@ test('installer & upgrade lifecycle: clean installation, upgrade, safe rollback,
   // Run probe
   const probeDb = openDatabase(join(probeDir, 'app.sqlite'));
   const probeVersion = (probeDb.prepare('SELECT MAX(version) version FROM schema_migrations').get() as any).version;
-  assert.equal(probeVersion, 3, 'Migration probe must verify schema compatibility');
+  assert.equal(probeVersion, 4, 'Migration probe must verify schema compatibility');
   probeDb.close();
   rmSync(probeDir, { recursive: true, force: true });
 
@@ -151,7 +151,7 @@ test('installer & upgrade lifecycle: clean installation, upgrade, safe rollback,
   const checkDb = new Database(join(dataDir, 'app.sqlite'), { readonly: true });
   const checkVersion = (checkDb.prepare('SELECT MAX(version) version FROM schema_migrations').get() as any).version;
   checkDb.close();
-  assert.equal(checkVersion <= 3, true, 'Current database must be compatible with previous release');
+  assert.equal(checkVersion <= 4, true, 'Current database must be compatible with previous release');
 
   // Perform automatic rollback
   const rolledBackConfig = {

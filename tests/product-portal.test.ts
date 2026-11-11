@@ -107,7 +107,7 @@ test('administrator settings validate HTTPS origin and do not expose password ha
 test('online backup and offline restore preserve product images and their database records',async t=>{
  const f=await fixture(t),token=await f.login(),file=multipart(await png());
  const uploaded=await f.portal.inject({method:'POST',url:'/api/products/186759/1/images',headers:{...f.headers,'content-type':file.contentType},cookies:{emoji_photo_session:token},payload:file.payload});
- const photo=uploaded.json().images[0];await createBackup(f.dir,join(f.dir,'backup'));assert.equal(verifyBackup(join(f.dir,'backup')),3);
+ const photo=uploaded.json().images[0];await createBackup(f.dir,join(f.dir,'backup'));assert.equal(verifyBackup(join(f.dir,'backup')),4);
  assert.ok(existsSync(join(f.dir,'backup','product-images',`${photo.id}.webp`)));
  await f.portal.close();f.db.close();await restoreBackup(f.dir,join(f.dir,'backup'));
  const restored=new Database(join(f.dir,'app.sqlite'));try{assert.equal((restored.prepare('SELECT COUNT(*) n FROM product_images').get() as any).n,1);}finally{restored.close();}

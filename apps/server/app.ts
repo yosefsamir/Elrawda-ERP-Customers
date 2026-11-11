@@ -15,6 +15,9 @@ import { registerAuth } from "./auth-routes.js";
 import { registerCompanyRoutes } from "./company-routes.js";
 import { registerPortalAdmin } from "./portal-admin.js";
 import { createPortal } from "./portal.js";
+import { createProductReader } from "../../packages/erp/products.js";
+import { getImageProcessingConfig } from "./image-processing/config.js";
+import { ImageProcessingWorker } from "./image-processing/worker.js";
 export async function createApp(options: {
   dataDir: string;
   root: string;
@@ -30,6 +33,13 @@ export async function createApp(options: {
     });
   const sync = new SyncService(db,repo,secrets,options.root);
   const engine = new ExecutionEngine(db, repo, wa);
+  const productReader = createProductReader(db, secrets);
+  const imageCfg = getImageProcessingConfig({ db, dataDir: options.dataDir, root: options.root });
+  const imageWorker = new ImageProcessingWorker(db, {
+    dataDir: options.dataDir,
+    root: options.root,
+    reader: productReader,
+  });
 
   const app = Fastify({
     logger: options.logger ?? false,
@@ -38,6 +48,9 @@ export async function createApp(options: {
   });
   app.addHook("onListen", async () => {
     engine.start(3500);
+    if (imageWorker.isEnabled()) {
+      imageWorker.start(imageCfg.pollIntervalMs);
+    }
     // Automatically connect WhatsApp on boot if a saved session exists
     try {
       const companies = db
@@ -169,8 +182,24 @@ export async function createApp(options: {
   });
   registerAuth(app, { db, repo, secrets, wa, sync, root: options.root });
   registerCompanyRoutes(app, { db, repo, secrets, wa, sync, root: options.root });
-  registerPortalAdmin(app, db);
-  const portal = await createPortal({ db, dataDir: options.dataDir, root: options.root, logger: options.logger });
+  registerPortalAdmin(app, db, {
+    dataDir: options.dataDir,
+    root: options.root,
+    reader: productReader,
+    onResumeWorker: () => imageWorker.resumeAfterAuth(),
+    onJobQueued: () => imageWorker.notify(),
+    onToggleProcessing: (enabled) => imageWorker.setProcessingEnabled(enabled),
+    onBeforeLogin: () => imageWorker.beginInteractiveLogin(),
+    onAfterLogin: (authenticated) => imageWorker.endInteractiveLogin(authenticated),
+  });
+  const portal = await createPortal({
+    db,
+    dataDir: options.dataDir,
+    root: options.root,
+    reader: productReader,
+    logger: options.logger,
+    onJobQueued: () => imageWorker.notify(),
+  });
   const dist = resolve(options.root, "dist/web");
   if (existsSync(dist)) {
     await app.register(staticFiles, { root: dist });
@@ -183,7 +212,7 @@ export async function createApp(options: {
   const version = JSON.parse(readFileSync(resolve(options.root,"package.json"),"utf8")).version;
   app.get("/healthz", async () => ({
     ok: true,
-    schemaVersion: 3,
+    schemaVersion: 4,
     version,
     whatsapp: {
       status: wa.state.status,
@@ -207,9 +236,9 @@ export async function createApp(options: {
     clearInterval(syncTimer);
     try {
       await portal.close();
-      await Promise.allSettled([sync.stop(), engine.stop()]);
+      await Promise.allSettled([sync.stop(), engine.stop(), imageWorker.stop()]);
       await wa.stop();
     } finally { db.close(); }
   });
-  return { app, portal, db, repo, wa, engine, sync };
+  return { app, portal, db, repo, wa, engine, sync, imageWorker };
 }

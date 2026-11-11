@@ -775,7 +775,8 @@ input[type="file"] {
   gap: 5px;
   margin-bottom: 14px;
 }
-.field > span {
+.field > span,
+.field > label {
   color: var(--ink);
   font-size: 14px;
   font-weight: 600;
@@ -1638,4 +1639,226 @@ input[type="file"] {
   .toggle-switch-action {
     justify-content: space-between;
   }
+}
+
+/* Gemini Web Image Processing Settings */
+.section-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.section-header-row .panel-subtitle {
+  margin-bottom: 0;
+}
+
+.gemini-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.gemini-status-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.gemini-account-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--page);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.gemini-account-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.gemini-account-hint {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.gemini-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.portal-user-badge.warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.gemini-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 680px) {
+  .gemini-metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.gemini-metric-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gemini-metric-value {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.gemini-metric-label {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.gemini-advanced-details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--page);
+}
+
+.gemini-advanced-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  user-select: none;
+}
+
+.gemini-advanced-summary::-webkit-details-marker {
+  display: none;
+}
+
+.gemini-advanced-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gemini-advanced-chevron {
+  color: var(--muted);
+  transition: transform 0.2s ease;
+}
+
+.gemini-advanced-details[open] .gemini-advanced-chevron {
+  transform: rotate(180deg);
+}
+
+.gemini-advanced-badge {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.gemini-prompt-form {
+  padding: 14px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 0 0 8px 8px;
+}
+
+.gemini-prompt-textarea {
+  width: 100%;
+  height: auto;
+  field-sizing: content;
+  min-height: 112px;
+  min-block-size: 4.5lh;
+  max-block-size: 14lh;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.6;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.gemini-prompt-textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.gemini-prompt-actions {
+  gap: 10px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.watermark-logo-card {
+  margin-bottom: 14px;
+}
+
+.watermark-logo-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.watermark-logo-preview {
+  background: #ffffff;
+}
+
+.watermark-logo-placeholder {
+  color: var(--muted);
+}
+
+.watermark-logo-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.watermark-logo-text strong {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.watermark-remove-btn {
+  color: #b42318;
+  border-color: rgba(180, 35, 24, 0.25);
+}
+
+.watermark-remove-btn:hover:not(:disabled) {
+  background: rgba(180, 35, 24, 0.08);
+  border-color: rgba(180, 35, 24, 0.45);
 }

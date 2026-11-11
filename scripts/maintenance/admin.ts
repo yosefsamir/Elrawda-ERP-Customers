@@ -27,10 +27,12 @@ try {
     try {
       db.transaction(() => {
         db.exec(`
+          DELETE FROM image_processing_jobs;
+          DELETE FROM product_image_state;
           DELETE FROM product_images;
           DELETE FROM photo_sessions;
           DELETE FROM photo_users;
-          UPDATE portal_settings SET company_id=NULL, enabled=0, origin='';
+          UPDATE portal_settings SET company_id=NULL, enabled=0, origin='', image_prompt=NULL, image_processing_enabled=1, gemini_paused=0, gemini_pause_reason=NULL, gemini_requires_reauth=0, watermark_logo=NULL, watermark_logo_type=NULL;
           DELETE FROM operations;
           DELETE FROM audit_events;
           DELETE FROM jobs;

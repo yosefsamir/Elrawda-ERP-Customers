@@ -10,12 +10,15 @@ export function openDatabase(filename: string) {
   db.pragma("busy_timeout = 5000");
   const hasMigrations = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
   const version = hasMigrations ? (db.prepare("SELECT COALESCE(MAX(version),0) version FROM schema_migrations").get() as {version:number}).version : 0;
-  if (version > 3) { db.close(); throw new Error("قاعدة البيانات أحدث من هذا الإصدار؛ استخدم إصدارًا متوافقًا."); }
+  if (version > 4) { db.close(); throw new Error("قاعدة البيانات أحدث من هذا الإصدار؛ استخدم إصدارًا متوافقًا."); }
   if (version === 1 && filename !== ":memory:") {
     db.prepare("VACUUM INTO ?").run(`${filename}.pre-v2-${Date.now()}.sqlite`);
   }
   if (version === 2 && filename !== ":memory:") {
     db.prepare("VACUUM INTO ?").run(`${filename}.pre-v3-${Date.now()}.sqlite`);
+  }
+  if (version === 3 && filename !== ":memory:") {
+    db.prepare("VACUUM INTO ?").run(`${filename}.pre-v4-${Date.now()}.sqlite`);
   }
   db.transaction(() => {
   db.exec(`
@@ -80,6 +83,71 @@ export function openDatabase(filename: string) {
     CREATE INDEX IF NOT EXISTS product_images_product ON product_images(company_id,source_identity,product_id,unit_id,deleted_at);
     INSERT OR IGNORE INTO schema_migrations VALUES(3,datetime('now'));
   `);
+
+  const portalColumns = db.pragma("table_info(portal_settings)") as Array<{ name: string }>;
+  if (!portalColumns.some((col) => col.name === "image_prompt")) {
+    db.exec("ALTER TABLE portal_settings ADD COLUMN image_prompt TEXT");
+  }
+  if (!portalColumns.some((col) => col.name === "gemini_paused")) {
+    db.exec("ALTER TABLE portal_settings ADD COLUMN gemini_paused INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!portalColumns.some((col) => col.name === "gemini_pause_reason")) {
+    db.exec("ALTER TABLE portal_settings ADD COLUMN gemini_pause_reason TEXT");
+  }
+  if (!portalColumns.some((col) => col.name === "gemini_requires_reauth")) {
+    db.exec("ALTER TABLE portal_settings ADD COLUMN gemini_requires_reauth INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!portalColumns.some((col) => col.name === "image_processing_enabled")) {
+    db.exec("ALTER TABLE portal_settings ADD COLUMN image_processing_enabled INTEGER NOT NULL DEFAULT 1");
+  }
+  if (!portalColumns.some((col) => col.name === "watermark_logo")) {
+    db.exec("ALTER TABLE portal_settings ADD COLUMN watermark_logo BLOB");
+  }
+  if (!portalColumns.some((col) => col.name === "watermark_logo_type")) {
+    db.exec("ALTER TABLE portal_settings ADD COLUMN watermark_logo_type TEXT");
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS product_image_state(
+      product_image_id TEXT PRIMARY KEY REFERENCES product_images(id) ON DELETE CASCADE,
+      original_image_id TEXT NOT NULL,
+      processed_image_id TEXT,
+      active_job_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS image_processing_jobs(
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL REFERENCES companies(id),
+      source_identity TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      unit_id TEXT NOT NULL,
+      product_image_id TEXT NOT NULL REFERENCES product_images(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES photo_users(id),
+      original_image_id TEXT NOT NULL,
+      result_image_id TEXT,
+      product_code TEXT,
+      prompt TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending','processing','completed','failed')),
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      max_retries INTEGER NOT NULL DEFAULT 3,
+      next_attempt_at TEXT,
+      locked_by TEXT,
+      locked_at TEXT,
+      error_code TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS image_jobs_queue ON image_processing_jobs(status, next_attempt_at, created_at);
+    CREATE INDEX IF NOT EXISTS image_jobs_image ON image_processing_jobs(product_image_id, created_at);
+    CREATE INDEX IF NOT EXISTS image_jobs_product ON image_processing_jobs(company_id, source_identity, product_id, unit_id, created_at);
+    INSERT OR IGNORE INTO schema_migrations VALUES(4,datetime('now'));
+  `);
+  const jobColumns = db.prepare("PRAGMA table_info(image_processing_jobs)").all() as Array<{ name: string }>;
+  if (!jobColumns.some((col) => col.name === "product_code")) {
+    db.exec("ALTER TABLE image_processing_jobs ADD COLUMN product_code TEXT");
+  }
   })();
   return db;
 }

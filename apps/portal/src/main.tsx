@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { ArrowLeft, Camera, Check, Flashlight, FlashlightOff, ImagePlus, Images, LoaderCircle, LockKeyhole, LogOut, ScanBarcode, Search, ShieldCheck, Trash2, X, ZoomIn } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Camera, Check, Clock, Flashlight, FlashlightOff, ImagePlus, Images, LoaderCircle, LockKeyhole, LogOut, RefreshCw, ScanBarcode, Search, ShieldCheck, Trash2, X, ZoomIn } from "lucide-react";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { BarcodeFormat, BinaryBitmap, DecodeHintType, GlobalHistogramBinarizer, HybridBinarizer, MultiFormatReader, RGBLuminanceSource } from "@zxing/library";
 import "./styles.css";
-type Photo={id:string;url:string};
-type Product={id:string;unitId:string;code:string;name:string;category:string;description:string;unit:string;price:number|null;images:Photo[]};
+type ImageProcessingStatus="pending"|"processing"|"completed"|"failed";
+type Photo={id:string;url:string;status?:ImageProcessingStatus;jobId?:string|null;error?:string|null;errorCode?:string|null;updatedAt?:string|null};
+type QueueStatus={enabled?:boolean;paused:boolean;requiresReauth:boolean;pauseReason:string|null;counts?:Record<string,number>};
+type Product={id:string;unitId:string;code:string;kind?:string;name:string;category:string;description:string;unit:string;price:number|null;images:Photo[]};
 type Session={authenticated:boolean;username:string|null};
 async function request(path:string,method="GET",body?:unknown,signal?:AbortSignal) {
   const form=body instanceof FormData;
@@ -25,11 +27,46 @@ function App() {
   const [truncated,setTruncated]=useState(false),[deleteId,setDeleteId]=useState<string|null>(null),[zoom,setZoom]=useState(false);
   const [suggestions,setSuggestions]=useState<Product[]>([]),[suggestionsOpen,setSuggestionsOpen]=useState(false),[suggesting,setSuggesting]=useState(false);
   const [activeSuggestion,setActiveSuggestion]=useState(-1),[suggestionError,setSuggestionError]=useState("");
-  const [scannerOpen,setScannerOpen]=useState(false),[torchActive,setTorchActive]=useState(false),[hasTorch,setHasTorch]=useState(false),[cameraError,setCameraError]=useState(""),[scanningFile,setScanningFile]=useState(false),[scanModalError,setScanModalError]=useState(""),[capturedPreview,setCapturedPreview]=useState<string|null>(null);
+  const [scannerOpen,setScannerOpen]=useState(false),[torchActive,setTorchActive]=useState(false),[hasTorch,setHasTorch]=useState(false),[cameraError,setCameraError]=useState(""),[scanningFile,setScanningFile]=useState(false),[scanModalError,setScanModalError]=useState(""),[capturedPreview,setCapturedPreview]=useState<string|null>(null),[queueStatus,setQueueStatus]=useState<QueueStatus|null>(null);
   const searchInput=useRef<HTMLInputElement>(null),sequence=useRef(0),dialog=useRef<HTMLDialogElement>(null),zoomDialog=useRef<HTMLDialogElement>(null),scannerDialog=useRef<HTMLDialogElement>(null),scannerRef=useRef<Html5Qrcode|null>(null);
   const product=products[selected];
+  const activePhoto=product?.images[activeImage];
+  const hasActiveProcessing=Boolean(product?.images.some(img=>img.status==="pending"||img.status==="processing"));
+  const activeProcessingSignature=product?.images.filter(img=>img.status==="pending"||img.status==="processing").map(img=>`${img.id}:${img.status}:${img.url}`).join("|")||"";
   useEffect(()=>{void request("/session").then(setSession).catch(e=>{if(manage)setError(e.message);}).finally(()=>setSessionLoading(false));},[manage]);
   useEffect(()=>{setActiveImage(0);},[selected]);
+  useEffect(()=>{
+    if(!manage||!session.authenticated){setQueueStatus(null);return;}
+    let cancelled=false;
+    void request("/image-jobs/status").then(data=>{if(!cancelled)setQueueStatus(data);}).catch(()=>{});
+    return()=>{cancelled=true;};
+  },[manage,session.authenticated]);
+  useEffect(()=>{
+    if(!product||!hasActiveProcessing)return;
+    let cancelled=false;
+    const targetId=product.id,targetUnitId=product.unitId,key=`${targetId}:${targetUnitId}`;
+    let prevById=new Map(product.images.map(img=>[img.id,img]));
+    const poll=async()=>{
+      try{
+        const data=await request(`/products/${encodeURIComponent(targetId)}/${encodeURIComponent(targetUnitId)}`);
+        const fresh=(data.products||[])[0] as Product|undefined;
+        if(cancelled||!fresh)return;
+        const completedAny=fresh.images.some(img=>{
+          const prev=prevById.get(img.id);
+          return prev&&(prev.status==="pending"||prev.status==="processing")&&img.status==="completed";
+        });
+        prevById=new Map(fresh.images.map(img=>[img.id,img]));
+        setProducts(current=>current.map(p=>`${p.id}:${p.unitId}`===key?{...p,images:fresh.images}:p));
+        if(completedAny)setSuccess("تمت معالجة الصورة وتحديثها تلقائيًا");
+        if(manage&&session.authenticated){
+          void request("/image-jobs/status").then(status=>{if(!cancelled)setQueueStatus(status);}).catch(()=>{});
+        }
+      }catch{}
+    };
+    const intervalMs=queueStatus?.paused?6000:2500;
+    const timer=window.setInterval(()=>{void poll();},intervalMs);
+    return()=>{cancelled=true;window.clearInterval(timer);};
+  },[product?.id,product?.unitId,hasActiveProcessing,activeProcessingSignature,manage,session.authenticated,queueStatus?.paused]);
   useEffect(()=>{if(deleteId)dialog.current?.showModal();else dialog.current?.close();},[deleteId]);
   useEffect(()=>{if(zoom)zoomDialog.current?.showModal();else zoomDialog.current?.close();},[zoom]);
   useEffect(()=>{if(scannerOpen)scannerDialog.current?.showModal();else scannerDialog.current?.close();},[scannerOpen]);
@@ -427,7 +464,7 @@ function App() {
     try{await request("/login","POST",{username,password});setPassword("");setSession(await request("/session"));}
     catch(e){setError((e as Error).message);}finally{setLogging(false);}
   }
-  async function logout(){try{await request("/logout","POST");setSession({authenticated:false,username:null});setSuccess("");}catch(e){setError((e as Error).message);}}
+  async function logout(){try{await request("/logout","POST");setSession({authenticated:false,username:null});setQueueStatus(null);setSuccess("");}catch(e){setError((e as Error).message);}}
   async function optimizeImageForUpload(file: File): Promise<File> {
     if (file.size <= 4 * 1024 * 1024 && ["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
       return file;
@@ -481,7 +518,33 @@ function App() {
       const form=new FormData();form.append("image",readyFile);
       const result=await request(`/products/${product.id}/${product.unitId}/images`,"POST",form);
       setProducts(current=>current.map(p=>`${p.id}:${p.unitId}`===key?{...p,images:result.images}:p));
-      setActiveImage(result.images.length-1);setSuccess("تمت إضافة الصورة");
+      setActiveImage(result.images.length-1);setSuccess("تمت إضافة الصورة؛ جاري معالجتها في الخلفية");
+      void request("/image-jobs/status").then(setQueueStatus).catch(()=>{});
+    }catch(e){setError((e as Error).message);}finally{setMutating(false);}
+  }
+  async function replaceImage(imageId:string,file:File){
+    if(!product || mutating)return;
+    setMutating(true);setError("");setSuccess("");
+    try{
+      const readyFile=await optimizeImageForUpload(file);
+      if(readyFile.size > 5 * 1024 * 1024){setError("الحد الأقصى للصورة 5 ميجابايت");return;}
+      const key=`${product.id}:${product.unitId}`;
+      const form=new FormData();form.append("image",readyFile);
+      const result=await request(`/images/${imageId}`,"PUT",form);
+      setProducts(current=>current.map(p=>`${p.id}:${p.unitId}`===key?{...p,images:result.images}:p));
+      setSuccess("تم استبدال الصورة؛ جاري معالجتها في الخلفية");
+      void request("/image-jobs/status").then(setQueueStatus).catch(()=>{});
+    }catch(e){setError((e as Error).message);}finally{setMutating(false);}
+  }
+  async function retryImage(imageId:string){
+    if(!product || mutating)return;
+    setMutating(true);setError("");setSuccess("");
+    try{
+      const key=`${product.id}:${product.unitId}`;
+      const result=await request(`/images/${imageId}/retry`,"POST");
+      setProducts(current=>current.map(p=>`${p.id}:${p.unitId}`===key?{...p,images:result.images}:p));
+      setSuccess("تمت إعادة جدولة معالجة الصورة");
+      void request("/image-jobs/status").then(setQueueStatus).catch(()=>{});
     }catch(e){setError((e as Error).message);}finally{setMutating(false);}
   }
   async function remove(){if(!deleteId)return;setMutating(true);setError("");setSuccess("");
@@ -567,8 +630,11 @@ function App() {
           <section className="results" aria-label="نتائج الاستعلام"><div className="results-heading"><div><span className="eyebrow muted">نتائج الاستعلام</span><h2>لقينا {products.length===1?"الموديل":"أكتر من نتيجة"} <span className="result-count">{products.length}</span></h2></div><span className="query-chip" dir="ltr">{searched}</span></div>
             {truncated && <p role="status">فيه نتائج إضافية؛ استخدم رقم الصنف لتحديد النتيجة.</p>}
             {products.length>1 && <div className="choices">{products.map((p,i)=><button disabled={mutating} className={selected===i?"active":""} key={`${p.id}:${p.unitId}`} onClick={()=>{setSelected(i);setSuccess("");}}><bdi>{p.code}</bdi><span>{p.description||p.name} · {p.unit} · <bdi>{p.id}</bdi></span></button>)}</div>}
-            {product && <div className="product-layout"><div className="gallery"><div className={`main-image ${product.images.length?"has-image":""}`}>{product.images[activeImage]?<button className="image-zoom" onClick={()=>setZoom(true)} aria-label="تكبير صورة الموديل" title="تكبير صورة الموديل"><img src={product.images[activeImage].url} alt={`${product.description||product.name} — صورة ${activeImage+1}`}/><span><ZoomIn size={18}/></span></button>:<div className="no-image"><Images size={48} strokeWidth={1}/><h3>الصور لسه بتتجهز</h3><p>{manage?"أضف أول صورة للموديل من الزر بالأسفل.":"بيانات الموديل متاحة، والصور هتظهر بمجرد إضافتها."}</p></div>}<span className="gallery-code" dir="ltr">{product.code}</span></div>
-              {product.images.length>1 && <div className="thumbnails">{product.images.map((photo,i)=><button className={activeImage===i?"selected":""} key={photo.id} onClick={()=>setActiveImage(i)} aria-label={`عرض الصورة ${i+1}`} aria-pressed={activeImage===i}><img src={photo.url} alt=""/></button>)}</div>}
+            {manage && session.authenticated && queueStatus?.enabled===false && <div className="notice warning" role="status"><Clock size={18}/><span>معالجة الصور التلقائية متوقفة من إعدادات الإدارة؛ الصور المرفوعة تُحفظ وتُعرض فورًا كما هي دون تعديل.</span></div>}
+            {manage && session.authenticated && queueStatus?.enabled!==false && queueStatus?.requiresReauth && <div className="notice warning" role="alert"><AlertTriangle size={18}/><span>معالجة الصور متوقفة مؤقتًا لأن جلسة Gemini Web تحتاج لإعادة تسجيل الدخول من لوحة الإدارة. يتم عرض الصور الأصلية ولن تتعطل.</span></div>}
+            {manage && session.authenticated && queueStatus?.enabled!==false && queueStatus?.paused && !queueStatus?.requiresReauth && <div className="notice warning" role="status"><Clock size={18}/><span>{queueStatus.pauseReason || "طابور معالجة الصور متوقف مؤقتًا من لوحة الإدارة."}</span></div>}
+            {product && <div className="product-layout"><div className="gallery"><div className={`main-image ${product.images.length?"has-image":""}`}>{activePhoto?<button className="image-zoom" onClick={()=>setZoom(true)} aria-label="تكبير صورة الموديل" title="تكبير صورة الموديل"><img src={activePhoto.url} alt={`${product.description||product.name} — صورة ${activeImage+1}`}/><span><ZoomIn size={18}/></span></button>:<><div className="no-image"><Images size={48} strokeWidth={1}/><h3>الصور لسه بتتجهز</h3><p>{manage?"أضف أول صورة للموديل من الزر بالأسفل.":"بيانات الموديل متاحة، والصور هتظهر بمجرد إضافتها."}</p></div><span className="gallery-code" dir="ltr">{product.code}</span></>}{manage && session.authenticated && activePhoto && (activePhoto.status==="pending"||activePhoto.status==="processing"||activePhoto.status==="failed") && <span className={`image-status-pill status-${activePhoto.status}`} role="status">{activePhoto.status==="pending"&&<><Clock size={14}/><span>في انتظار المعالجة</span></>}{activePhoto.status==="processing"&&<><LoaderCircle size={14} className="spin"/><span>جاري معالجة الصورة…</span></>}{activePhoto.status==="failed"&&<><AlertTriangle size={14}/><span>تعذرت المعالجة</span></>}</span>}</div>
+              {product.images.length>1 && <div className="thumbnails">{product.images.map((photo,i)=><button className={activeImage===i?"selected":""} key={photo.id} onClick={()=>setActiveImage(i)} aria-label={`عرض الصورة ${i+1}`} aria-pressed={activeImage===i}><img src={photo.url} alt=""/>{manage && session.authenticated && (photo.status==="pending"||photo.status==="processing"||photo.status==="failed") && <span className={`thumb-status-dot status-${photo.status}`} aria-hidden="true"/>}</button>)}</div>}
               {manage && <div className="image-actions">
                 <label className={`upload-button camera-btn ${mutating||product.images.length>=10?"disabled":""}`} title="تصوير فوري بكاميرا الهاتف">
                   {mutating?<LoaderCircle className="spin" size={18}/>:<Camera size={18}/>}
@@ -581,10 +647,17 @@ function App() {
                   <input type="file" accept="image/jpeg,image/png,image/webp,image/*" disabled={mutating||product.images.length>=10} onChange={e=>{const file=e.target.files?.[0];if(file)void upload(file);e.target.value="";}}/>
                 </label>
                 <span>{product.images.length} / 10 صور</span>
-                {product.images[activeImage] && <button className="delete-button" disabled={mutating} onClick={()=>setDeleteId(product.images[activeImage].id)}><Trash2 size={16}/> حذف الصورة</button>}
+                {activePhoto && <label className={`upload-button replace-btn ${mutating?"disabled":""}`} title="استبدال الصورة الحالية بصورة جديدة">
+                  <ImagePlus size={16}/>
+                  <span>استبدال الصورة</span>
+                  <input type="file" accept="image/jpeg,image/png,image/webp,image/*" disabled={mutating} onChange={e=>{const file=e.target.files?.[0];if(file&&activePhoto)void replaceImage(activePhoto.id,file);e.target.value="";}}/>
+                </label>}
+                {activePhoto?.status==="failed" && queueStatus?.enabled!==false && <button type="button" className="retry-button" disabled={mutating} onClick={()=>void retryImage(activePhoto.id)}><RefreshCw size={16}/> إعادة المحاولة</button>}
+                {activePhoto && <button className="delete-button" disabled={mutating} onClick={()=>setDeleteId(activePhoto.id)}><Trash2 size={16}/> حذف الصورة</button>}
+                {activePhoto?.status==="failed" && activePhoto.error && <small className="image-job-error" role="status">{activePhoto.error}</small>}
                 <small>تصوير بالكاميرا أو رفع صورة · JPEG, PNG, WebP</small>
               </div>}
-            </div><article className="product-details"><div className="product-kicker">EMOJI STORE <span> / </span> {product.name}</div><h2>{product.description||product.name}</h2><div className="model-badge">كود الموديل <strong dir="ltr">{product.code}</strong></div><div className="price-block"><span>سعر البيع</span>{product.price===null?<strong className="unpriced">السعر غير متاح حاليًا</strong>:<div><strong>{money(product.price)}</strong><span>ج.م</span></div>}<small>سعر الوحدة: {product.unit||"غير محددة"}</small></div><dl><div><dt>رقم الصنف</dt><dd dir="ltr">{product.id}</dd></div>{product.category && <div><dt>التصنيف</dt><dd>{product.category}</dd></div>}<div><dt>الصنف</dt><dd>{product.name}</dd></div><div><dt>الوحدة</dt><dd>{product.unit||"—"}</dd></div></dl><div className="detail-note"><ShieldCheck size={20}/><p>بيانات من نظام الشركة<span>السعر المعروض حسب بيانات الصنف وقت الاستعلام.</span></p></div></article></div>}
+            </div><article className="product-details"><div className="product-kicker">EMOJI STORE {product.kind ? <><span> / </span>{product.kind}</> : null}<span> / </span>{product.name}</div><h2>{product.description||product.name}</h2><div className="model-badge">كود الموديل <strong dir="ltr">{product.code}</strong></div><div className="price-block"><span>سعر البيع</span>{product.price===null?<strong className="unpriced">السعر غير متاح حاليًا</strong>:<div><strong>{money(product.price)}</strong><span>ج.م</span></div>}<small>سعر الوحدة: {product.unit||"غير محددة"}</small></div><dl>{product.kind && <div><dt>النوع</dt><dd>{product.kind}</dd></div>}<div><dt>القسم</dt><dd>{product.name}</dd></div>{product.category && <div><dt>التصنيف</dt><dd>{product.category}</dd></div>}<div><dt>رقم الصنف</dt><dd dir="ltr">{product.id}</dd></div><div><dt>الوحدة</dt><dd>{product.unit||"—"}</dd></div></dl><div className="detail-note"><ShieldCheck size={20}/><p>بيانات من نظام الشركة<span>السعر المعروض حسب بيانات الصنف وقت الاستعلام.</span></p></div></article></div>}
           </section>}
       </div>
     </main><footer><span>EMOJI STORE<span className="footer-dot">.</span></span><p>كل التفاصيل، بكود واحد.</p><small>دليل الموديلات للفروع</small></footer>

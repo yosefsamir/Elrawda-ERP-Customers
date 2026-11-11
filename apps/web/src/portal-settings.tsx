@@ -1,16 +1,49 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
+  AlertTriangle,
+  ChevronDown,
   ExternalLink,
+  ImagePlus,
   KeyRound,
+  LoaderCircle,
+  LogIn,
+  Play,
   Plus,
+  RefreshCw,
+  RotateCcw,
   Save,
+  Sparkles,
+  Trash2,
+  Upload,
   User,
   UserCheck,
   UserPlus,
   UserX,
+  X,
 } from "lucide-react";
 import { api, post, put, dateTime } from "./api";
 import { Button, Field, Notice, ToggleSwitch } from "./components";
+
+type GeminiStatus = {
+  enabled?: boolean;
+  paused: boolean;
+  requiresReauth: boolean;
+  pauseReason: string | null;
+  profileExists: boolean;
+  authenticatedAt?: string | null;
+  counts: { pending: number; processing: number; completed: number; failed: number };
+};
+
+type InteractiveLoginState = {
+  status: "idle" | "launching" | "waiting_for_login" | "confirming" | "succeeded" | "failed" | "cancelled";
+  stage: "launching" | "waiting_for_login" | "confirming" | null;
+  active: boolean;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  interactiveSupported: boolean;
+  unsupportedReason: string | null;
+};
 
 type PhotoUser = {
   id: string;
@@ -29,6 +62,16 @@ export function PortalSettings({
   const [enabled, setEnabled] = useState(false);
   const [origin, setOrigin] = useState("");
   const [users, setUsers] = useState<PhotoUser[]>([]);
+  const [imagePrompt, setImagePrompt] = useState("");
+  const [defaultImagePrompt, setDefaultImagePrompt] = useState("");
+  const [processingEnabled, setProcessingEnabled] = useState(true);
+  const [geminiStatus, setGeminiStatus] = useState<GeminiStatus | null>(null);
+  const [interactiveLogin, setInteractiveLogin] = useState<InteractiveLoginState | null>(null);
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [hasWatermarkLogo, setHasWatermarkLogo] = useState(false);
+  const [logoVersion, setLogoVersion] = useState(0);
+  const [logoBusy, setLogoBusy] = useState(false);
+  const watermarkInputRef = useRef<HTMLInputElement | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [resetId, setResetId] = useState<string | null>(null);
@@ -42,6 +85,16 @@ export function PortalSettings({
     setEnabled(Boolean(result.enabled));
     setOrigin(result.origin || "");
     setUsers(result.users || []);
+    setImagePrompt(result.imagePrompt || result.defaultImagePrompt || "");
+    setDefaultImagePrompt(result.defaultImagePrompt || "");
+    setProcessingEnabled(
+      result.imageProcessingEnabled !== undefined
+        ? Boolean(result.imageProcessingEnabled)
+        : Boolean(result.geminiStatus?.enabled ?? true),
+    );
+    setGeminiStatus(result.geminiStatus || null);
+    setInteractiveLogin(result.interactiveLogin || null);
+    setHasWatermarkLogo(Boolean(result.hasWatermarkLogo));
     setError("");
   }
 
@@ -54,6 +107,33 @@ export function PortalSettings({
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, [companyId]);
+
+  useEffect(() => {
+    if (!interactiveLogin?.active) return;
+    const timer = window.setInterval(() => {
+      void api("/portal/image-processing/login/status")
+        .then((res) => {
+          if (res.interactiveLogin) setInteractiveLogin(res.interactiveLogin);
+          if (res.geminiStatus) {
+            setGeminiStatus(res.geminiStatus);
+            if (res.geminiStatus.enabled !== undefined) {
+              setProcessingEnabled(Boolean(res.geminiStatus.enabled));
+            }
+          }
+          if (res.interactiveLogin && !res.interactiveLogin.active) {
+            if (res.interactiveLogin.status === "succeeded") {
+              notify("تم تسجيل الدخول إلى Gemini Web وحفظ الجلسة بنجاح.");
+            } else if (res.interactiveLogin.status === "failed" && res.interactiveLogin.error) {
+              notify(res.interactiveLogin.error, true);
+            } else if (res.interactiveLogin.status === "cancelled") {
+              notify("تم إلغاء عملية تسجيل الدخول.");
+            }
+          }
+        })
+        .catch(() => {});
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [interactiveLogin?.active]);
 
   async function action(work: () => Promise<unknown>, message: string) {
     setBusy(true);
@@ -85,6 +165,100 @@ export function PortalSettings({
       () => put("/portal/settings", { enabled, origin: origin.trim() }),
       "تم حفظ إعدادات الأصناف والأسعار بنجاح.",
     );
+  }
+
+  async function saveImagePrompt(e: FormEvent) {
+    e.preventDefault();
+    await action(
+      () => put("/portal/image-processing/prompt", { imagePrompt }),
+      "تم حفظ برومبت معالجة الصور بنجاح.",
+    );
+  }
+
+  async function handleWatermarkFileChange(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      notify("حجم صورة اللوجو كبير جدًا؛ الحد الأقصى 2 ميجابايت", true);
+      return;
+    }
+    setLogoBusy(true);
+    try {
+      const form = new FormData();
+      form.append("logo", file);
+      await api("/portal/image-processing/watermark-logo", { method: "POST", body: form });
+      setHasWatermarkLogo(true);
+      setLogoVersion((v) => v + 1);
+      notify("تم حفظ لوجو الشركة على صور المنتجات.");
+    } catch (err) {
+      notify((err as Error).message, true);
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  async function removeWatermarkLogo() {
+    setLogoBusy(true);
+    try {
+      await api("/portal/image-processing/watermark-logo", { method: "DELETE" });
+      setHasWatermarkLogo(false);
+      setLogoVersion((v) => v + 1);
+      notify("تمت إزالة اللوجو؛ سيُضاف كود الصنف فقط أسفل الصور.");
+    } catch (err) {
+      notify((err as Error).message, true);
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  async function resumeImageProcessing() {
+    await action(
+      () => post("/portal/image-processing/resume", {}),
+      "تم استئناف طابور معالجة الصور بنجاح.",
+    );
+  }
+
+  async function handleToggleImageProcessing(nextState: boolean) {
+    setProcessingEnabled(nextState);
+    await action(
+      () => put("/portal/image-processing/enabled", { enabled: nextState }),
+      nextState
+        ? "تم تفعيل معالجة الصور التلقائية بنجاح."
+        : "تم إيقاف معالجة الصور التلقائية؛ ستظهر الصور المرفوعة كما هي بدون إضافتها للطابور.",
+    );
+  }
+
+  async function startGeminiLogin() {
+    setLoginBusy(true);
+    try {
+      const res = await post("/portal/image-processing/login", {});
+      if (res.interactiveLogin) {
+        setInteractiveLogin(res.interactiveLogin);
+      }
+      notify("تم فتح نافذة المتصفح؛ سجّل الدخول إلى حساب Google في النافذة المفتوحة.");
+    } catch (e) {
+      notify((e as Error).message, true);
+      await load().catch(() => {});
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  async function cancelGeminiLogin() {
+    setLoginBusy(true);
+    try {
+      const res = await post("/portal/image-processing/login/cancel", {});
+      if (res.interactiveLogin) {
+        setInteractiveLogin(res.interactiveLogin);
+      }
+      await load().catch(() => {});
+      notify("تم إرسال طلب إلغاء تسجيل الدخول.");
+    } catch (e) {
+      notify((e as Error).message, true);
+    } finally {
+      setLoginBusy(false);
+    }
   }
 
   async function createPhotoUser(e: FormEvent) {
@@ -199,7 +373,274 @@ export function PortalSettings({
         </div>
       </form>
 
-      {/* 3. Photo Managers Accounts */}
+      {/* 3. Gemini Image Processing Settings */}
+      <section className="panel form-panel" aria-labelledby="gemini-processing-heading">
+        <div className="section-header-row">
+          <div>
+            <h2 id="gemini-processing-heading" className="section-title">
+              <Sparkles size={18} style={{ verticalAlign: "text-bottom", marginInlineEnd: 6 }} />
+              تحسين صور المنتجات تلقائيًا
+            </h2>
+            <p className="panel-subtitle">
+              تجهيز وتحسين صور الموديلات تلقائيًا بعد رفعها مع بقاء الصورة الأصلية ظاهرة فورًا.
+            </p>
+          </div>
+          <div className="gemini-header-actions">
+            <button
+              type="button"
+              className="button secondary"
+              disabled={busy}
+              onClick={() => void load().catch((e) => notify((e as Error).message, true))}
+            >
+              <RefreshCw size={15} />
+              <span>تحديث</span>
+            </button>
+          </div>
+        </div>
+
+        <ToggleSwitch
+          id="gemini-image-processing-toggle"
+          title="تفعيل التحسين التلقائي للصور"
+          description="عند التفعيل يتم تحسين الصور المرفوعة تلقائيًا، وعند الإيقاف تظهر الصور كما هي فورًا بدون تعديل."
+          checked={processingEnabled}
+          onChange={handleToggleImageProcessing}
+          disabled={busy || loginBusy}
+          badgeActive="مفعّل"
+          badgeInactive="متوقف"
+        />
+
+        {geminiStatus && (
+          <div className="gemini-status-panel">
+            <div className="gemini-account-card">
+              <div className="gemini-account-info">
+                <span
+                  className={`portal-user-badge ${
+                    geminiStatus.requiresReauth || !geminiStatus.profileExists
+                      ? "inactive"
+                      : !processingEnabled || geminiStatus.paused
+                        ? "warning"
+                        : "active"
+                  }`}
+                >
+                  {geminiStatus.requiresReauth || !geminiStatus.profileExists ? (
+                    <>
+                      <AlertTriangle size={13} style={{ verticalAlign: "text-bottom", marginInlineEnd: 4 }} />
+                      حساب Google غير متصل
+                    </>
+                  ) : !processingEnabled ? (
+                    "متوقف مؤقتًا (الحساب متصل)"
+                  ) : geminiStatus.paused ? (
+                    "الخدمة متوقفة مؤقتًا"
+                  ) : (
+                    "الحساب متصل وجاهز"
+                  )}
+                </span>
+                <span className="gemini-account-hint">
+                  {geminiStatus.requiresReauth || !geminiStatus.profileExists
+                    ? "سجّل الدخول مرة واحدة لبدء تحسين الصور تلقائيًا."
+                    : !processingEnabled
+                      ? "الصور الجديدة تُعرض مباشرةً بدون تعديل حتى تعيد التفعيل."
+                      : "يتم تحسين الصور الجديدة تلقائيًا في الخلفية."}
+                </span>
+              </div>
+
+              <div className="gemini-account-actions">
+                {(geminiStatus.paused || geminiStatus.requiresReauth) && processingEnabled && !interactiveLogin?.active && (
+                  <Button
+                    type="button"
+                    busy={busy}
+                    onClick={() => void resumeImageProcessing()}
+                  >
+                    <Play size={15} />
+                    <span>استئناف</span>
+                  </Button>
+                )}
+
+                {interactiveLogin?.active ? (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    disabled={loginBusy}
+                    onClick={() => void cancelGeminiLogin()}
+                  >
+                    <X size={15} />
+                    <span>إلغاء</span>
+                  </button>
+                ) : !geminiStatus.profileExists || geminiStatus.requiresReauth ? (
+                  <Button
+                    type="button"
+                    busy={loginBusy}
+                    disabled={busy || interactiveLogin?.interactiveSupported === false}
+                    onClick={() => void startGeminiLogin()}
+                  >
+                    <LogIn size={15} />
+                    <span>تسجيل الدخول بالحساب</span>
+                  </Button>
+                ) : (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    disabled={busy || loginBusy || interactiveLogin?.interactiveSupported === false}
+                    onClick={() => void startGeminiLogin()}
+                  >
+                    <LogIn size={15} />
+                    <span>تغيير / إعادة ربط الحساب</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {interactiveLogin?.active && (
+              <Notice tone="info">
+                <LoaderCircle size={15} className="spin" style={{ verticalAlign: "text-bottom", marginInlineEnd: 6 }} />
+                {interactiveLogin.stage === "launching"
+                  ? "جاري فتح المتصفح…"
+                  : interactiveLogin.stage === "confirming"
+                    ? "جاري تأكيد الحساب وحفظ الجلسة…"
+                    : "المتصفح مفتوح الآن — سجّل الدخول إلى حساب Google وستُغلق النافذة تلقائيًا بعد الحفظ."}
+              </Notice>
+            )}
+
+            {!interactiveLogin?.active && interactiveLogin?.status === "failed" && interactiveLogin.error && (
+              <Notice tone="error">{interactiveLogin.error}</Notice>
+            )}
+
+            {interactiveLogin && !interactiveLogin.interactiveSupported && (!geminiStatus.profileExists || geminiStatus.requiresReauth) && (
+              <Notice tone="info">
+                {interactiveLogin.unsupportedReason ||
+                  "يعمل الخادم حاليًا كخدمة خلفية؛ افتح ملف gemini-login.bat من جهاز الخادم لتسجيل الدخول."}
+              </Notice>
+            )}
+
+            {geminiStatus.pauseReason && processingEnabled && (
+              <Notice tone={geminiStatus.requiresReauth ? "error" : "info"}>
+                {geminiStatus.pauseReason}
+              </Notice>
+            )}
+
+            <div className="gemini-metrics-grid">
+              <div className="gemini-metric-card">
+                <span className="gemini-metric-value">{geminiStatus.counts.pending}</span>
+                <span className="gemini-metric-label">في الانتظار</span>
+              </div>
+              <div className="gemini-metric-card">
+                <span className="gemini-metric-value">{geminiStatus.counts.processing}</span>
+                <span className="gemini-metric-label">قيد التحسين</span>
+              </div>
+              <div className="gemini-metric-card">
+                <span className="gemini-metric-value">{geminiStatus.counts.completed}</span>
+                <span className="gemini-metric-label">مكتملة</span>
+              </div>
+              <div className="gemini-metric-card">
+                <span className="gemini-metric-value">{geminiStatus.counts.failed}</span>
+                <span className="gemini-metric-label">تعذرت</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="gemini-account-card watermark-logo-card">
+          <div className="watermark-logo-info">
+            <div className="logo-preview-box watermark-logo-preview">
+              {hasWatermarkLogo ? (
+                <img
+                  src={`/api/portal/image-processing/watermark-logo?v=${logoVersion}`}
+                  alt="لوجو الشركة"
+                  className="logo-preview-img"
+                />
+              ) : (
+                <ImagePlus size={22} className="watermark-logo-placeholder" />
+              )}
+            </div>
+            <div className="watermark-logo-text">
+              <strong>لوجو الشركة وكود الصنف على الصورة</strong>
+              <span className="gemini-account-hint">
+                يُطبع اللوجو تلقائيًا أعلى يمين الصورة، ويُكتب كود الصنف بوضوح أسفل اليسار على كل صورة محسّنة (بحد أقصى 2 ميجابايت).
+              </span>
+            </div>
+          </div>
+
+          <div className="gemini-account-actions">
+            <input
+              ref={watermarkInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              hidden
+              disabled={busy || logoBusy}
+              onChange={handleWatermarkFileChange}
+            />
+            <button
+              type="button"
+              className="button secondary"
+              disabled={busy || logoBusy}
+              onClick={() => watermarkInputRef.current?.click()}
+            >
+              {logoBusy ? <LoaderCircle size={15} className="spin" /> : <Upload size={15} />}
+              <span>{hasWatermarkLogo ? "تغيير اللوجو" : "رفع لوجو الشركة"}</span>
+            </button>
+            {hasWatermarkLogo && (
+              <button
+                type="button"
+                className="button secondary watermark-remove-btn"
+                disabled={busy || logoBusy}
+                onClick={() => void removeWatermarkLogo()}
+              >
+                <Trash2 size={15} />
+                <span>إزالة</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        <details className="gemini-advanced-details">
+          <summary className="gemini-advanced-summary">
+            <span className="gemini-advanced-title">
+              <ChevronDown size={16} className="gemini-advanced-chevron" />
+              <span>تخصيص وصف تعديل الصور</span>
+            </span>
+            <span className="gemini-advanced-badge">اختياري</span>
+          </summary>
+
+          <form onSubmit={saveImagePrompt} className="gemini-prompt-form">
+            <div className="field">
+              <label htmlFor="gemini-image-prompt">وصف تعديل الصورة</label>
+              <textarea
+                id="gemini-image-prompt"
+                name="imagePrompt"
+                dir="auto"
+                className="gemini-prompt-textarea"
+                rows={4}
+                maxLength={4000}
+                value={imagePrompt}
+                onChange={(e) => setImagePrompt(e.target.value)}
+                aria-describedby="gemini-prompt-hint"
+                disabled={busy}
+              />
+              <small id="gemini-prompt-hint">
+                التعليمات المرسلة تلقائيًا عند تحسين كل صورة جديدة. اتركه فارغًا لاستخدام الوصف الافتراضي.
+              </small>
+            </div>
+
+            <div className="form-footer-action gemini-prompt-actions">
+              <button
+                type="button"
+                className="button secondary"
+                disabled={busy || !defaultImagePrompt}
+                onClick={() => setImagePrompt(defaultImagePrompt)}
+              >
+                <RotateCcw size={15} />
+                <span>استعادة الافتراضي</span>
+              </button>
+              <Button busy={busy}>
+                <Save size={16} />
+                حفظ التعديلات
+              </Button>
+            </div>
+          </form>
+        </details>
+      </section>
+
+      {/* 4. Photo Managers Accounts */}
       <section className="panel form-panel">
         <div className="section-header-row">
           <div>

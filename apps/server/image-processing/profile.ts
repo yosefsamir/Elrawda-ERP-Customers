@@ -1,0 +1,177 @@
+import Database from "better-sqlite3";
+import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
+
+const exec = promisify(execFile);
+
+function windowsProfileArgument(commandLine: string): string | undefined {
+  return /(?:^|\s)(?:"--user-data-dir=([^"]+)"|--user-data-dir=(?:"([^"]+)"|([^\s"]+)))(?=\s|$)/i
+    .exec(commandLine)
+    ?.slice(1)
+    .find(Boolean);
+}
+
+export async function ownedGeminiBrowsers(profileDir: string): Promise<number[]> {
+  const normalized = resolve(profileDir);
+  if (process.platform === "win32") {
+    const { stdout } = await exec(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe' OR Name = 'chrome-headless-shell.exe'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+      ],
+      { windowsHide: true, timeout: 10_000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const rows = stdout.trim() ? JSON.parse(stdout.replace(/^\uFEFF/, "")) : [];
+    return (Array.isArray(rows) ? rows : [rows])
+      .filter((row) => {
+        const arg = windowsProfileArgument(row.CommandLine ?? "");
+        return arg && resolve(arg).toLowerCase() === normalized.toLowerCase();
+      })
+      .map((row) => Number(row.ProcessId));
+  }
+  if (process.platform !== "linux") return [];
+  const pids: number[] = [];
+  for (const pid of readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
+    try {
+      const args = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+      if (!["chrome", "chrome-headless-shell"].includes(basename(readlinkSync(`/proc/${pid}/exe`)))) continue;
+      const flattened = args.join(" ");
+      if (args.includes(`--user-data-dir=${normalized}`) || flattened.includes(` --user-data-dir=${normalized} --`)) {
+        pids.push(Number(pid));
+      }
+    } catch (error: any) {
+      if (!["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(error.code)) throw error;
+    }
+  }
+  return pids;
+}
+
+export async function cleanGeminiProfileBrowsers(profileDir: string) {
+  for (const pid of await ownedGeminiBrowsers(profileDir)) {
+    if (!(await ownedGeminiBrowsers(profileDir)).includes(pid)) continue;
+    if (process.platform === "win32") {
+      await exec("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, timeout: 10_000 });
+    } else {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (error: any) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
+  }
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (!(await ownedGeminiBrowsers(profileDir)).length) return;
+    await delay(250);
+  }
+  throw new Error("Chromium still owns the Gemini profile; refusing to launch a second browser");
+}
+
+/**
+ * Manages an exclusive OS-level lease and non-secret session state markers for the Gemini browser profile.
+ */
+export class GeminiProfileLock {
+  readonly root: string;
+  readonly profileDir: string;
+  readonly reauthMarker: string;
+  readonly authStateFile: string;
+  private lease: Database.Database;
+  private closed = false;
+
+  constructor(profileRoot: string) {
+    this.root = resolve(profileRoot);
+    this.profileDir = join(this.root, "profile");
+    const locks = join(this.root, ".locks");
+    mkdirSync(this.profileDir, { recursive: true, mode: 0o700 });
+    mkdirSync(locks, { recursive: true, mode: 0o700 });
+    this.reauthMarker = join(locks, "reauth.json");
+    this.authStateFile = join(locks, "auth-state.json");
+    this.lease = new Database(join(locks, "gemini.sqlite"), { timeout: 0 });
+    try {
+      this.lease.exec("BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS lease (id INTEGER PRIMARY KEY)");
+    } catch (error) {
+      this.lease.close();
+      throw error;
+    }
+  }
+
+  async prepare() {
+    await cleanGeminiProfileBrowsers(this.profileDir);
+    for (const name of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+      rmSync(join(this.profileDir, name), { force: true });
+    }
+  }
+
+  release() {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.lease.close();
+    } catch {}
+  }
+}
+
+export function getGeminiProfileStatus(profileRoot: string): {
+  profileExists: boolean;
+  requiresReauth: boolean;
+  reauthReason: string | null;
+  authenticatedAt: string | null;
+} {
+  const root = resolve(profileRoot);
+  const profileDir = join(root, "profile");
+  const reauthMarker = join(root, ".locks", "reauth.json");
+  const authStateFile = join(root, ".locks", "auth-state.json");
+
+  let requiresReauth = false;
+  let reauthReason: string | null = null;
+  if (existsSync(reauthMarker)) {
+    requiresReauth = true;
+    try {
+      const parsed = JSON.parse(readFileSync(reauthMarker, "utf8"));
+      reauthReason = typeof parsed.reason === "string" ? parsed.reason : "REAUTH_REQUIRED";
+    } catch {
+      reauthReason = "REAUTH_REQUIRED";
+    }
+  }
+
+  let authenticatedAt: string | null = null;
+  if (existsSync(authStateFile)) {
+    try {
+      const parsed = JSON.parse(readFileSync(authStateFile, "utf8"));
+      authenticatedAt = typeof parsed.authenticatedAt === "string" ? parsed.authenticatedAt : null;
+    } catch {}
+  }
+
+  return {
+    profileExists: existsSync(join(profileDir, "Default")) || existsSync(profileDir),
+    requiresReauth,
+    reauthReason,
+    authenticatedAt,
+  };
+}
+
+export function markGeminiReauthRequired(profileRoot: string, reason: string) {
+  const locks = join(resolve(profileRoot), ".locks");
+  mkdirSync(locks, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    join(locks, "reauth.json"),
+    JSON.stringify({ reason, at: new Date().toISOString() }),
+    { mode: 0o600, flush: true },
+  );
+}
+
+export function markGeminiAuthenticated(profileRoot: string) {
+  const locks = join(resolve(profileRoot), ".locks");
+  mkdirSync(locks, { recursive: true, mode: 0o700 });
+  rmSync(join(locks, "reauth.json"), { force: true });
+  writeFileSync(
+    join(locks, "auth-state.json"),
+    JSON.stringify({ authenticatedAt: new Date().toISOString() }),
+    { mode: 0o600, flush: true },
+  );
+}

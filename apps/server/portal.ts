@@ -2,9 +2,9 @@ import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import staticFiles from "@fastify/static";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
-import { readFile, writeFile, unlink } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import sharp from "sharp";
 import {
@@ -20,7 +20,15 @@ import { z, ZodError } from "zod";
 import type { AppDatabase } from "../../packages/storage/database.js";
 import { createProductReader, type ProductReader } from "../../packages/erp/products.js";
 import { isLocalOrLanHost, localSecretStore, tokenHash, verifyPassword } from "./security.js";
-import { auditPortal, photoCredentials } from "./portal-admin.js";
+import { auditPortal } from "./portal-admin.js";
+import {
+  buildImagePromptForProduct,
+  getConfiguredImagePrompt,
+  getImageProcessingConfig,
+  isImageProcessingEnabled,
+} from "./image-processing/config.js";
+import { saveProductImageBlob, validateAndNormalizeImage } from "./image-processing/storage.js";
+import { enqueueImageProcessingJob, getImageProcessingStatusSummary, recordUnprocessedImageState } from "./image-processing/worker.js";
 const productParams=z.object({id:z.string().regex(/^\d{1,18}$/),unit:z.string().regex(/^\d{1,18}$/)});
 const lookupQuery=z.object({code:z.string().trim().min(1).max(100).regex(/^[A-Za-z0-9]+$/)});
 const loginCredentials=z.object({username:z.unknown().transform(v=>typeof v==="string"?v.trim():""),password:z.unknown().transform(v=>typeof v==="string"?v:"")});
@@ -39,7 +47,7 @@ export function createLimiter() {
     if(++value.count>max) throw fail("طلبات كثيرة؛ انتظر قليلًا ثم حاول مجددًا",429);
   };
 }
-export async function createPortal(options:{db:AppDatabase;dataDir:string;root:string;reader?:ProductReader;logger?:boolean}) {
+export async function createPortal(options:{db:AppDatabase;dataDir:string;root:string;reader?:ProductReader;logger?:boolean;onJobQueued?:()=>void}) {
   const {db}=options;
   const reader=options.reader??createProductReader(db,localSecretStore(options.dataDir));
   const app=Fastify({logger:options.logger??false,bodyLimit:6*1024*1024,disableRequestLogging:true});
@@ -70,9 +78,52 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
   function requireUser(request:any,config:ReturnType<typeof settings>) {
     const found=user(request,config);if(!found) throw fail("سجّل الدخول لإدارة الصور",401);return found;
   }
-  function images(config:ReturnType<typeof settings>,id:string,unitId:string) {
-    return (db.prepare(`SELECT id FROM product_images WHERE company_id=? AND source_identity=? AND product_id=? AND unit_id=? AND deleted_at IS NULL ORDER BY created_at,id`)
-      .all(config.company_id,config.identity,id,unitId) as {id:string}[]).map(r=>({id:r.id,url:`/api/images/${r.id}`}));
+  function images(config:ReturnType<typeof settings>,id:string,unitId:string,includeDetails=false) {
+    const rows = db.prepare(`
+      SELECT pi.id, s.original_image_id, s.processed_image_id, s.active_job_id,
+             j.status AS job_status, j.error_code, j.error_message, j.updated_at AS job_updated_at
+      FROM product_images pi
+      LEFT JOIN product_image_state s ON s.product_image_id = pi.id
+      LEFT JOIN image_processing_jobs j ON j.id = s.active_job_id
+      WHERE pi.company_id=? AND pi.source_identity=? AND pi.product_id=? AND pi.unit_id=? AND pi.deleted_at IS NULL
+      ORDER BY pi.created_at, pi.id
+    `).all(config.company_id, config.identity, id, unitId) as Array<{
+      id: string;
+      original_image_id: string | null;
+      processed_image_id: string | null;
+      active_job_id: string | null;
+      job_status: "pending" | "processing" | "completed" | "failed" | null;
+      error_code: string | null;
+      error_message: string | null;
+      job_updated_at: string | null;
+    }>;
+    return rows.map(r => {
+      const status = r.job_status ?? (r.processed_image_id || !r.active_job_id ? "completed" : "pending");
+      const version = r.processed_image_id ?? (r.original_image_id && r.original_image_id !== r.id ? r.original_image_id : null);
+      const url = version ? `/api/images/${r.id}?v=${version}` : `/api/images/${r.id}`;
+      if (!includeDetails) return { id: r.id, url, status };
+      return {
+        id: r.id,
+        url,
+        status,
+        jobId: r.active_job_id,
+        errorCode: status === "failed" ? r.error_code : null,
+        error: status === "failed" ? r.error_message : null,
+        updatedAt: r.job_updated_at,
+      };
+    });
+  }
+  async function parseUploadedImage(request: any) {
+    const file = await request.file();
+    if (!file || !['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+      throw fail("اختر صورة JPEG أو PNG أو WebP");
+    }
+    const buffer = await file.toBuffer();
+    try {
+      return await validateAndNormalizeImage(buffer);
+    } catch {
+      throw fail("الملف ليس صورة صالحة أو أبعاده أكبر من المسموح");
+    }
   }
   async function product(config:ReturnType<typeof settings>,id:string,unitId:string) {
     try { return await reader.get(config.company_id,id,unitId); }
@@ -191,10 +242,11 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
 
   app.get("/api/products",async request=>{
     const config=settings(),{code}=lookupQuery.parse(request.query);
+    const authenticated=Boolean(user(request,config));
     let rows;
     try { rows=await reader.search(config.company_id,code); }
     catch { throw fail("تعذر الاتصال بقاعدة الأصناف؛ حاول مجددًا أو تواصل مع المسؤول",503); }
-    return {products:rows.slice(0,30).map(p=>({...p,images:images(config,p.id,p.unitId)})),truncated:rows.length>30};
+    return {products:rows.slice(0,30).map(p=>({...p,images:images(config,p.id,p.unitId,authenticated)})),truncated:rows.length>30};
   });
   app.get("/api/suggestions",async request=>{
     const config=settings(),{code}=lookupQuery.parse(request.query);
@@ -205,31 +257,33 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
   });
   app.get("/api/products/:id/:unit",async request=>{
     const config=settings(),params=productParams.parse(request.params);
+    const authenticated=Boolean(user(request,config));
     const found=await product(config,params.id,params.unit);
     if(!found) throw fail("الصنف غير موجود",404);
-    return {products:[{...found,images:images(config,found.id,found.unitId)}],truncated:false};
+    return {products:[{...found,images:images(config,found.id,found.unitId,authenticated)}],truncated:false};
   });
   app.get("/api/images/:imageId",async(request,reply)=>{
     const config=settings(),{imageId}=z.object({imageId:z.uuid()}).parse(request.params);
-    if(!db.prepare("SELECT 1 FROM product_images WHERE id=? AND company_id=? AND source_identity=? AND deleted_at IS NULL").get(imageId,config.company_id,config.identity)) throw fail("الصورة غير موجودة",404);
-    try { return reply.type("image/webp").send(await readFile(resolve(directory,`${imageId}.webp`))); }
+    const row=db.prepare(
+      `SELECT pi.id, s.original_image_id, s.processed_image_id
+       FROM product_images pi
+       LEFT JOIN product_image_state s ON s.product_image_id = pi.id
+       WHERE pi.id=? AND pi.company_id=? AND pi.source_identity=? AND pi.deleted_at IS NULL`
+    ).get(imageId,config.company_id,config.identity) as {id:string;original_image_id:string|null;processed_image_id:string|null}|undefined;
+    if(!row) throw fail("الصورة غير موجودة",404);
+    const blobId=row.processed_image_id || row.original_image_id || row.id;
+    try { return reply.type("image/webp").send(await readFile(resolve(directory,`${blobId}.webp`))); }
     catch { throw fail("الصورة غير متاحة",404); }
   });
   app.post("/api/products/:id/:unit/images",async request=>{
     const config=settings(),current=requireUser(request,config),params=productParams.parse(request.params);
-    if(!await product(config,params.id,params.unit)) throw fail("الصنف غير موجود",404);
-    const file=await request.file();
-    if(!file || !['image/jpeg','image/png','image/webp'].includes(file.mimetype)) throw fail("اختر صورة JPEG أو PNG أو WebP");
-    const buffer=await file.toBuffer();
-    let normalized:Buffer;
-    try {
-      const image=sharp(buffer,{limitInputPixels:24000000,animated:false});
-      const meta=await image.metadata();
-      if(!meta.format || !['jpeg','png','webp'].includes(meta.format) || (meta.pages??1)>1) throw new Error("Invalid image");
-      normalized=await image.rotate().resize({width:1600,height:1600,fit:"inside",withoutEnlargement:true}).webp({quality:85}).toBuffer();
-    } catch { throw fail("الملف ليس صورة صالحة أو أبعاده أكبر من المسموح"); }
-    const id=randomUUID(),path=resolve(directory,`${id}.webp`);
-    await writeFile(path,normalized,{flag:"wx",mode:0o600});
+    const item=await product(config,params.id,params.unit);
+    if(!item) throw fail("الصنف غير موجود",404);
+    const normalized=await parseUploadedImage(request);
+    const saved=await saveProductImageBlob(options.dataDir,normalized.buffer);
+    const imageCfg=getImageProcessingConfig({db,dataDir:options.dataDir,root:options.root});
+    const prompt=buildImagePromptForProduct(getConfiguredImagePrompt(db,options.dataDir,options.root),item);
+    let jobId="";
     try {
       db.transaction(()=>{
         // Recheck inside the commit after all asynchronous decoding/file writes.
@@ -237,18 +291,163 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
         if(active.company_id!==config.company_id || active.identity!==config.identity || user(request,active)?.id!==current.id)
           throw fail("انتهت صلاحية العملية؛ سجّل الدخول مجددًا",401);
         if(images(config,params.id,params.unit).length>=10) throw fail("الحد الأقصى 10 صور لكل صنف ووحدة",409);
-        db.prepare("INSERT INTO product_images VALUES(?,?,?,?,?,?,?,NULL)").run(id,config.company_id,config.identity,params.id,params.unit,current.id,new Date().toISOString());
-        auditPortal(db,config.company_id,"product.image.uploaded",{imageId:id,productId:params.id,unitId:params.unit,userId:current.id});
+        const now=new Date().toISOString();
+        const processingEnabled=isImageProcessingEnabled(db);
+        db.prepare("INSERT INTO product_images VALUES(?,?,?,?,?,?,?,NULL)").run(saved.id,config.company_id,config.identity,params.id,params.unit,current.id,now);
+        if(processingEnabled){
+          jobId=enqueueImageProcessingJob(db,{
+            companyId:config.company_id,
+            sourceIdentity:config.identity,
+            productId:params.id,
+            unitId:params.unit,
+            productImageId:saved.id,
+            userId:current.id,
+            originalImageId:saved.id,
+            productCode:item.code,
+            prompt,
+            maxRetries:imageCfg.maxRetries,
+            now,
+          });
+        }else{
+          recordUnprocessedImageState(db,saved.id,saved.id);
+        }
+        auditPortal(db,config.company_id,"product.image.uploaded",{imageId:saved.id,jobId:jobId||null,processingEnabled,productId:params.id,unitId:params.unit,userId:current.id});
       })();
-    } catch(error) { await unlink(path).catch(()=>{});throw error; }
-    return {ok:true,images:images(config,params.id,params.unit)};
+    } catch(error) { await saved.cleanup();throw error; }
+    if(jobId) options.onJobQueued?.();
+    return {ok:true,jobId:jobId||null,processingEnabled:Boolean(jobId),images:images(config,params.id,params.unit,true)};
+  });
+  app.put("/api/images/:imageId",async request=>{
+    const config=settings(),current=requireUser(request,config),{imageId}=z.object({imageId:z.uuid()}).parse(request.params);
+    const normalized=await parseUploadedImage(request);
+    const existingMeta=db.prepare("SELECT product_id,unit_id FROM product_images WHERE id=? AND company_id=? AND source_identity=? AND deleted_at IS NULL")
+      .get(imageId,config.company_id,config.identity) as {product_id:string;unit_id:string}|undefined;
+    if(!existingMeta) throw fail("الصورة غير موجودة",404);
+    const item=await product(config,existingMeta.product_id,existingMeta.unit_id).catch(()=>undefined);
+    const saved=await saveProductImageBlob(options.dataDir,normalized.buffer);
+    const imageCfg=getImageProcessingConfig({db,dataDir:options.dataDir,root:options.root});
+    const prompt=buildImagePromptForProduct(getConfiguredImagePrompt(db,options.dataDir,options.root),item);
+    let productId="",unitId="",jobId="";
+    try {
+      db.transaction(()=>{
+        const active=settings();
+        if(active.company_id!==config.company_id || active.identity!==config.identity || user(request,active)?.id!==current.id)
+          throw fail("انتهت صلاحية العملية؛ سجّل الدخول مجددًا",401);
+        const existing=db.prepare("SELECT product_id,unit_id FROM product_images WHERE id=? AND company_id=? AND source_identity=? AND deleted_at IS NULL")
+          .get(imageId,config.company_id,config.identity) as {product_id:string;unit_id:string}|undefined;
+        if(!existing) throw fail("الصورة غير موجودة",404);
+        productId=existing.product_id;unitId=existing.unit_id;
+        const now=new Date().toISOString();
+        const processingEnabled=isImageProcessingEnabled(db);
+        db.prepare(`UPDATE image_processing_jobs SET status='failed',error_code='STALE_JOB_REPLACED',error_message='تم استبدال الصورة قبل إتمام المعالجة',locked_by=NULL,locked_at=NULL,updated_at=? WHERE product_image_id=? AND status IN ('pending','processing')`)
+          .run(now,imageId);
+        if(processingEnabled){
+          jobId=enqueueImageProcessingJob(db,{
+            companyId:config.company_id,
+            sourceIdentity:config.identity,
+            productId,
+            unitId,
+            productImageId:imageId,
+            userId:current.id,
+            originalImageId:saved.id,
+            productCode:item?.code,
+            prompt,
+            maxRetries:imageCfg.maxRetries,
+            now,
+          });
+        }else{
+          recordUnprocessedImageState(db,imageId,saved.id);
+        }
+        auditPortal(db,config.company_id,"product.image.replaced",{imageId,originalImageId:saved.id,jobId:jobId||null,processingEnabled,userId:current.id});
+      })();
+    } catch(error) { await saved.cleanup();throw error; }
+    if(jobId) options.onJobQueued?.();
+    return {ok:true,jobId:jobId||null,processingEnabled:Boolean(jobId),images:images(config,productId,unitId,true)};
+  });
+  app.post("/api/images/:imageId/retry",async request=>{
+    const config=settings(),current=requireUser(request,config),{imageId}=z.object({imageId:z.uuid()}).parse(request.params);
+    if(!isImageProcessingEnabled(db)) throw fail("معالجة الصور التلقائية متوقفة حاليًا من إعدادات الإدارة",409);
+    const meta=db.prepare(
+      `SELECT product_id, unit_id FROM product_images WHERE id=? AND company_id=? AND source_identity=? AND deleted_at IS NULL`,
+    ).get(imageId,config.company_id,config.identity) as {product_id:string;unit_id:string}|undefined;
+    if(!meta) throw fail("الصورة غير موجودة",404);
+    const item=await product(config,meta.product_id,meta.unit_id).catch(()=>undefined);
+    const imageCfg=getImageProcessingConfig({db,dataDir:options.dataDir,root:options.root});
+    const prompt=buildImagePromptForProduct(getConfiguredImagePrompt(db,options.dataDir,options.root),item);
+    let productId="",unitId="",jobId="";
+    db.transaction(()=>{
+      const row=db.prepare(
+        `SELECT pi.id, pi.product_id, pi.unit_id, s.original_image_id, j.status AS job_status
+         FROM product_images pi
+         LEFT JOIN product_image_state s ON s.product_image_id = pi.id
+         LEFT JOIN image_processing_jobs j ON j.id = s.active_job_id
+         WHERE pi.id=? AND pi.company_id=? AND pi.source_identity=? AND pi.deleted_at IS NULL`
+      ).get(imageId,config.company_id,config.identity) as {id:string;product_id:string;unit_id:string;original_image_id:string|null;job_status:string|null}|undefined;
+      if(!row) throw fail("الصورة غير موجودة",404);
+      if(row.job_status==="pending" || row.job_status==="processing") throw fail("الصورة قيد المعالجة حاليًا",409);
+      productId=row.product_id;unitId=row.unit_id;
+      jobId=enqueueImageProcessingJob(db,{
+        companyId:config.company_id,
+        sourceIdentity:config.identity,
+        productId,
+        unitId,
+        productImageId:row.id,
+        userId:current.id,
+        originalImageId:row.original_image_id || row.id,
+        productCode:item?.code,
+        prompt,
+        maxRetries:imageCfg.maxRetries,
+      });
+      auditPortal(db,config.company_id,"product.image.retry",{imageId:row.id,jobId,userId:current.id});
+    })();
+    options.onJobQueued?.();
+    return {ok:true,jobId,images:images(config,productId,unitId,true)};
+  });
+  app.get("/api/image-jobs/status",async request=>{
+    const config=settings();
+    requireUser(request,config);
+    const imageCfg=getImageProcessingConfig({db,dataDir:options.dataDir,root:options.root});
+    const summary=getImageProcessingStatusSummary(db,imageCfg.profileRoot,config.company_id);
+    return {enabled:summary.enabled,paused:summary.paused,requiresReauth:summary.requiresReauth,pauseReason:summary.pauseReason,counts:summary.counts};
+  });
+  app.get("/api/image-jobs/:jobId",async request=>{
+    const config=settings();
+    requireUser(request,config);
+    const {jobId}=z.object({jobId:z.uuid()}).parse(request.params);
+    const row=db.prepare(
+      `SELECT id, product_id, unit_id, product_image_id, status, retry_count, max_retries,
+              error_code, error_message, result_image_id, created_at, updated_at, started_at, completed_at
+       FROM image_processing_jobs
+       WHERE id=? AND company_id=? AND source_identity=?`
+    ).get(jobId,config.company_id,config.identity) as any;
+    if(!row) throw fail("المهمة غير موجودة",404);
+    return {
+      id:row.id,
+      productId:row.product_id,
+      unitId:row.unit_id,
+      productImageId:row.product_image_id,
+      status:row.status,
+      retryCount:row.retry_count,
+      maxRetries:row.max_retries,
+      errorCode:row.error_code,
+      errorMessage:row.error_message,
+      resultImageUrl:row.result_image_id?`/api/images/${row.product_image_id}?v=${row.result_image_id}`:null,
+      createdAt:row.created_at,
+      updatedAt:row.updated_at,
+      startedAt:row.started_at,
+      completedAt:row.completed_at,
+    };
   });
   app.delete("/api/images/:imageId",async request=>{
     const config=settings(),current=requireUser(request,config),{imageId}=z.object({imageId:z.uuid()}).parse(request.params);
     db.transaction(()=>{
+      const now=new Date().toISOString();
       const result=db.prepare("UPDATE product_images SET deleted_at=? WHERE id=? AND company_id=? AND source_identity=? AND deleted_at IS NULL")
-        .run(new Date().toISOString(),imageId,config.company_id,config.identity);
+        .run(now,imageId,config.company_id,config.identity);
       if(!result.changes) throw fail("الصورة غير موجودة",404);
+      db.prepare("UPDATE product_image_state SET active_job_id=NULL WHERE product_image_id=?").run(imageId);
+      db.prepare(`UPDATE image_processing_jobs SET status='failed',error_code='STALE_IMAGE_DELETED',error_message='تم حذف الصورة قبل إتمام المعالجة',locked_by=NULL,locked_at=NULL,updated_at=? WHERE product_image_id=? AND status IN ('pending','processing')`)
+        .run(now,imageId);
       auditPortal(db,config.company_id,"product.image.deleted",{imageId,userId:current.id});
     })();
     // Retain immutable blobs for consistent concurrent online backups. Deleted images are not served.
