@@ -608,9 +608,9 @@ function Ensure-GeminiWorkerAccount([string]$StateRoot, [string]$UserName = 'Wha
             New-LocalUser -Name $UserName `
                 -Password $sec `
                 -FullName 'WhatsApp-ERP Gemini Worker' `
-                -Description 'Dedicated standard Windows account for isolated Gemini image processing' `
+                -Description 'WhatsApp-ERP Gemini Worker account' `
                 -PasswordNeverExpires `
-                -UserMayChangePassword:$false `
+                -UserMayNotChangePassword `
                 -AccountNeverExpires | Out-Null
         } else {
             Set-LocalUser -Name $UserName -Password $sec -PasswordNeverExpires $true -UserMayChangePassword $false
