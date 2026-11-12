@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import sharp from "sharp";
+import sharp, { type OutputInfo, type Sharp } from "sharp";
 import {
   BarcodeFormat,
   BinaryBitmap,
@@ -188,6 +188,7 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
     hints.set(DecodeHintType.TRY_HARDER, true);
     hints.set(DecodeHintType.POSSIBLE_FORMATS, [
       BarcodeFormat.CODE_128,
+      BarcodeFormat.CODE_93,
       BarcodeFormat.CODE_39,
       BarcodeFormat.EAN_13,
       BarcodeFormat.EAN_8,
@@ -200,30 +201,112 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
     const reader = new MultiFormatReader();
     reader.setHints(hints);
 
-    for (const rotate of [0, 90, 270, 180]) {
-      for (const maxDim of [1200, 1800]) {
+    let base: { data: Buffer; info: OutputInfo };
+    try {
+      // Normalize EXIF orientation once upfront so crop coordinates and explicit
+      // manual rotations always run against upright sensor pixels.
+      base = await sharp(buffer).rotate().raw().toBuffer({ resolveWithObject: true });
+    } catch {
+      return null;
+    }
+
+    const { width: w, height: h, channels } = base.info;
+    if (!w || !h) return null;
+    const rawInput = { raw: { width: w, height: h, channels } } as const;
+
+    const toLuminances = (data: Buffer, info: OutputInfo): Uint8ClampedArray => {
+      const len = info.width * info.height;
+      if (info.channels === 1 && data.length === len) {
+        return new Uint8ClampedArray(data.buffer, data.byteOffset, len);
+      }
+      const luminances = new Uint8ClampedArray(len);
+      const stride = Math.max(1, info.channels);
+      for (let i = 0; i < len; i++) {
+        const offset = i * stride;
+        luminances[i] = stride >= 3
+          ? (data[offset] * 77 + data[offset + 1] * 150 + data[offset + 2] * 29) >> 8
+          : data[offset];
+      }
+      return luminances;
+    };
+
+    const decodePipeline = async (pipeline: Sharp): Promise<string | null> => {
+      const { data, info } = await pipeline.grayscale().raw().toBuffer({ resolveWithObject: true });
+      const source = new RGBLuminanceSource(toLuminances(data, info), info.width, info.height);
+      for (const Binarizer of [HybridBinarizer, GlobalHistogramBinarizer]) {
         try {
-          const pipeline = sharp(buffer).rotate();
+          const res = reader.decode(new BinaryBitmap(new Binarizer(source)));
+          if (res?.getText()) return res.getText();
+        } catch {}
+      }
+      return null;
+    };
+
+    const centerRegion = (rw: number, rh: number) => {
+      const width = Math.max(1, Math.min(w, Math.round(w * rw)));
+      const height = Math.max(1, Math.min(h, Math.round(h * rh)));
+      return {
+        left: Math.max(0, Math.floor((w - width) / 2)),
+        top: Math.max(0, Math.floor((h - height) / 2)),
+        width,
+        height,
+      };
+    };
+
+    type DecodeAttempt = {
+      region: { left: number; top: number; width: number; height: number } | null;
+      maxDim: number;
+      upscaleMin?: number;
+      enhance?: boolean;
+      rotations: number[];
+    };
+
+    const canCrop = w >= 360 && h >= 360;
+    const tight = canCrop ? centerRegion(0.55, 0.45) : null;
+    const strip = canCrop ? centerRegion(0.75, 0.34) : null;
+    const wide = canCrop ? centerRegion(0.8, 0.65) : null;
+
+    const attempts: DecodeAttempt[] = [
+      ...(tight
+        ? [
+            { region: tight, maxDim: 1500, upscaleMin: 1000, rotations: [0, 90] },
+            { region: tight, maxDim: 1500, upscaleMin: 1000, enhance: true, rotations: [0, 90] },
+          ]
+        : []),
+      ...(strip
+        ? [
+            { region: strip, maxDim: 1500, upscaleMin: 1000, rotations: [0, 90] },
+            { region: strip, maxDim: 1500, upscaleMin: 1000, enhance: true, rotations: [0, 90] },
+          ]
+        : []),
+      ...(wide ? [{ region: wide, maxDim: 1600, rotations: [0, 90] }] : []),
+      { region: null, maxDim: 1400, rotations: [0, 90] },
+      { region: null, maxDim: 2000, enhance: true, rotations: [0, 90] },
+      ...(tight ? [{ region: tight, maxDim: 1500, enhance: true, rotations: [270, 180] }] : []),
+      { region: null, maxDim: 1800, rotations: [270, 180] },
+      { region: null, maxDim: 2200, enhance: true, rotations: [270, 180] },
+    ];
+
+    for (const attempt of attempts) {
+      for (const rotate of attempt.rotations) {
+        try {
+          const pipeline = sharp(base.data, rawInput);
+          if (attempt.region) pipeline.extract(attempt.region);
           if (rotate !== 0) pipeline.rotate(rotate);
-          pipeline.resize(maxDim, maxDim, { fit: "inside", withoutEnlargement: true });
-
-          const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-          const len = info.width * info.height;
-          const luminances = new Uint8ClampedArray(len);
-          for (let i = 0; i < len; i++) {
-            luminances[i] = (data[i * 4] * 77 + data[i * 4 + 1] * 150 + data[i * 4 + 2] * 29) >> 8;
+          const rw = attempt.region ? attempt.region.width : w;
+          const rh = attempt.region ? attempt.region.height : h;
+          const longest = Math.max(rw, rh);
+          if (attempt.upscaleMin && longest < attempt.upscaleMin) {
+            const target = Math.min(attempt.maxDim, Math.max(attempt.upscaleMin, longest * 2));
+            pipeline.resize(target, target, { fit: "inside", withoutEnlargement: false, kernel: sharp.kernel.cubic });
+          } else {
+            pipeline.resize(attempt.maxDim, attempt.maxDim, { fit: "inside", withoutEnlargement: true });
           }
-          const source = new RGBLuminanceSource(luminances, info.width, info.height);
-
-          try {
-            const res = reader.decode(new BinaryBitmap(new HybridBinarizer(source)));
-            if (res?.getText()) return res.getText();
-          } catch {}
-
-          try {
-            const res = reader.decode(new BinaryBitmap(new GlobalHistogramBinarizer(source)));
-            if (res?.getText()) return res.getText();
-          } catch {}
+          if (attempt.enhance) {
+            pipeline.normalise().sharpen({ sigma: 1 });
+          }
+          const found = await decodePipeline(pipeline);
+          if (found) return found;
         } catch {}
       }
     }

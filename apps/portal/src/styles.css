@@ -8,7 +8,8 @@
 .barcode-scan-btn:hover{background:#fde68a;color:#78350f;transform:scale(1.05)}
 .barcode-scan-btn:active{transform:scale(0.96)}
 .scanner-dialog{border:0;border-radius:16px;padding:0;background:#18181b;color:#f4f4f5;max-width:440px;width:calc(100vw - 24px);box-shadow:0 25px 50px -12px rgba(0,0,0,0.6);overflow:hidden}
-.scanner-dialog::backdrop{background:rgba(0,0,0,0.75);backdrop-filter:blur(6px)}
+.scanner-dialog:modal{overscroll-behavior:contain}
+.scanner-dialog::backdrop{background:rgba(0,0,0,0.75);backdrop-filter:blur(6px);overflow:hidden;overscroll-behavior:contain}
 .scanner-modal-body{display:flex;flex-direction:column;padding:18px 20px 20px;gap:14px;direction:rtl}
 .scanner-modal-header{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .scanner-modal-title{display:flex;align-items:center;gap:12px}
@@ -17,11 +18,11 @@
 .scanner-modal-title p{margin:2px 0 0;font-size:11.5px;color:#a1a1aa}
 .scanner-close-btn{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:#27272a;color:#a1a1aa;cursor:pointer;transition:all .15s}
 .scanner-close-btn:hover{background:#3f3f46;color:#fff}
-.scanner-box-wrapper{position:relative;width:100%;aspect-ratio:1/1;max-height:340px;background:#09090b;border-radius:12px;overflow:hidden;border:1px solid #27272a;display:flex;align-items:center;justify-content:center}
+.scanner-box-wrapper{position:relative;width:100%;aspect-ratio:4/3;max-height:360px;background:#09090b;border-radius:12px;overflow:hidden;border:1px solid #27272a;display:flex;align-items:center;justify-content:center}
 .scanner-preview{width:100%;height:100%}
 .scanner-preview video{width:100% !important;height:100% !important;object-fit:cover !important}
-#portal-barcode-scanner img{display:none !important}
-.scanner-target-reticle{position:absolute;inset:18%;border:1px solid rgba(255,255,255,0.15);border-radius:8px;pointer-events:none;box-shadow:0 0 0 9999px rgba(0,0,0,0.45)}
+#portal-barcode-scanner img,#portal-barcode-scanner #qr-shaded-region{display:none !important}
+.scanner-target-reticle{position:absolute;inset:22% 8%;border:1px solid rgba(255,255,255,0.18);border-radius:8px;pointer-events:none;box-shadow:0 0 0 9999px rgba(0,0,0,0.45)}
 .scanner-laser-line{position:absolute;left:4%;right:4%;height:2px;background:#fbbf24;box-shadow:0 0 10px #fbbf24,0 0 3px #fff;animation:scan-laser 2s infinite ease-in-out}
 @keyframes scan-laser{0%{top:8%;opacity:.7}50%{top:92%;opacity:1}100%{top:8%;opacity:.7}}
 .reticle-corner{position:absolute;width:18px;height:18px;border-color:#fbbf24;border-style:solid}
@@ -42,6 +43,9 @@
 .scanner-snap-btn{position:relative;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:12px 22px;background:#fbbf24;color:#18181b;font-weight:700;border-radius:8px;font-size:13.5px;cursor:pointer;transition:all .18s;box-shadow:0 3px 10px rgba(251,191,36,0.25)}
 .scanner-snap-btn:hover{background:#f59e0b}
 .scanner-snap-btn input{position:absolute;opacity:0;width:1px;height:1px}
+.scanner-error-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+.scanner-retry-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:11px 16px;border-radius:8px;font-size:13px;font-weight:600;background:#3f3f46;color:#f4f4f5;border:1px solid #52525b;cursor:pointer;transition:all .18s}
+.scanner-retry-btn:hover{background:#52525b}
 .scanner-captured-container{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#000}
 .scanner-captured-preview{width:100%;height:100%;object-fit:contain}
 .scanner-captured-loading{position:absolute;inset:0;background:rgba(0,0,0,0.72);backdrop-filter:blur(3px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#fbbf24;font-size:13px;font-weight:600;padding:16px;text-align:center}
@@ -72,8 +76,8 @@
   .barcode-scan-btn{width:38px;height:38px;min-width:38px}
   .scanner-dialog{width:calc(100vw - 16px);border-radius:14px}
   .scanner-modal-body{padding:16px 14px 18px;gap:12px}
-  .scanner-box-wrapper{aspect-ratio:1/0.95;max-height:280px}
-  .scanner-target-reticle{inset:14%}
+  .scanner-box-wrapper{aspect-ratio:4/3;max-height:300px}
+  .scanner-target-reticle{inset:20% 7%}
   .fab-scan-wrap{bottom:max(18px,env(safe-area-inset-bottom,18px));left:max(18px,env(safe-area-inset-left,18px))}
   .fab-scan-btn{width:58px;height:58px}
   .fab-scan-badge{width:21px;height:21px}

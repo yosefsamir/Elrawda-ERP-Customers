@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
+import { Code128Reader, Code93Reader } from "@zxing/library";
 import Fastify from "fastify";
 import { ZodError } from "zod";
 import Database from "better-sqlite3";
@@ -184,4 +185,89 @@ test('partial model codes produce suggestions while partial numeric product IDs 
 test('model code patterns escape SQL wildcards without changing literal codes',()=>{
  assert.equal(productCodePattern('Z33'),'%Z33%');
  assert.equal(productCodePattern('H%_['+String.fromCharCode(92)), '%H'+String.fromCharCode(92)+'%'+String.fromCharCode(92)+'_'+String.fromCharCode(92)+'['+String.fromCharCode(92).repeat(2)+'%');
+});
+
+function renderCode128bSvg(text:string, barW=2, height=76, fg='#000', bg='#fff'){
+ const patterns=(Code128Reader as any).CODE_PATTERNS as Array<ArrayLike<number>>;
+ const codes=[104];
+ let checksum=104;
+ for(let i=0;i<text.length;i++){
+  const c=text.charCodeAt(i)-32;
+  codes.push(c);
+  checksum+=c*(i+1);
+ }
+ codes.push(checksum%103,106);
+ const quiet=10*barW;
+ let x=quiet,rects='';
+ for(const code of codes){
+  const pat=patterns[code];
+  for(let j=0;j<pat.length;j++){
+   const w=pat[j]*barW;
+   if(j%2===0)rects+=`<rect x="${x}" y="12" width="${w}" height="${height}" fill="${fg}"/>`;
+   x+=w;
+  }
+ }
+ return `<svg xmlns="http://www.w3.org/2000/svg" width="${x+quiet}" height="${height+24}"><rect width="100%" height="100%" fill="${bg}"/>${rects}</svg>`;
+}
+
+function renderCode93Svg(text:string, barW=2, height=80, fg='#000', bg='#fff'){
+ const alpha=(Code93Reader as any).ALPHABET_STRING as string;
+ const enc=(Code93Reader as any).CHARACTER_ENCODINGS as number[];
+ const checkWeight=(vals:number[],maxW:number)=>{
+  let sum=0;
+  for(let i=0;i<vals.length;i++)sum+=vals[vals.length-1-i]*((i%maxW)+1);
+  return sum%47;
+ };
+ const vals=[...text].map(ch=>alpha.indexOf(ch));
+ vals.push(checkWeight(vals,20));
+ vals.push(checkWeight(vals,15));
+ let x=10*barW,rects='';
+ const drawBits=(bits:number,len:number)=>{
+  for(let b=len-1;b>=0;b--){
+   if((bits>>b)&1)rects+=`<rect x="${x}" y="12" width="${barW}" height="${height}" fill="${fg}"/>`;
+   x+=barW;
+  }
+ };
+ for(const code of [47,...vals,47])drawBits(enc[code],9);
+ rects+=`<rect x="${x}" y="12" width="${barW}" height="${height}" fill="${fg}"/>`;
+ x+=barW;
+ return `<svg xmlns="http://www.w3.org/2000/svg" width="${x+10*barW}" height="${height+24}"><rect width="100%" height="100%" fill="${bg}"/>${rects}</svg>`;
+}
+
+test('POST /api/decode-barcode decodes small centered tags in high-res photos, EXIF-rotated vertical tags, and low-contrast Code-93 tags',async t=>{
+ const f=await fixture(t);
+
+ // 1. Small centered Code-128 tag inside a 2400x1800 frame (iPhone ~15-20cm shooting distance)
+ const smallTag=await sharp(Buffer.from(renderCode128bSvg('Z3330',2,64))).png().toBuffer();
+ const highResScene=await sharp({create:{width:2400,height:1800,channels:3,background:'#334155'}})
+  .composite([{input:smallTag,gravity:'centre'}])
+  .jpeg({quality:90})
+  .toBuffer();
+ const scenePart=multipart(highResScene,'image/jpeg');
+ const res1=await f.portal.inject({method:'POST',url:'/api/decode-barcode',headers:{...f.headers,'content-type':scenePart.contentType},payload:scenePart.payload});
+ assert.equal(res1.statusCode,200);
+ assert.equal(res1.json().code,'Z3330');
+
+ // 2. EXIF-rotated vertical photo (sensor sideways + EXIF orientation=6)
+ const rotatedTag=await sharp(Buffer.from(renderCode128bSvg('Z3330',2,70))).rotate(90).png().toBuffer();
+ const exifScene=await sharp({create:{width:1800,height:2400,channels:3,background:'#1f2937'}})
+  .composite([{input:rotatedTag,gravity:'centre'}])
+  .withMetadata({orientation:6})
+  .jpeg({quality:90})
+  .toBuffer();
+ const exifPart=multipart(exifScene,'image/jpeg');
+ const res2=await f.portal.inject({method:'POST',url:'/api/decode-barcode',headers:{...f.headers,'content-type':exifPart.contentType},payload:exifPart.payload});
+ assert.equal(res2.statusCode,200);
+ assert.equal(res2.json().code,'Z3330');
+
+ // 3. Low-contrast Code-93 tag requiring CODE_93 support + contrast normalization
+ const lowContrast93=await sharp(Buffer.from(renderCode93Svg('H2025',2,72,'#6b7280','#cbd5e1'))).png().toBuffer();
+ const scene93=await sharp({create:{width:1600,height:1200,channels:3,background:'#475569'}})
+  .composite([{input:lowContrast93,gravity:'centre'}])
+  .jpeg({quality:90})
+  .toBuffer();
+ const part93=multipart(scene93,'image/jpeg');
+ const res3=await f.portal.inject({method:'POST',url:'/api/decode-barcode',headers:{...f.headers,'content-type':part93.contentType},payload:part93.payload});
+ assert.equal(res3.statusCode,200);
+ assert.equal(res3.json().code,'H2025');
 });

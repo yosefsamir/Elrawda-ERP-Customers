@@ -27,8 +27,89 @@ function App() {
   const [truncated,setTruncated]=useState(false),[deleteId,setDeleteId]=useState<string|null>(null),[zoom,setZoom]=useState(false);
   const [suggestions,setSuggestions]=useState<Product[]>([]),[suggestionsOpen,setSuggestionsOpen]=useState(false),[suggesting,setSuggesting]=useState(false);
   const [activeSuggestion,setActiveSuggestion]=useState(-1),[suggestionError,setSuggestionError]=useState("");
-  const [scannerOpen,setScannerOpen]=useState(false),[torchActive,setTorchActive]=useState(false),[hasTorch,setHasTorch]=useState(false),[cameraError,setCameraError]=useState(""),[scanningFile,setScanningFile]=useState(false),[scanModalError,setScanModalError]=useState(""),[capturedPreview,setCapturedPreview]=useState<string|null>(null),[queueStatus,setQueueStatus]=useState<QueueStatus|null>(null);
-  const searchInput=useRef<HTMLInputElement>(null),sequence=useRef(0),dialog=useRef<HTMLDialogElement>(null),zoomDialog=useRef<HTMLDialogElement>(null),scannerDialog=useRef<HTMLDialogElement>(null),scannerRef=useRef<Html5Qrcode|null>(null);
+  const [scannerOpen,setScannerOpen]=useState(false),[torchActive,setTorchActive]=useState(false),[hasTorch,setHasTorch]=useState(false),[cameraError,setCameraError]=useState(""),[cameraErrorKind,setCameraErrorKind]=useState<"insecure"|"permission"|"other"|"">(""),[scanningFile,setScanningFile]=useState(false),[scanModalError,setScanModalError]=useState(""),[capturedPreview,setCapturedPreview]=useState<string|null>(null),[queueStatus,setQueueStatus]=useState<QueueStatus|null>(null);
+  const searchInput=useRef<HTMLInputElement>(null),sequence=useRef(0),dialog=useRef<HTMLDialogElement>(null),zoomDialog=useRef<HTMLDialogElement>(null),scannerDialog=useRef<HTMLDialogElement>(null),scannerRef=useRef<Html5Qrcode|null>(null),scannerBackdropDown=useRef(false),hdSamplerRef=useRef<number|null>(null),scannerRetryRef=useRef<(() => void)|null>(null);
+
+  const PORTAL_BARCODE_FORMATS = [
+    BarcodeFormat.CODE_128,
+    BarcodeFormat.CODE_93,
+    BarcodeFormat.CODE_39,
+    BarcodeFormat.EAN_13,
+    BarcodeFormat.EAN_8,
+    BarcodeFormat.UPC_A,
+    BarcodeFormat.UPC_E,
+    BarcodeFormat.QR_CODE,
+    BarcodeFormat.ITF,
+  ];
+
+  function createZxBarcodeReader(): MultiFormatReader {
+    const hints = new Map();
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, PORTAL_BARCODE_FORMATS);
+    const reader = new MultiFormatReader();
+    reader.setHints(hints);
+    return reader;
+  }
+
+  function rgbaToLuminances(rgba: Uint8ClampedArray, len: number, enhanceContrast = false): Uint8ClampedArray {
+    const lum = new Uint8ClampedArray(len);
+    const hist = enhanceContrast ? new Uint32Array(256) : null;
+    for (let i = 0; i < len; i++) {
+      const p = i * 4;
+      const y = (rgba[p] * 77 + rgba[p + 1] * 150 + rgba[p + 2] * 29) >> 8;
+      lum[i] = y;
+      if (hist) hist[y]++;
+    }
+    if (!hist || len === 0) return lum;
+    const clip = Math.max(1, Math.floor(len * 0.01));
+    let acc = 0;
+    let lo = 0;
+    while (lo < 255 && acc + hist[lo] <= clip) { acc += hist[lo++]; }
+    acc = 0;
+    let hi = 255;
+    while (hi > lo && acc + hist[hi] <= clip) { acc += hist[hi--]; }
+    const span = hi - lo;
+    if (span >= 16) {
+      const scale = 255 / span;
+      for (let i = 0; i < len; i++) {
+        const v = (lum[i] - lo) * scale;
+        lum[i] = v <= 0 ? 0 : v >= 255 ? 255 : v | 0;
+      }
+    }
+    return lum;
+  }
+
+  function rotateLuminance90(src: Uint8ClampedArray, w: number, h: number): Uint8ClampedArray {
+    const dst = new Uint8ClampedArray(w * h);
+    for (let y = 0; y < h; y++) {
+      const rowOffset = y * w;
+      const destCol = h - 1 - y;
+      for (let x = 0; x < w; x++) {
+        dst[x * h + destCol] = src[rowOffset + x];
+      }
+    }
+    return dst;
+  }
+
+  function decodeLuminanceMatrix(reader: MultiFormatReader, luminances: Uint8ClampedArray, width: number, height: number): string | null {
+    const source = new RGBLuminanceSource(luminances, width, height);
+    for (const Binarizer of [HybridBinarizer, GlobalHistogramBinarizer]) {
+      try {
+        const res = reader.decode(new BinaryBitmap(new Binarizer(source)));
+        if (res?.getText()) return res.getText();
+      } catch {}
+    }
+    return null;
+  }
+
+  function clearHdSampler() {
+    if (hdSamplerRef.current !== null) {
+      window.clearInterval(hdSamplerRef.current);
+      hdSamplerRef.current = null;
+    }
+  }
+
+  useEffect(() => () => { clearHdSampler(); }, [scannerOpen]);
   const product=products[selected];
   const activePhoto=product?.images[activeImage];
   const hasActiveProcessing=Boolean(product?.images.some(img=>img.status==="pending"||img.status==="processing"));
@@ -221,16 +302,7 @@ function App() {
 
           const hints = new Map();
           hints.set(DecodeHintType.TRY_HARDER, true);
-          hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-            BarcodeFormat.CODE_128,
-            BarcodeFormat.CODE_39,
-            BarcodeFormat.EAN_13,
-            BarcodeFormat.EAN_8,
-            BarcodeFormat.UPC_A,
-            BarcodeFormat.UPC_E,
-            BarcodeFormat.QR_CODE,
-            BarcodeFormat.ITF,
-          ]);
+          hints.set(DecodeHintType.POSSIBLE_FORMATS, PORTAL_BARCODE_FORMATS);
 
           const reader = new MultiFormatReader();
           reader.setHints(hints);
@@ -319,32 +391,45 @@ function App() {
             if (res270) { cleanup(); return resolve(res270); }
           }
 
-          // Pass 4: Center crop (middle 70% width, 60% height) at native resolution
-          const cropW = Math.round(naturalW * 0.7);
-          const cropH = Math.round(naturalH * 0.6);
-          const startX = Math.round((naturalW - cropW) / 2);
-          const startY = Math.round((naturalH - cropH) / 2);
-          const cCrop = document.createElement("canvas");
-          cCrop.width = cropW;
-          cCrop.height = cropH;
-          const ctxCrop = cCrop.getContext("2d");
-          if (ctxCrop) {
-            ctxCrop.drawImage(img, startX, startY, cropW, cropH, 0, 0, cropW, cropH);
-            const resCrop = tryDecodeCanvas(cCrop);
-            if (resCrop) { cleanup(); return resolve(resCrop); }
+          // Pass 4: High-resolution center crops (supports iPhone ~15cm min focus & glare)
+          const fileReader = createZxBarcodeReader();
+          const tryRegion = (rx: number, ry: number, enhanceContrast: boolean): string | null => {
+            const cropW = Math.max(1, Math.round(naturalW * rx));
+            const cropH = Math.max(1, Math.round(naturalH * ry));
+            const startX = Math.round((naturalW - cropW) / 2);
+            const startY = Math.round((naturalH - cropH) / 2);
+            const longest = Math.max(cropW, cropH);
+            const scale = longest > 1400 ? 1400 / longest : longest < 750 ? Math.min(2, 960 / longest) : 1;
+            const outW = Math.max(1, Math.round(cropW * scale));
+            const outH = Math.max(1, Math.round(cropH * scale));
 
-            // Crop rotated 90°
-            const cCrop90 = document.createElement("canvas");
-            cCrop90.width = cropH;
-            cCrop90.height = cropW;
-            const ctxCrop90 = cCrop90.getContext("2d");
-            if (ctxCrop90) {
-              ctxCrop90.translate(cropH / 2, cropW / 2);
-              ctxCrop90.rotate((90 * Math.PI) / 180);
-              ctxCrop90.drawImage(cCrop, -cropW / 2, -cropH / 2, cropW, cropH);
-              const resCrop90 = tryDecodeCanvas(cCrop90);
-              if (resCrop90) { cleanup(); return resolve(resCrop90); }
+            const cCrop = document.createElement("canvas");
+            cCrop.width = outW;
+            cCrop.height = outH;
+            const ctxCrop = cCrop.getContext("2d", { willReadFrequently: true });
+            if (!ctxCrop) return null;
+            ctxCrop.drawImage(img, startX, startY, cropW, cropH, 0, 0, outW, outH);
+
+            if (!enhanceContrast) {
+              const direct = tryDecodeCanvas(cCrop);
+              if (direct) return direct;
             }
+
+            const imgData = ctxCrop.getImageData(0, 0, outW, outH);
+            const lums = rgbaToLuminances(imgData.data, outW * outH, enhanceContrast);
+            const decoded = decodeLuminanceMatrix(fileReader, lums, outW, outH);
+            if (decoded) return decoded;
+            return decodeLuminanceMatrix(fileReader, rotateLuminance90(lums, outW, outH), outH, outW);
+          };
+
+          for (const [rx, ry, enhance] of [
+            [0.7, 0.6, false],
+            [0.5, 0.38, false],
+            [0.5, 0.38, true],
+            [0.7, 0.6, true],
+          ] as const) {
+            const hit = tryRegion(rx, ry, enhance);
+            if (hit) { cleanup(); return resolve(hit); }
           }
 
           cleanup();
@@ -417,7 +502,74 @@ function App() {
     }
     let active = true;
     let html5QrCode: Html5Qrcode | null = null;
+    const startHdVideoSampler = (scanner: Html5Qrcode) => {
+      clearHdSampler();
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return;
+      const reader = createZxBarcodeReader();
+      let tick = 0;
+
+      hdSamplerRef.current = window.setInterval(() => {
+        if (!active || scannerRef.current !== scanner) {
+          clearHdSampler();
+          return;
+        }
+        const video = document.querySelector("#portal-barcode-scanner video") as HTMLVideoElement | null;
+        if (!video || video.readyState < 2 || video.videoWidth < 320 || video.videoHeight < 240) return;
+
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const cw = video.clientWidth || vw;
+        const ch = video.clientHeight || vh;
+        const coverScale = Math.max(cw / vw, ch / vh);
+        const visW = Math.min(vw, Math.round(cw / coverScale));
+        const visH = Math.min(vh, Math.round(ch / coverScale));
+        const cropW = Math.max(240, Math.round(visW * 0.88));
+        const cropH = Math.max(140, Math.round(visH * 0.6));
+        const sx = Math.max(0, Math.floor((vw - cropW) / 2));
+        const sy = Math.max(0, Math.floor((vh - cropH) / 2));
+
+        const scale = Math.max(cropW, cropH) > 1280 ? 1280 / Math.max(cropW, cropH) : 1;
+        const dw = Math.max(1, Math.round(cropW * scale));
+        const dh = Math.max(1, Math.round(cropH * scale));
+        if (canvas.width !== dw) canvas.width = dw;
+        if (canvas.height !== dh) canvas.height = dh;
+
+        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, dw, dh);
+        const imgData = ctx.getImageData(0, 0, dw, dh);
+        const currentTick = tick++;
+        const lums = rgbaToLuminances(imgData.data, dw * dh, currentTick % 2 === 1);
+        let decoded = decodeLuminanceMatrix(reader, lums, dw, dh);
+        if (!decoded && currentTick % 3 === 2) {
+          decoded = decodeLuminanceMatrix(reader, rotateLuminance90(lums, dw, dh), dh, dw);
+        }
+        if (decoded && active) {
+          active = false;
+          clearHdSampler();
+          onBarcodeScanned(decoded);
+        }
+      }, 420);
+    };
+
     const startScanner = async () => {
+      clearHdSampler();
+      setCameraError("");
+      setCameraErrorKind("");
+      setScanModalError("");
+      setHasTorch(false);
+      setTorchActive(false);
+
+      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+        if (!active) return;
+        const insecure = typeof window !== "undefined" && !window.isSecureContext;
+        setCameraErrorKind(insecure ? "insecure" : "other");
+        setCameraError(insecure
+          ? "الكاميرا المباشرة تحتاج اتصال HTTPS آمن."
+          : "المتصفح الحالي لا يدعم تشغيل الكاميرا المباشرة.");
+        return;
+      }
+
       try {
         html5QrCode = new Html5Qrcode("portal-barcode-scanner", {
           formatsToSupport: [
@@ -431,37 +583,88 @@ function App() {
             Html5QrcodeSupportedFormats.QR_CODE,
             Html5QrcodeSupportedFormats.ITF,
           ],
+          experimentalFeatures: { useBarCodeDetectorIfSupported: true },
           verbose: false,
         });
         scannerRef.current = html5QrCode;
-        await html5QrCode.start(
-          { facingMode: "environment" },
-          {
-            fps: 15,
-            qrbox: (w, h) => {
-              const width = Math.min(w * 0.88, 320);
-              const height = Math.min(width * 0.5, 160);
-              return { width, height };
+
+        const hasNativeDetector = typeof window !== "undefined" && "BarcodeDetector" in window;
+        const baseConfig = {
+          fps: hasNativeDetector ? 15 : 8,
+          disableFlip: true,
+          qrbox: (w: number, h: number) => ({
+            width: Math.max(200, Math.floor(w * 0.9)),
+            height: Math.max(120, Math.floor(h * 0.56)),
+          }),
+        };
+
+        const onDecoded = (decodedText: string) => {
+          if (!active) return;
+          active = false;
+          clearHdSampler();
+          onBarcodeScanned(decodedText);
+        };
+
+        try {
+          await html5QrCode.start(
+            { facingMode: "environment" },
+            {
+              ...baseConfig,
+              videoConstraints: {
+                facingMode: { ideal: "environment" },
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+              },
             },
-            aspectRatio: 1.0,
-          },
-          (decodedText) => {
-            if (!active) return;
-            active = false;
-            onBarcodeScanned(decodedText);
-          },
-          () => {}
-        );
+            onDecoded,
+            () => {}
+          );
+        } catch (hdErr: any) {
+          const hdMsg = String(hdErr?.name || hdErr?.message || hdErr || "");
+          if (/NotAllowed|Permission/i.test(hdMsg)) throw hdErr;
+          await html5QrCode.start(
+            { facingMode: "environment" },
+            baseConfig,
+            onDecoded,
+            () => {}
+          );
+        }
+
+        if (!active) return;
+        try {
+          await html5QrCode.applyVideoConstraints({
+            advanced: [{ focusMode: "continuous" } as any],
+          });
+        } catch {}
+
         try {
           const cap = html5QrCode.getRunningTrackCameraCapabilities();
           if (cap && cap.torchFeature && cap.torchFeature().isSupported()) {
             setHasTorch(true);
           }
         } catch {}
+
+        startHdVideoSampler(html5QrCode);
       } catch (err: any) {
         if (!active) return;
-        setCameraError(err?.message || "تعذر فتح الكاميرا المباشرة؛ يمكنك التقاط صورة للباركود أدناه.");
+        clearHdSampler();
+        const rawMsg = String(err?.name || err?.message || err || "");
+        const insecure = typeof window !== "undefined" && !window.isSecureContext;
+        if (insecure) {
+          setCameraErrorKind("insecure");
+          setCameraError("الكاميرا المباشرة تحتاج اتصال HTTPS آمن.");
+        } else if (/NotAllowed|Permission/i.test(rawMsg)) {
+          setCameraErrorKind("permission");
+          setCameraError("تم رفض إذن الكاميرا؛ اسمح للمتصفح بالكاميرا ثم أعد المحاولة.");
+        } else {
+          setCameraErrorKind("other");
+          setCameraError(err?.message || "تعذر فتح الكاميرا المباشرة؛ يمكنك إعادة المحاولة أو تصوير الباركود.");
+        }
       }
+    };
+    scannerRetryRef.current = () => {
+      if (!active) return;
+      void startScanner();
     };
     const t = setTimeout(() => { void startScanner(); }, 80);
     return () => {
@@ -688,14 +891,22 @@ function App() {
     </main><footer><span>EMOJI STORE<span className="footer-dot">.</span></span><p>كل التفاصيل، بكود واحد.</p><small>دليل الموديلات للفروع</small></footer>
     <dialog ref={dialog} onCancel={()=>setDeleteId(null)}><div className="dialog-content"><Trash2 size={28}/><h2>حذف الصورة؟</h2><p>هتختفي الصورة من صفحة الاستعلام.</p><div><button className="secondary" disabled={mutating} onClick={()=>setDeleteId(null)}>رجوع</button><button className="danger" disabled={mutating} onClick={remove}>{mutating?"جاري الحذف…":"حذف الصورة"}</button></div></div></dialog>
     <dialog ref={zoomDialog} className="zoom-dialog" onCancel={()=>setZoom(false)}><button className="zoom-close" onClick={()=>setZoom(false)} aria-label="إغلاق الصورة"><X/></button>{product?.images[activeImage] && <img src={product.images[activeImage].url} alt={product.description||product.name}/>}</dialog>
-    <dialog ref={scannerDialog} className="scanner-dialog" {...({closedby:"any"} as any)} onCancel={()=>setScannerOpen(false)} onClick={e=>{if(e.target===e.currentTarget)setScannerOpen(false);}}>
+    <dialog
+      ref={scannerDialog}
+      className="scanner-dialog"
+      aria-labelledby="scanner-modal-title"
+      {...({closedby:"any"} as any)}
+      onCancel={()=>setScannerOpen(false)}
+      onPointerDown={e=>{scannerBackdropDown.current=e.target===e.currentTarget;}}
+      onClick={e=>{const hit=e.target===e.currentTarget&&scannerBackdropDown.current;scannerBackdropDown.current=false;if(hit&&!("closedBy" in HTMLDialogElement.prototype))setScannerOpen(false);}}
+    >
       <div className="scanner-modal-body">
         <div className="scanner-modal-header">
           <div className="scanner-modal-title">
             <ScanBarcode size={22}/>
             <div>
-              <h3>قارئ باركود الأصناف</h3>
-              <p>وجّه الكاميرا نحو باركود الصنف أو التيكت</p>
+              <h3 id="scanner-modal-title">قارئ باركود الأصناف</h3>
+              <p>وجّه الكاميرا على بُعد 15–20 سم نحو باركود الصنف بوضوح</p>
             </div>
           </div>
           <button type="button" className="scanner-close-btn" onClick={()=>setScannerOpen(false)} aria-label="إغلاق الماسح"><X size={20}/></button>
@@ -726,25 +937,45 @@ function App() {
         </div>}
         {cameraError ? (
           <div className="scanner-error-box">
-            <h4>الكاميرا المباشرة تتطلب اتصال HTTPS آمن</h4>
-            <p>متصفحات الهواتف تمنع فتح الفيديو المباشر عبر روابط الشبكة الداخلية (HTTP) لأسباب أمنية. يمكنك تصوير الباركود الآن مباشرة كصورة وسيقوم النظام بقراءته فوراً:</p>
-            <label className="scanner-snap-btn">
-              {scanningFile ? <LoaderCircle className="spin" size={18}/> : <Camera size={18}/>}
-              <span>{scanningFile ? "جاري قراءة الباركود…" : (capturedPreview ? "إعادة تصوير الباركود" : "تصوير الباركود الآن")}</span>
-              <input type="file" accept="image/*" capture="environment" disabled={scanningFile} onChange={e=>{const f=e.target.files?.[0];if(f)void handleScanFile(f);e.target.value="";}}/>
-            </label>
-            <details className="scanner-camera-hint">
-              <summary>💡 كيف تشغل الكاميرا المباشرة بدون تصوير؟</summary>
-              <div className="camera-hint-box">
-                <p>متصفح كروم يمنع الفيديو المباشر عبر روابط الشبكة الداخلية (HTTP). لتفعيله مرة واحدة وسريعة في هاتفك:</p>
-                <ol>
-                  <li>افتح تبويب جديد في Google Chrome واكتب: <code>chrome://flags</code></li>
-                  <li>ابحث عن: <code>unsafely-treat-insecure-origin-as-secure</code></li>
-                  <li>اكتب الرابط: <code>http://192.168.1.11:3212</code> وفعّله <b>Enabled</b></li>
-                  <li>اضغط <b>Relaunch</b> لإعادة تشغيل كروم وستفتح الكاميرا المباشرة فوراً كفيديو حي دون الحاجة لالتقاط صور.</li>
-                </ol>
-              </div>
-            </details>
+            <h4>
+              {cameraErrorKind==="insecure"
+                ? "الكاميرا المباشرة تتطلب اتصال HTTPS آمن"
+                : cameraErrorKind==="permission"
+                  ? "إذن الكاميرا غير مفعّل"
+                  : "تعذر تشغيل الكاميرا المباشرة"}
+            </h4>
+            <p>
+              {cameraErrorKind==="insecure"
+                ? "متصفحات الهواتف (iPhone وAndroid) تمنع البث المباشر عبر روابط الشبكة الداخلية (HTTP). استخدم «تصوير الباركود الآن» لالتقاط صورة واضحة بكاميرا الهاتف وقراءتها فوراً:"
+                : cameraError}
+            </p>
+            <div className="scanner-error-actions">
+              {cameraErrorKind!=="insecure" && (
+                <button type="button" className="scanner-retry-btn" onClick={()=>scannerRetryRef.current?.()}>
+                  <RefreshCw size={16}/>
+                  <span>إعادة محاولة الكاميرا</span>
+                </button>
+              )}
+              <label className="scanner-snap-btn">
+                {scanningFile ? <LoaderCircle className="spin" size={18}/> : <Camera size={18}/>}
+                <span>{scanningFile ? "جاري قراءة الباركود…" : (capturedPreview ? "إعادة تصوير الباركود" : "تصوير الباركود الآن")}</span>
+                <input type="file" accept="image/*" capture="environment" disabled={scanningFile} onChange={e=>{const f=e.target.files?.[0];if(f)void handleScanFile(f);e.target.value="";}}/>
+              </label>
+            </div>
+            {cameraErrorKind==="insecure" && (
+              <details className="scanner-camera-hint">
+                <summary>💡 تشغيل الكاميرا المباشرة على iPhone أو Android</summary>
+                <div className="camera-hint-box">
+                  <p><b>لأجهزة iPhone (Safari):</b> لا يدعم سفاري البث المباشر بدون <code>HTTPS</code>؛ زر <b>«تصوير الباركود الآن»</b> أعلاه يفتح كاميرا الأيفون الأصلية بدقة عالية ويعمل فوراً، أو اطلب من المسؤول تفعيل رابط <code>HTTPS</code>.</p>
+                  <p><b>لأجهزة Android (Google Chrome):</b> لتفعيل البث المباشر على الشبكة الداخلية:</p>
+                  <ol>
+                    <li>افتح تبويب جديد في Google Chrome واكتب: <code>chrome://flags</code></li>
+                    <li>ابحث عن: <code>unsafely-treat-insecure-origin-as-secure</code></li>
+                    <li>أضف الرابط: <code>{typeof window!=="undefined"?window.location.origin:"http://192.168.1.11:3212"}</code> وفعّله <b>Enabled</b> ثم <b>Relaunch</b>.</li>
+                  </ol>
+                </div>
+              </details>
+            )}
           </div>
         ) : (
           <div className="scanner-actions-bar">
