@@ -11,10 +11,12 @@ export const DEFAULT_IMAGE_PROMPT =
   "Create a professional e-commerce studio catalog photo of the exact product shown: completely unfold, smooth out, and stage the full item upright in a centered front-facing flat-lay view showing the complete garment silhouette, collar, torso, hem, and both sleeves fully extended and clearly visible (if sleeved). Keep exact product colors, fabric/material texture, stitching, logos, and design unchanged, isolated on a clean neutral studio background with balanced natural lighting and crisp focus, outputting only the edited high-resolution image.";
 
 export interface ImageProcessingConfig {
+  dataDir: string;
   prompt: string;
   geminiUrl: string;
   profileRoot: string;
   profileDir: string;
+  loginProfileDir: string;
   headless: boolean;
   navigationTimeoutMs: number;
   uploadTimeoutMs: number;
@@ -256,10 +258,12 @@ export function getImageProcessingConfig(options: {
     process.env.GEMINI_PROFILE_DIR ?? resolve(options.dataDir, "gemini-auth"),
   );
   return {
+    dataDir: resolve(options.dataDir),
     prompt: getConfiguredImagePrompt(options.db, options.dataDir, options.root),
     geminiUrl: process.env.GEMINI_WEB_URL || fileCfg.geminiUrl || "https://gemini.google.com/app",
     profileRoot,
     profileDir: join(profileRoot, "profile"),
+    loginProfileDir: join(profileRoot, "login-profile"),
     headless: true,
     navigationTimeoutMs: positiveInt(process.env.GEMINI_NAV_TIMEOUT_MS, fileCfg.navigationTimeoutMs ?? 30_000),
     uploadTimeoutMs: positiveInt(process.env.GEMINI_UPLOAD_TIMEOUT_MS, fileCfg.uploadTimeoutMs ?? 30_000),

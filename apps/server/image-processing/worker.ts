@@ -443,15 +443,27 @@ export class ImageProcessingWorker {
         prompt,
       });
 
-      let productCode = job.product_code?.trim() || "";
-      if (!productCode && this.options.reader) {
-        const item = await this.options.reader.get(job.company_id, job.product_id, job.unit_id).catch(() => undefined);
-        productCode = item?.code?.trim() || "";
-      }
       const stampSettings = this.db
-        .prepare("SELECT watermark_logo FROM portal_settings WHERE id=1")
-        .get() as { watermark_logo: Buffer | Uint8Array | null } | undefined;
-      const logoBuffer = stampSettings?.watermark_logo ? Buffer.from(stampSettings.watermark_logo) : null;
+        .prepare("SELECT watermark_logo, watermark_logo_enabled, watermark_code_enabled FROM portal_settings WHERE id=1")
+        .get() as
+        | {
+            watermark_logo: Buffer | Uint8Array | null;
+            watermark_logo_enabled?: number | null;
+            watermark_code_enabled?: number | null;
+          }
+        | undefined;
+      const logoEnabled = (stampSettings?.watermark_logo_enabled ?? 1) !== 0;
+      const codeEnabled = (stampSettings?.watermark_code_enabled ?? 1) !== 0;
+      let productCode = "";
+      if (codeEnabled) {
+        productCode = job.product_code?.trim() || "";
+        if (!productCode && this.options.reader) {
+          const item = await this.options.reader.get(job.company_id, job.product_id, job.unit_id).catch(() => undefined);
+          productCode = item?.code?.trim() || "";
+        }
+      }
+      const logoBuffer =
+        logoEnabled && stampSettings?.watermark_logo ? Buffer.from(stampSettings.watermark_logo) : null;
       const finalBuffer = await applyStudioCatalogStamp(result.buffer, {
         logoBuffer,
         productCode,

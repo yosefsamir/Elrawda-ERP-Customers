@@ -81,12 +81,14 @@ export function registerPortalAdmin(
   });
   app.get("/api/portal/settings", async request => {
     const id=company(request);
-    const settings=db.prepare("SELECT company_id,enabled,origin,image_prompt,image_processing_enabled,watermark_logo IS NOT NULL AS has_watermark_logo FROM portal_settings WHERE id=1").get() as any;
+    const settings=db.prepare("SELECT company_id,enabled,origin,image_prompt,image_processing_enabled,watermark_logo IS NOT NULL AS has_watermark_logo,watermark_logo_enabled,watermark_code_enabled FROM portal_settings WHERE id=1").get() as any;
     const imageCfg=getImageProcessingConfig({db,dataDir,root});
     return { enabled: Boolean(settings?.enabled), origin:settings?.origin || "",
       selected: true,
       imageProcessingEnabled: Boolean(settings?.image_processing_enabled ?? 1),
       hasWatermarkLogo: Boolean(settings?.has_watermark_logo),
+      watermarkLogoEnabled: Boolean(settings?.watermark_logo_enabled ?? 1),
+      watermarkCodeEnabled: Boolean(settings?.watermark_code_enabled ?? 1),
       imagePrompt: getConfiguredImagePrompt(db, dataDir, root),
       customImagePrompt: settings?.image_prompt || "",
       defaultImagePrompt: DEFAULT_IMAGE_PROMPT,
@@ -121,8 +123,10 @@ export function registerPortalAdmin(
     const id = company(request);
     const imageCfg = getImageProcessingConfig({ db, dataDir, root });
     const watermarkRow = db
-      .prepare("SELECT watermark_logo IS NOT NULL AS has_watermark_logo FROM portal_settings WHERE id=1")
-      .get() as { has_watermark_logo: number } | undefined;
+      .prepare("SELECT watermark_logo IS NOT NULL AS has_watermark_logo, watermark_logo_enabled, watermark_code_enabled FROM portal_settings WHERE id=1")
+      .get() as
+      | { has_watermark_logo: number; watermark_logo_enabled?: number | null; watermark_code_enabled?: number | null }
+      | undefined;
     const jobs = db.prepare(
       `SELECT id, product_id, unit_id, product_image_id, status, retry_count, max_retries,
               error_code, error_message, created_at, updated_at, completed_at
@@ -134,6 +138,8 @@ export function registerPortalAdmin(
     return {
       imageProcessingEnabled: isImageProcessingEnabled(db),
       hasWatermarkLogo: Boolean(watermarkRow?.has_watermark_logo),
+      watermarkLogoEnabled: Boolean(watermarkRow?.watermark_logo_enabled ?? 1),
+      watermarkCodeEnabled: Boolean(watermarkRow?.watermark_code_enabled ?? 1),
       imagePrompt: getConfiguredImagePrompt(db, dataDir, root),
       defaultImagePrompt: DEFAULT_IMAGE_PROMPT,
       geminiStatus: getImageProcessingStatusSummary(db, imageCfg.profileRoot, id),
@@ -198,6 +204,32 @@ export function registerPortalAdmin(
       });
     })();
     return { ok: true, hasWatermarkLogo: false };
+  });
+  app.put("/api/portal/image-processing/stamp-options", async request => {
+    const id = company(request);
+    const body = z
+      .object({
+        watermarkLogoEnabled: z.boolean().optional(),
+        watermarkCodeEnabled: z.boolean().optional(),
+      })
+      .parse(request.body);
+    const current = db
+      .prepare("SELECT watermark_logo_enabled, watermark_code_enabled FROM portal_settings WHERE id=1")
+      .get() as { watermark_logo_enabled?: number | null; watermark_code_enabled?: number | null } | undefined;
+    const watermarkLogoEnabled = body.watermarkLogoEnabled ?? Boolean(current?.watermark_logo_enabled ?? 1);
+    const watermarkCodeEnabled = body.watermarkCodeEnabled ?? Boolean(current?.watermark_code_enabled ?? 1);
+    db.transaction(() => {
+      db.prepare("UPDATE portal_settings SET watermark_logo_enabled=?, watermark_code_enabled=? WHERE id=1").run(
+        Number(watermarkLogoEnabled),
+        Number(watermarkCodeEnabled),
+      );
+      auditPortal(db, id, "portal.image_processing.stamp_options_updated", {
+        operatorId: request.operatorId,
+        watermarkLogoEnabled,
+        watermarkCodeEnabled,
+      });
+    })();
+    return { ok: true, watermarkLogoEnabled, watermarkCodeEnabled };
   });
   app.put("/api/portal/image-processing/prompt", async request => {
     const id = company(request);

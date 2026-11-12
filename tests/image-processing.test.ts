@@ -30,6 +30,13 @@ import {
   isInteractiveGeminiSessionAuthenticated,
   type ImageProcessor,
 } from "../apps/server/image-processing/gemini-client.js";
+import {
+  getEncryptedStorageStatePath,
+  getGeminiProfileStatus,
+  getSyncedStorageStateTimestamp,
+  saveEncryptedGeminiStorageState,
+  markGeminiAuthenticated,
+} from "../apps/server/image-processing/profile.js";
 import { chromium } from "playwright";
 import { ImageProcessingWorker, enqueueImageProcessingJob } from "../apps/server/image-processing/worker.js";
 
@@ -1917,6 +1924,447 @@ test("Admin watermark logo API, worker end-to-end stamping with reader fallback,
     reopenedDb.close();
     assert.ok(restoredRow.watermark_logo && restoredRow.watermark_logo.length > 0);
     assert.equal(restoredRow.watermark_logo_type, "image/png");
+  } finally {
+    await portal.close().catch(() => {});
+    await admin.close().catch(() => {});
+    try {
+      fixture.db.close();
+    } catch {}
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Encrypted storageState syncs cookies, localStorage, and User-Agent once and respects rotation + re-login", async () => {
+  const root = mkdtempSync(join(tmpdir(), "imgproc-storagestate-"));
+  const prevUrl = process.env.GEMINI_WEB_URL;
+  const prevProfile = process.env.GEMINI_PROFILE_DIR;
+
+  let expectedSid = "desktop_secret_123";
+  let expectRotatedCookie = false;
+  const seenCookies: string[] = [];
+  const seenUserAgents: string[] = [];
+  const sampleOutPng = await makeSolidPng(320, 320, { r: 25, g: 185, b: 95 });
+  const sampleInPng = await makeSolidPng(200, 200, { r: 210, g: 40, b: 40 });
+
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const reqUrl = req.url || "/";
+    if (reqUrl.startsWith("/set-desktop-cookie")) {
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Set-Cookie": `sid=${expectedSid}; Path=/; Max-Age=3600; HttpOnly`,
+      });
+      res.end(
+        `<!doctype html><html><body><script>localStorage.setItem("gemini_pref", "desktop_origin_value");</script>ok</body></html>`,
+      );
+      return;
+    }
+    if (reqUrl.startsWith("/generated-preview.png")) {
+      res.writeHead(200, { "Content-Type": "image/png" });
+      res.end(sampleOutPng);
+      return;
+    }
+    if (reqUrl.startsWith("/generated-fullres.png")) {
+      res.writeHead(200, {
+        "Content-Type": "image/png",
+        "Content-Disposition": 'attachment; filename="gemini-generated-fullres.png"',
+      });
+      res.end(sampleOutPng);
+      return;
+    }
+    if (reqUrl.startsWith("/submit") && req.method === "POST") {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end('{"ok":true}');
+      });
+      return;
+    }
+    if (reqUrl.startsWith("/app")) {
+      const cookieHeader = String(req.headers.cookie ?? "");
+      seenCookies.push(cookieHeader);
+      seenUserAgents.push(String(req.headers["user-agent"] ?? ""));
+      const hasExpectedSid = cookieHeader.includes(`sid=${expectedSid}`);
+      const hasRotated = !expectRotatedCookie || cookieHeader.includes("rotated_tok=from_service_1");
+      if (!hasExpectedSid || !hasRotated) {
+        res.writeHead(302, { Location: "https://accounts.google.com/ServiceLogin" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        ...(expectRotatedCookie ? {} : { "Set-Cookie": "rotated_tok=from_service_1; Path=/; Max-Age=3600; HttpOnly" }),
+      });
+      res.end(`<!doctype html>
+<html><body>
+  <main id="chat">
+    <button type="button" id="toolsBtn" aria-label="Upload & tools">Upload &amp; tools</button>
+    <div id="toolsMenu" role="menu" style="display:none">
+      <button type="button" id="uploadMenuItem" role="menuitem">Upload files</button>
+    </div>
+    <input id="fileInput" type="file" accept="image/*" style="display:none" />
+    <div id="previewMount"></div>
+    <div id="promptBox" role="textbox" aria-label="Enter a prompt for Gemini" contenteditable="true"></div>
+    <button type="button" id="sendBtn" aria-label="Send message">Send</button>
+  </main>
+  <script>
+    const pref = localStorage.getItem("gemini_pref");
+    if (pref !== "desktop_origin_value") {
+      document.body.innerHTML = "MISSING_LOCAL_STORAGE:" + String(pref);
+    } else {
+      const toolsBtn = document.getElementById("toolsBtn");
+      const toolsMenu = document.getElementById("toolsMenu");
+      const uploadMenuItem = document.getElementById("uploadMenuItem");
+      const fileInput = document.getElementById("fileInput");
+      const previewMount = document.getElementById("previewMount");
+      const promptBox = document.getElementById("promptBox");
+      const sendBtn = document.getElementById("sendBtn");
+      const chat = document.getElementById("chat");
+      let uploadedSize = 0;
+
+      toolsBtn.addEventListener("click", () => { toolsMenu.style.display = "block"; });
+      uploadMenuItem.addEventListener("click", () => { toolsMenu.style.display = "none"; fileInput.click(); });
+      fileInput.addEventListener("change", () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        uploadedSize = file.size;
+        const preview = document.createElement("uploader-file-preview");
+        preview.textContent = file.name;
+        previewMount.appendChild(preview);
+      });
+      sendBtn.addEventListener("click", async () => {
+        const promptText = (promptBox.innerText || promptBox.textContent || "").trim();
+        await fetch("/submit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: promptText, uploadedSize })
+        });
+        const turn = document.createElement("model-response");
+        turn.setAttribute("aria-busy", "true");
+        const stopBtn = document.createElement("button");
+        stopBtn.setAttribute("aria-label", "Stop response");
+        stopBtn.textContent = "Stop";
+        turn.appendChild(stopBtn);
+        chat.appendChild(turn);
+        setTimeout(() => {
+          stopBtn.remove();
+          turn.removeAttribute("aria-busy");
+          const img = document.createElement("img");
+          img.src = "/generated-preview.png?ts=" + Date.now();
+          img.alt = "Generated product image";
+          const dl = document.createElement("a");
+          dl.href = "/generated-fullres.png?ts=" + Date.now();
+          dl.setAttribute("download", "gemini-generated-fullres.png");
+          dl.setAttribute("aria-label", "Download full size image");
+          dl.textContent = "Download full size";
+          turn.appendChild(img);
+          turn.appendChild(dl);
+        }, 250);
+      });
+    }
+  </script>
+</body></html>`);
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end("ok");
+  });
+
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const addr = server.address();
+  assert.ok(addr && typeof addr === "object");
+  const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+  const dataDir = join(root, "data");
+  const profileRoot = join(root, "gemini-auth");
+  mkdirSync(dataDir, { recursive: true });
+  const db = openDatabase(join(dataDir, "app.sqlite"));
+
+  try {
+    process.env.GEMINI_WEB_URL = `${baseUrl}/app`;
+    process.env.GEMINI_PROFILE_DIR = profileRoot;
+    const cfg = getImageProcessingConfig({ db, dataDir, root });
+    const executablePath = resolveChromiumExecutable(root);
+
+    // 1. Capture desktop login session into login-profile and export encrypted storageState
+    const loginCtx = await chromium.launchPersistentContext(cfg.loginProfileDir, {
+      ...(executablePath ? { executablePath } : {}),
+      headless: true,
+    });
+    try {
+      const p = loginCtx.pages()[0] || (await loginCtx.newPage());
+      await p.goto(`${baseUrl}/set-desktop-cookie`, { waitUntil: "domcontentloaded" });
+      const desktopState = await loginCtx.storageState();
+      const desktopSnap = saveEncryptedGeminiStorageState({
+        profileRoot: cfg.profileRoot,
+        dataDir: cfg.dataDir,
+        storageState: desktopState,
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) HeadlessChrome/131.0.0.0 Safari/537.36",
+        savedAt: "2026-11-12T00:00:01.000Z",
+      });
+      assert.equal(desktopSnap.savedAt, "2026-11-12T00:00:01.000Z");
+      markGeminiAuthenticated(cfg.profileRoot);
+    } finally {
+      await loginCtx.close();
+    }
+
+    const encPath = getEncryptedStorageStatePath(cfg.profileRoot);
+    assert.ok(existsSync(encPath), "encrypted storage-state.enc should exist");
+    const rawEnc = readFileSync(encPath, "utf8");
+    assert.ok(!rawEnc.includes("desktop_secret_123"), "cookies must not be stored in plaintext");
+    assert.ok(!rawEnc.includes("desktop_origin_value"), "localStorage must not be stored in plaintext");
+    assert.equal(getGeminiProfileStatus(cfg.profileRoot).profileExists, true);
+
+    const sampleInputPath = join(root, "sample.png");
+    writeFileSync(sampleInputPath, sampleInPng);
+
+    // 2. Service profile (profileDir != loginProfileDir) syncs cookies + localStorage + normalized UA
+    const client1 = new GeminiBrowserClient(cfg, root);
+    try {
+      const res1 = await client1.process({ jobId: "sync-1", sourceImagePath: sampleInputPath, prompt: "studio" });
+      assert.ok(res1.buffer.length > 50);
+    } finally {
+      await client1.close();
+    }
+    assert.equal(getSyncedStorageStateTimestamp(cfg.profileRoot), "2026-11-12T00:00:01.000Z");
+    assert.ok(!seenUserAgents[0]!.includes("HeadlessChrome/"), "HeadlessChrome/ must be stripped from UA");
+    assert.ok(seenUserAgents[0]!.includes("Chrome/131.0.0.0"), "normalized desktop UA must be sent");
+
+    // 3. Subsequent run keeps rotated_tok set by server without overwriting profile from stale snapshot
+    expectRotatedCookie = true;
+    const client2 = new GeminiBrowserClient(cfg, root);
+    try {
+      const res2 = await client2.process({ jobId: "sync-2", sourceImagePath: sampleInputPath, prompt: "studio" });
+      assert.ok(res2.buffer.length > 50);
+    } finally {
+      await client2.close();
+    }
+    assert.ok(seenCookies[seenCookies.length - 1]!.includes("rotated_tok=from_service_1"));
+
+    // 4. Fresh login (newer savedAt) re-syncs fresh sid and clears old rotated cookie
+    expectedSid = "desktop_fresh_999";
+    expectRotatedCookie = false;
+    const loginCtx2 = await chromium.launchPersistentContext(cfg.loginProfileDir, {
+      ...(executablePath ? { executablePath } : {}),
+      headless: true,
+    });
+    try {
+      const p = loginCtx2.pages()[0] || (await loginCtx2.newPage());
+      await p.goto(`${baseUrl}/set-desktop-cookie`, { waitUntil: "domcontentloaded" });
+      saveEncryptedGeminiStorageState({
+        profileRoot: cfg.profileRoot,
+        dataDir: cfg.dataDir,
+        storageState: await loginCtx2.storageState(),
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/132.0.0.0 Safari/537.36",
+        savedAt: "2026-11-12T00:05:00.000Z",
+      });
+    } finally {
+      await loginCtx2.close();
+    }
+
+    const client3 = new GeminiBrowserClient(cfg, root);
+    try {
+      const res3 = await client3.process({ jobId: "sync-3", sourceImagePath: sampleInputPath, prompt: "studio" });
+      assert.ok(res3.buffer.length > 50);
+    } finally {
+      await client3.close();
+    }
+    assert.equal(getSyncedStorageStateTimestamp(cfg.profileRoot), "2026-11-12T00:05:00.000Z");
+    const lastCookie = seenCookies[seenCookies.length - 1]!;
+    assert.ok(lastCookie.includes("sid=desktop_fresh_999"));
+    assert.ok(!lastCookie.includes("rotated_tok=from_service_1"), "fresh sync must clear old rotated cookies");
+  } finally {
+    restoreEnvVar("GEMINI_WEB_URL", prevUrl);
+    restoreEnvVar("GEMINI_PROFILE_DIR", prevProfile);
+    db.close();
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Stamp options independently control Logo & Code on processed images and stay off when Gemini is disabled", async () => {
+  const root = mkdtempSync(join(tmpdir(), "imgproc-stamp-toggles-"));
+  const fixture = setupPortalFixtures(root);
+  const generatedPng = await makeSolidPng(800, 900, { r: 210, g: 225, b: 215 });
+  const samplePng = await makeSolidPng(400, 400, { r: 190, g: 40, b: 40 });
+  const blueLogoPng = await makeSolidPng(140, 80, { r: 10, g: 70, b: 245 });
+
+  const reader = createTestReader();
+  let processCalls = 0;
+  const mockProcessor: ImageProcessor = {
+    async process() {
+      processCalls++;
+      return { buffer: generatedPng, width: 800, height: 900, format: "png" };
+    },
+  };
+
+  const worker = new ImageProcessingWorker(fixture.db, {
+    dataDir: fixture.dataDir,
+    root,
+    reader,
+    processor: mockProcessor,
+  });
+
+  const admin = Fastify();
+  registerPortalAdmin(admin, fixture.db, {
+    dataDir: fixture.dataDir,
+    root,
+    reader,
+    onResumeWorker: () => worker.resumeAfterAuth(),
+    onJobQueued: () => worker.notify(),
+    onToggleProcessing: (enabled) => worker.setProcessingEnabled(enabled),
+  });
+  await admin.listen({ port: 0, host: "127.0.0.1" });
+  const adminAddr = admin.server.address();
+  assert.ok(adminAddr && typeof adminAddr === "object");
+  const adminUrl = `http://127.0.0.1:${adminAddr.port}`;
+
+  const portal = await createPortal({
+    db: fixture.db,
+    dataDir: fixture.dataDir,
+    root,
+    reader,
+    onJobQueued: () => worker.notify(),
+  });
+  await portal.listen({ port: 0, host: "127.0.0.1" });
+  const portalAddr = portal.server.address();
+  assert.ok(portalAddr && typeof portalAddr === "object");
+  const portalUrl = `http://127.0.0.1:${portalAddr.port}`;
+
+  async function inspectCornerSignals(imgId: string) {
+    const res = await fetch(`${portalUrl}/api/images/${imgId}`);
+    assert.equal(res.status, 200);
+    const buf = Buffer.from(await res.arrayBuffer());
+    const raw = await sharp(buf).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    let blueLogoPixels = 0;
+    for (let y = 20; y < 170; y++) {
+      for (let x = 600; x < 780; x++) {
+        const idx = (y * raw.info.width + x) * 3;
+        if (raw.data[idx + 2]! > 160 && raw.data[idx]! < 60) blueLogoPixels++;
+      }
+    }
+    let darkCodePixels = 0;
+    for (let y = raw.info.height - 90; y < raw.info.height - 15; y++) {
+      for (let x = 25; x < 260; x++) {
+        const idx = (y * raw.info.width + x) * 3;
+        if (raw.data[idx]! < 70 && raw.data[idx + 1]! < 70 && raw.data[idx + 2]! < 70) darkCodePixels++;
+      }
+    }
+    return { blueLogoPixels, darkCodePixels, width: raw.info.width, height: raw.info.height };
+  }
+
+  try {
+    // Upload logo & check defaults
+    const logoForm = new FormData();
+    logoForm.append("logo", new Blob([new Uint8Array(blueLogoPng)], { type: "image/png" }), "logo.png");
+    const upLogo = await fetch(`${adminUrl}/api/portal/image-processing/watermark-logo`, {
+      method: "POST",
+      body: logoForm,
+    });
+    assert.equal(upLogo.status, 200);
+
+    const defaults = (await (await fetch(`${adminUrl}/api/portal/settings`)).json()) as any;
+    assert.equal(defaults.watermarkLogoEnabled, true);
+    assert.equal(defaults.watermarkCodeEnabled, true);
+
+    const cookie = await loginPortalUser(portalUrl, "photographer1", "StrongPass#123");
+    const imageIdForJob = (jobId: string) => {
+      const row = fixture.db
+        .prepare("SELECT product_image_id FROM image_processing_jobs WHERE id=?")
+        .get(jobId) as { product_image_id: string };
+      return row.product_image_id;
+    };
+
+    // 1. Logo OFF, Code ON
+    const put1 = await fetch(`${adminUrl}/api/portal/image-processing/stamp-options`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watermarkLogoEnabled: false, watermarkCodeEnabled: true }),
+    });
+    assert.equal(put1.status, 200);
+    const up1 = await uploadMultipartImage(portalUrl, "/api/products/1/10/images", "POST", cookie, samplePng);
+    assert.equal(up1.status, 200);
+    await worker.tick();
+    const sig1 = await inspectCornerSignals(imageIdForJob(up1.json.jobId as string));
+    assert.equal(sig1.blueLogoPixels, 0, "logo must NOT appear when watermarkLogoEnabled is false");
+    assert.ok(sig1.darkCodePixels > 30, "code must appear when watermarkCodeEnabled is true");
+
+    // 2. Logo ON, Code OFF
+    const put2 = await fetch(`${adminUrl}/api/portal/image-processing/stamp-options`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watermarkLogoEnabled: true, watermarkCodeEnabled: false }),
+    });
+    assert.equal(put2.status, 200);
+    const up2 = await uploadMultipartImage(portalUrl, "/api/products/1/10/images", "POST", cookie, samplePng);
+    assert.equal(up2.status, 200);
+    await worker.tick();
+    const sig2 = await inspectCornerSignals(imageIdForJob(up2.json.jobId as string));
+    assert.ok(
+      sig2.blueLogoPixels > 100,
+      `logo must appear when watermarkLogoEnabled is true (got ${JSON.stringify(sig2)})`,
+    );
+    assert.equal(sig2.darkCodePixels, 0, "code must NOT appear when watermarkCodeEnabled is false");
+
+    // 3. Both OFF -> processed cleanly without any corner stamps
+    await fetch(`${adminUrl}/api/portal/image-processing/stamp-options`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watermarkLogoEnabled: false, watermarkCodeEnabled: false }),
+    });
+    const up3 = await uploadMultipartImage(portalUrl, "/api/products/1/10/images", "POST", cookie, samplePng);
+    assert.equal(up3.status, 200);
+    await worker.tick();
+    const sig3 = await inspectCornerSignals(imageIdForJob(up3.json.jobId as string));
+    assert.equal(sig3.blueLogoPixels, 0);
+    assert.equal(sig3.darkCodePixels, 0);
+
+    // 4. Turn both ON, then disable master Gemini toggle -> original image untouched, no stamps, no job
+    await fetch(`${adminUrl}/api/portal/image-processing/stamp-options`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watermarkLogoEnabled: true, watermarkCodeEnabled: true }),
+    });
+    await fetch(`${adminUrl}/api/portal/image-processing/enabled`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    const callsBeforeOff = processCalls;
+    const knownIds = new Set(
+      (fixture.db.prepare("SELECT id FROM product_images WHERE product_id='1'").all() as Array<{ id: string }>).map(
+        (r) => r.id,
+      ),
+    );
+    const up4 = await uploadMultipartImage(portalUrl, "/api/products/1/10/images", "POST", cookie, samplePng);
+    assert.equal(up4.status, 200);
+    assert.equal(up4.json.jobId ?? null, null, "no job should be queued when Gemini is disabled");
+    await worker.tick();
+    assert.equal(processCalls, callsBeforeOff);
+    const up4NewImg = (up4.json.images as Array<{ id: string }>).find((img) => !knownIds.has(img.id));
+    assert.ok(up4NewImg, "new uploaded image should exist");
+    const rawUnstamped = await fetch(`${portalUrl}/api/images/${up4NewImg.id}`);
+    const center = await sampleCenterRgb(Buffer.from(await rawUnstamped.arrayBuffer()));
+    assert.equal(center.width, 400);
+    assert.ok(center.r > 160 && center.g < 70, "original unstamped red image must remain as-is when Gemini is off");
+
+    // 5. Verify schema stays at v4 and backup/restore preserves stamp option booleans
+    const backupDir = join(root, "backup-toggles");
+    await createBackup(fixture.dataDir, backupDir, true);
+    assert.equal(verifyBackup(backupDir), 4);
+    await fetch(`${adminUrl}/api/portal/image-processing/stamp-options`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watermarkLogoEnabled: false, watermarkCodeEnabled: false }),
+    });
+    fixture.db.close();
+    await restoreBackup(fixture.dataDir, backupDir);
+    const restoredDb = openDatabase(join(fixture.dataDir, "app.sqlite"));
+    const row = restoredDb
+      .prepare("SELECT watermark_logo_enabled, watermark_code_enabled FROM portal_settings WHERE id=1")
+      .get() as { watermark_logo_enabled: number; watermark_code_enabled: number };
+    restoredDb.close();
+    assert.equal(row.watermark_logo_enabled, 1);
+    assert.equal(row.watermark_code_enabled, 1);
   } finally {
     await portal.close().catch(() => {});
     await admin.close().catch(() => {});

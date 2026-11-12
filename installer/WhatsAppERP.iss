@@ -1,4 +1,4 @@
-﻿; WhatsApp-ERP Inno Setup Script
+; WhatsApp-ERP Inno Setup Script
 ; Builds Windows Setup executable: WhatsAppERP-Setup-1.0.4.exe
 
 #ifndef MyAppName
@@ -100,6 +100,8 @@ Name: "{app}"; Flags: uninsalwaysuninstall
 ; Shipped uninstallation script and common helpers installed to application directory for reliable task and process cleanup
 Source: "{#MyReleaseDir}\scripts\windows\uninstall.ps1"; DestDir: "{app}\scripts\windows"; Flags: ignoreversion
 Source: "{#MyReleaseDir}\scripts\windows\common.ps1"; DestDir: "{app}\scripts\windows"; Flags: ignoreversion
+Source: "{#MyReleaseDir}\scripts\windows\gemini-login.bat"; DestDir: "{app}\scripts\windows"; Flags: ignoreversion
+Source: "{#MyReleaseDir}\scripts\windows\gemini-login.ps1"; DestDir: "{app}\scripts\windows"; Flags: ignoreversion
 ; One archive instead of thousands of files: PrepareToInstall must deploy before Setup commits anything,
 ; and only archive extraction can show real progress at that point
 Source: "{#MyPayloadArchive}"; DestName: "payload.7z"; Flags: dontcopy nocompression
@@ -107,6 +109,7 @@ Source: "{#MyPayloadArchive}"; DestName: "payload.7z"; Flags: dontcopy nocompres
 [Icons]
 Name: "{autoprograms}\{#MyAppName}\WhatsApp-ERP Web Interface"; Filename: "{#MyAppURL}"
 Name: "{autoprograms}\{#MyAppName}\Installation Logs"; Filename: "{commonappdata}\WhatsApp-ERP\logs"
+Name: "{autoprograms}\{#MyAppName}\Gemini Web Login"; Filename: "{app}\scripts\windows\gemini-login.bat"; WorkingDir: "{app}\scripts\windows"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{#MyAppURL}"; Tasks: desktopicon
 
 [Run]

@@ -1,9 +1,11 @@
 import Database from "better-sqlite3";
-import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
+import type { BrowserContext } from "playwright";
+import { localSecretStore } from "../security.js";
 
 const exec = promisify(execFile);
 
@@ -75,6 +77,110 @@ export async function cleanGeminiProfileBrowsers(profileDir: string) {
 /**
  * Manages an exclusive OS-level lease and non-secret session state markers for the Gemini browser profile.
  */
+export interface GeminiProfileLockOptions {
+  profileDir?: string;
+  lockName?: string;
+}
+
+export type GeminiStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
+
+export interface GeminiEncryptedAuthSnapshot {
+  version: 1;
+  savedAt: string;
+  userAgent: string;
+  storageState: GeminiStorageState;
+}
+
+export function getEncryptedStorageStatePath(profileRoot: string): string {
+  return join(resolve(profileRoot), ".locks", "storage-state.enc");
+}
+
+export function getSyncedStorageStatePath(profileRoot: string): string {
+  return join(resolve(profileRoot), ".locks", "service-synced.json");
+}
+
+export function saveEncryptedGeminiStorageState(options: {
+  profileRoot: string;
+  dataDir: string;
+  storageState: GeminiStorageState;
+  userAgent: string;
+  savedAt?: string;
+}): GeminiEncryptedAuthSnapshot {
+  const locks = join(resolve(options.profileRoot), ".locks");
+  const resolvedDataDir = resolve(options.dataDir);
+  mkdirSync(locks, { recursive: true, mode: 0o700 });
+  mkdirSync(resolvedDataDir, { recursive: true, mode: 0o700 });
+
+  const snapshot: GeminiEncryptedAuthSnapshot = {
+    version: 1,
+    savedAt: options.savedAt ?? new Date().toISOString(),
+    userAgent: options.userAgent,
+    storageState: options.storageState,
+  };
+  const encrypted = localSecretStore(resolvedDataDir).encrypt(snapshot);
+  const target = getEncryptedStorageStatePath(options.profileRoot);
+  const tmp = `${target}.${process.pid}.tmp`;
+  writeFileSync(tmp, encrypted, { encoding: "utf8", mode: 0o600, flush: true });
+  try {
+    renameSync(tmp, target);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
+  }
+  return snapshot;
+}
+
+export function loadEncryptedGeminiStorageState(
+  profileRoot: string,
+  dataDir: string,
+): GeminiEncryptedAuthSnapshot | null {
+  const target = getEncryptedStorageStatePath(profileRoot);
+  const resolvedDataDir = resolve(dataDir);
+  if (!existsSync(target) || !existsSync(join(resolvedDataDir, "secret.key"))) {
+    return null;
+  }
+  try {
+    const raw = readFileSync(target, "utf8");
+    const parsed = localSecretStore(resolvedDataDir).decrypt(raw) as Partial<GeminiEncryptedAuthSnapshot> | null;
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      parsed.version !== 1 ||
+      typeof parsed.savedAt !== "string" ||
+      typeof parsed.userAgent !== "string" ||
+      !parsed.storageState ||
+      !Array.isArray(parsed.storageState.cookies) ||
+      !Array.isArray(parsed.storageState.origins)
+    ) {
+      return null;
+    }
+    return parsed as GeminiEncryptedAuthSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+export function getSyncedStorageStateTimestamp(profileRoot: string): string | null {
+  const target = getSyncedStorageStatePath(profileRoot);
+  if (!existsSync(target)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(target, "utf8")) as { savedAt?: unknown };
+    return typeof parsed.savedAt === "string" ? parsed.savedAt : null;
+  } catch {
+    return null;
+  }
+}
+
+export function markStorageStateSynced(profileRoot: string, savedAt: string) {
+  const locks = join(resolve(profileRoot), ".locks");
+  mkdirSync(locks, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    getSyncedStorageStatePath(profileRoot),
+    JSON.stringify({ savedAt, syncedAt: new Date().toISOString() }),
+    { mode: 0o600, flush: true },
+  );
+}
+
 export class GeminiProfileLock {
   readonly root: string;
   readonly profileDir: string;
@@ -83,15 +189,16 @@ export class GeminiProfileLock {
   private lease: Database.Database;
   private closed = false;
 
-  constructor(profileRoot: string) {
+  constructor(profileRoot: string, options: GeminiProfileLockOptions = {}) {
     this.root = resolve(profileRoot);
-    this.profileDir = join(this.root, "profile");
+    this.profileDir = options.profileDir ? resolve(options.profileDir) : join(this.root, "profile");
+    const lockName = options.lockName ?? "gemini.sqlite";
     const locks = join(this.root, ".locks");
     mkdirSync(this.profileDir, { recursive: true, mode: 0o700 });
     mkdirSync(locks, { recursive: true, mode: 0o700 });
     this.reauthMarker = join(locks, "reauth.json");
     this.authStateFile = join(locks, "auth-state.json");
-    this.lease = new Database(join(locks, "gemini.sqlite"), { timeout: 0 });
+    this.lease = new Database(join(locks, lockName), { timeout: 0 });
     try {
       this.lease.exec("BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS lease (id INTEGER PRIMARY KEY)");
     } catch (error) {
@@ -126,6 +233,7 @@ export function getGeminiProfileStatus(profileRoot: string): {
   const profileDir = join(root, "profile");
   const reauthMarker = join(root, ".locks", "reauth.json");
   const authStateFile = join(root, ".locks", "auth-state.json");
+  const storageStateFile = getEncryptedStorageStatePath(root);
 
   let requiresReauth = false;
   let reauthReason: string | null = null;
@@ -148,7 +256,7 @@ export function getGeminiProfileStatus(profileRoot: string): {
   }
 
   return {
-    profileExists: existsSync(join(profileDir, "Default")) || existsSync(profileDir),
+    profileExists: Boolean(authenticatedAt) || existsSync(storageStateFile) || existsSync(join(profileDir, "Default")),
     requiresReauth,
     reauthReason,
     authenticatedAt,

@@ -7,8 +7,13 @@ import sharp from "sharp";
 import { resolveChromiumExecutable, type ImageProcessingConfig } from "./config.js";
 import {
   GeminiProfileLock,
+  type GeminiEncryptedAuthSnapshot,
+  getSyncedStorageStateTimestamp,
+  loadEncryptedGeminiStorageState,
   markGeminiAuthenticated,
   markGeminiReauthRequired,
+  markStorageStateSynced,
+  saveEncryptedGeminiStorageState,
 } from "./profile.js";
 import { validateAndNormalizeImage } from "./storage.js";
 
@@ -184,7 +189,7 @@ export function canLaunchInteractiveBrowser(): { supported: boolean; reason?: st
       return {
         supported: false,
         reason:
-          "الخادم يعمل حاليًا كخدمة نظام معزولة في Windows (Session 0 / LOCAL SERVICE) لا تسمح بعرض نافذة متصفح على الشاشة منه، كما يمنع نظام تشفير Windows (DPAPI) مشاركة ملف كوكيز Chrome بين حسابين مختلفين.",
+          "الخادم يعمل حاليًا كخدمة نظام معزولة في Windows (Session 0 / LOCAL SERVICE) لا تسمح بعرض نافذة متصفح على الشاشة منه. افتح «Gemini Web Login» من قائمة ابدأ (Start Menu) أو شغّل gemini-login.bat كمسؤول على سطح المكتب، وسيتم حفظ الجلسة ومزامنتها تلقائيًا مع الخدمة.",
       };
     }
     return { supported: true };
@@ -215,6 +220,80 @@ const CONSENT_DISMISS_PATTERN =
 const DANGEROUS_BUTTON_PATTERN =
   /upgrade|subscribe|get .* plus|try .* pro|learn more|terms|privacy|sign in|log in|ترقية|اشتراك|تسجيل الدخول/i;
 
+function normalizeDesktopUserAgent(userAgent?: string | null): string | undefined {
+  if (!userAgent) return undefined;
+  const normalized = userAgent.replace(/\bHeadlessChrome\//g, "Chrome/").trim();
+  return normalized || undefined;
+}
+
+async function applyEncryptedStorageStateToContext(
+  context: BrowserContext,
+  snapshot: GeminiEncryptedAuthSnapshot,
+  log: (event: string, fields?: Record<string, unknown>) => void,
+): Promise<void> {
+  await context.clearCookies();
+  const cookies = snapshot.storageState.cookies.filter((cookie) => Boolean(cookie.name && cookie.domain));
+  if (cookies.length > 0) {
+    try {
+      await context.addCookies(cookies);
+    } catch (error) {
+      log("gemini_cookie_batch_fallback", {
+        count: cookies.length,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      for (const cookie of cookies) {
+        await context.addCookies([cookie]).catch(() => {});
+      }
+    }
+  }
+
+  const origins = snapshot.storageState.origins.filter(
+    (entry) =>
+      (entry.origin.startsWith("https://") || entry.origin.startsWith("http://")) &&
+      Array.isArray(entry.localStorage) &&
+      entry.localStorage.length > 0,
+  );
+  if (origins.length === 0) return;
+
+  const seedPage = await context.newPage();
+  let activeOrigin = "";
+  try {
+    await seedPage.route("**/*", async (route) => {
+      const reqUrl = route.request().url();
+      if (activeOrigin && (reqUrl === activeOrigin || reqUrl === `${activeOrigin}/`)) {
+        await route.fulfill({
+          status: 200,
+          contentType: "text/html; charset=utf-8",
+          body: "<!doctype html><html><body></body></html>",
+        });
+        return;
+      }
+      await route.abort();
+    });
+
+    for (const entry of origins) {
+      activeOrigin = entry.origin.replace(/\/+$/, "");
+      try {
+        await seedPage.goto(activeOrigin, { waitUntil: "domcontentloaded", timeout: 10_000 });
+        await seedPage.evaluate((items) => {
+          const storage = (globalThis as any).localStorage;
+          storage.clear();
+          for (const item of items) {
+            storage.setItem(item.name, item.value);
+          }
+        }, entry.localStorage);
+      } catch (error) {
+        log("gemini_origin_seed_failed", {
+          origin: activeOrigin,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  } finally {
+    await seedPage.close().catch(() => {});
+  }
+}
+
 /**
  * Automates Gemini Web via Playwright Chromium using a persistent authenticated profile.
  */
@@ -229,17 +308,27 @@ export class GeminiBrowserClient implements ImageProcessor {
   ) {}
 
   private async ensureContext(tempDownloadDir: string): Promise<BrowserContext> {
-    if (this.context) return this.context;
+    const snapshot = loadEncryptedGeminiStorageState(this.config.profileRoot, this.config.dataDir);
+    const syncedAt = getSyncedStorageStateTimestamp(this.config.profileRoot);
+    const needsSync = Boolean(snapshot && snapshot.savedAt !== syncedAt);
+
+    if (this.context && !needsSync) return this.context;
+    if (this.context && needsSync) {
+      await this.close();
+    }
+
     this.lock = new GeminiProfileLock(this.config.profileRoot);
     try {
       await this.lock.prepare();
       const executablePath = resolveChromiumExecutable(this.root);
+      const userAgent = normalizeDesktopUserAgent(snapshot?.userAgent);
       this.context = await chromium.launchPersistentContext(this.config.profileDir, {
         ...(executablePath ? { executablePath } : {}),
         headless: true,
         acceptDownloads: true,
         downloadsPath: tempDownloadDir,
         viewport: { width: 1366, height: 900 },
+        ...(userAgent ? { userAgent } : {}),
         ignoreDefaultArgs: ["--enable-automation"],
         args: [
           "--disable-dev-shm-usage",
@@ -247,10 +336,18 @@ export class GeminiBrowserClient implements ImageProcessor {
           "--disable-blink-features=AutomationControlled",
         ],
       });
+      if (snapshot && needsSync) {
+        await applyEncryptedStorageStateToContext(this.context, snapshot, this.log);
+        markStorageStateSynced(this.config.profileRoot, snapshot.savedAt);
+        this.log("gemini_storage_state_synced", {
+          savedAt: snapshot.savedAt,
+          cookies: snapshot.storageState.cookies.length,
+          origins: snapshot.storageState.origins.length,
+        });
+      }
       return this.context;
     } catch (error) {
-      this.lock?.release();
-      this.lock = null;
+      await this.close().catch(() => {});
       throw error;
     }
   }
@@ -1124,15 +1221,18 @@ export async function runInteractiveGeminiLogin(options: {
   if (signal?.aborted) {
     throw new Error("تم إلغاء عملية تسجيل الدخول.");
   }
-  const lock = new GeminiProfileLock(config.profileRoot);
+  const lock = new GeminiProfileLock(config.profileRoot, {
+    profileDir: config.loginProfileDir,
+    lockName: "login.sqlite",
+  });
   let context: BrowserContext | null = null;
   try {
     onStage?.("launching");
     await lock.prepare();
     const executablePath = resolveChromiumExecutable(root);
-    mkdirSync(config.profileDir, { recursive: true, mode: 0o700 });
-    onStatus(`Opening Chromium with persistent profile: ${config.profileDir}`);
-    context = await chromium.launchPersistentContext(config.profileDir, {
+    mkdirSync(config.loginProfileDir, { recursive: true, mode: 0o700 });
+    onStatus(`Opening Chromium with persistent login profile: ${config.loginProfileDir}`);
+    context = await chromium.launchPersistentContext(config.loginProfileDir, {
       ...(executablePath ? { executablePath } : {}),
       headless: false,
       viewport: { width: 1280, height: 900 },
@@ -1179,8 +1279,19 @@ export async function runInteractiveGeminiLogin(options: {
       throw new Error("Timed out or browser closed before Gemini authentication was confirmed.");
     }
 
+    const activePage = context.pages().find((p) => !p.isClosed()) ?? (await context.newPage());
+    const rawUserAgent = await activePage.evaluate(() => navigator.userAgent).catch(() => "");
+    const userAgent = normalizeDesktopUserAgent(rawUserAgent) ?? rawUserAgent;
+    const storageState = await context.storageState();
+    saveEncryptedGeminiStorageState({
+      profileRoot: config.profileRoot,
+      dataDir: config.dataDir,
+      storageState,
+      userAgent,
+    });
+
     markGeminiAuthenticated(config.profileRoot);
-    onStatus("Gemini authentication confirmed and persistent profile saved.");
+    onStatus("Gemini authentication confirmed and encrypted auth snapshot saved.");
   } finally {
     if (context) await context.close().catch(() => {});
     lock.release();

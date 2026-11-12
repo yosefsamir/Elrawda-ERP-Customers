@@ -17,6 +17,7 @@ function flagValue(name: string): string | undefined {
 async function main() {
   const dbPath = resolve(dataDir, "app.sqlite");
   const db = existsSync(dbPath) ? new Database(dbPath) : undefined;
+  db?.pragma("busy_timeout = 5000");
 
   try {
     const config = getImageProcessingConfig({ db: db as any, dataDir, root });

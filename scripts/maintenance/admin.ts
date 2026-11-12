@@ -32,7 +32,7 @@ try {
           DELETE FROM product_images;
           DELETE FROM photo_sessions;
           DELETE FROM photo_users;
-          UPDATE portal_settings SET company_id=NULL, enabled=0, origin='', image_prompt=NULL, image_processing_enabled=1, gemini_paused=0, gemini_pause_reason=NULL, gemini_requires_reauth=0, watermark_logo=NULL, watermark_logo_type=NULL;
+          UPDATE portal_settings SET company_id=NULL, enabled=0, origin='', image_prompt=NULL, image_processing_enabled=1, gemini_paused=0, gemini_pause_reason=NULL, gemini_requires_reauth=0, watermark_logo=NULL, watermark_logo_type=NULL, watermark_logo_enabled=1, watermark_code_enabled=1;
           DELETE FROM operations;
           DELETE FROM audit_events;
           DELETE FROM jobs;

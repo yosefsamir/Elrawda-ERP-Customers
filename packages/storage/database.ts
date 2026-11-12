@@ -106,6 +106,12 @@ export function openDatabase(filename: string) {
   if (!portalColumns.some((col) => col.name === "watermark_logo_type")) {
     db.exec("ALTER TABLE portal_settings ADD COLUMN watermark_logo_type TEXT");
   }
+  if (!portalColumns.some((col) => col.name === "watermark_logo_enabled")) {
+    db.exec("ALTER TABLE portal_settings ADD COLUMN watermark_logo_enabled INTEGER NOT NULL DEFAULT 1");
+  }
+  if (!portalColumns.some((col) => col.name === "watermark_code_enabled")) {
+    db.exec("ALTER TABLE portal_settings ADD COLUMN watermark_code_enabled INTEGER NOT NULL DEFAULT 1");
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS product_image_state(

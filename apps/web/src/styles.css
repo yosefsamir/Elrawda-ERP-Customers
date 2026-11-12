@@ -1821,8 +1821,31 @@ input[type="file"] {
   flex-wrap: wrap;
 }
 
-.watermark-logo-card {
+.watermark-stamp-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   margin-bottom: 14px;
+}
+
+.watermark-logo-card {
+  margin-bottom: 0;
+}
+
+.watermark-toggles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.watermark-toggles-grid .toggle-row {
+  margin-bottom: 0;
+}
+
+.watermark-disabled-note {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
 }
 
 .watermark-logo-info {

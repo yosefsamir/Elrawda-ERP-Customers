@@ -69,6 +69,9 @@ export function PortalSettings({
   const [interactiveLogin, setInteractiveLogin] = useState<InteractiveLoginState | null>(null);
   const [loginBusy, setLoginBusy] = useState(false);
   const [hasWatermarkLogo, setHasWatermarkLogo] = useState(false);
+  const [watermarkLogoEnabled, setWatermarkLogoEnabled] = useState(true);
+  const [watermarkCodeEnabled, setWatermarkCodeEnabled] = useState(true);
+  const [stampBusy, setStampBusy] = useState(false);
   const [logoVersion, setLogoVersion] = useState(0);
   const [logoBusy, setLogoBusy] = useState(false);
   const watermarkInputRef = useRef<HTMLInputElement | null>(null);
@@ -95,6 +98,12 @@ export function PortalSettings({
     setGeminiStatus(result.geminiStatus || null);
     setInteractiveLogin(result.interactiveLogin || null);
     setHasWatermarkLogo(Boolean(result.hasWatermarkLogo));
+    setWatermarkLogoEnabled(
+      result.watermarkLogoEnabled !== undefined ? Boolean(result.watermarkLogoEnabled) : true,
+    );
+    setWatermarkCodeEnabled(
+      result.watermarkCodeEnabled !== undefined ? Boolean(result.watermarkCodeEnabled) : true,
+    );
     setError("");
   }
 
@@ -204,11 +213,47 @@ export function PortalSettings({
       await api("/portal/image-processing/watermark-logo", { method: "DELETE" });
       setHasWatermarkLogo(false);
       setLogoVersion((v) => v + 1);
-      notify("تمت إزالة اللوجو؛ سيُضاف كود الصنف فقط أسفل الصور.");
+      notify(
+        watermarkCodeEnabled
+          ? "تمت إزالة اللوجو؛ سيُضاف كود الصنف فقط أسفل الصور المحسّنة."
+          : "تمت إزالة اللوجو بنجاح.",
+      );
     } catch (err) {
       notify((err as Error).message, true);
     } finally {
       setLogoBusy(false);
+    }
+  }
+
+  async function handleToggleStampOption(
+    field: "watermarkLogoEnabled" | "watermarkCodeEnabled",
+    nextState: boolean,
+  ) {
+    const prevLogo = watermarkLogoEnabled;
+    const prevCode = watermarkCodeEnabled;
+    if (field === "watermarkLogoEnabled") {
+      setWatermarkLogoEnabled(nextState);
+    } else {
+      setWatermarkCodeEnabled(nextState);
+    }
+    setStampBusy(true);
+    try {
+      await put("/portal/image-processing/stamp-options", { [field]: nextState });
+      notify(
+        field === "watermarkLogoEnabled"
+          ? nextState
+            ? "تم تفعيل إظهار لوجو الشركة على الصور المحسّنة."
+            : "تم إيقاف إظهار لوجو الشركة على الصور."
+          : nextState
+            ? "تم تفعيل كتابة كود الصنف على الصور المحسّنة."
+            : "تم إيقاف كتابة كود الصنف على الصور.",
+      );
+    } catch (err) {
+      setWatermarkLogoEnabled(prevLogo);
+      setWatermarkCodeEnabled(prevCode);
+      notify((err as Error).message, true);
+    } finally {
+      setStampBusy(false);
     }
   }
 
@@ -508,7 +553,7 @@ export function PortalSettings({
             {interactiveLogin && !interactiveLogin.interactiveSupported && (!geminiStatus.profileExists || geminiStatus.requiresReauth) && (
               <Notice tone="info">
                 {interactiveLogin.unsupportedReason ||
-                  "يعمل الخادم حاليًا كخدمة خلفية؛ افتح ملف gemini-login.bat من جهاز الخادم لتسجيل الدخول."}
+                  "يعمل الخادم حاليًا كخدمة خلفية؛ افتح «Gemini Web Login» من قائمة ابدأ (Start Menu) على جهاز الخادم أو شغّل gemini-login.bat لتسجيل الدخول."}
               </Notice>
             )}
 
@@ -539,57 +584,92 @@ export function PortalSettings({
           </div>
         )}
 
-        <div className="gemini-account-card watermark-logo-card">
-          <div className="watermark-logo-info">
-            <div className="logo-preview-box watermark-logo-preview">
-              {hasWatermarkLogo ? (
-                <img
-                  src={`/api/portal/image-processing/watermark-logo?v=${logoVersion}`}
-                  alt="لوجو الشركة"
-                  className="logo-preview-img"
-                />
-              ) : (
-                <ImagePlus size={22} className="watermark-logo-placeholder" />
-              )}
+        <div className="watermark-stamp-section">
+          <div className="gemini-account-card watermark-logo-card">
+            <div className="watermark-logo-info">
+              <div className="logo-preview-box watermark-logo-preview">
+                {hasWatermarkLogo ? (
+                  <img
+                    src={`/api/portal/image-processing/watermark-logo?v=${logoVersion}`}
+                    alt="لوجو الشركة"
+                    className="logo-preview-img"
+                  />
+                ) : (
+                  <ImagePlus size={22} className="watermark-logo-placeholder" />
+                )}
+              </div>
+              <div className="watermark-logo-text">
+                <strong>لوجو الشركة وطباعة كود الصنف على الصورة</strong>
+                <span className="gemini-account-hint">
+                  تحكّم في إظهار اللوجو أعلى يمين الصورة وكود الصنف أسفل اليسار على كل صورة محسّنة عبر Gemini (بحد أقصى 2 ميجابايت للوجو).
+                </span>
+              </div>
             </div>
-            <div className="watermark-logo-text">
-              <strong>لوجو الشركة وكود الصنف على الصورة</strong>
-              <span className="gemini-account-hint">
-                يُطبع اللوجو تلقائيًا أعلى يمين الصورة، ويُكتب كود الصنف بوضوح أسفل اليسار على كل صورة محسّنة (بحد أقصى 2 ميجابايت).
-              </span>
+
+            <div className="gemini-account-actions">
+              <input
+                ref={watermarkInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                hidden
+                disabled={busy || logoBusy}
+                onChange={handleWatermarkFileChange}
+              />
+              <button
+                type="button"
+                className="button secondary"
+                disabled={busy || logoBusy}
+                onClick={() => watermarkInputRef.current?.click()}
+              >
+                {logoBusy ? <LoaderCircle size={15} className="spin" /> : <Upload size={15} />}
+                <span>{hasWatermarkLogo ? "تغيير اللوجو" : "رفع لوجو الشركة"}</span>
+              </button>
+              {hasWatermarkLogo && (
+                <button
+                  type="button"
+                  className="button secondary watermark-remove-btn"
+                  disabled={busy || logoBusy}
+                  onClick={() => void removeWatermarkLogo()}
+                >
+                  <Trash2 size={15} />
+                  <span>إزالة</span>
+                </button>
+              )}
             </div>
           </div>
 
-          <div className="gemini-account-actions">
-            <input
-              ref={watermarkInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              hidden
-              disabled={busy || logoBusy}
-              onChange={handleWatermarkFileChange}
+          <div className="watermark-toggles-grid">
+            <ToggleSwitch
+              id="watermark-logo-enabled-toggle"
+              title="إظهار لوجو الشركة على الصورة"
+              description={
+                hasWatermarkLogo
+                  ? "يطبع اللوجو تلقائيًا أعلى يمين الصورة المحسّنة عبر Gemini."
+                  : "ارفع لوجو الشركة أولًا ليُطبع أعلى يمين الصورة عند التحسين."
+              }
+              checked={watermarkLogoEnabled}
+              onChange={(next) => void handleToggleStampOption("watermarkLogoEnabled", next)}
+              disabled={busy || logoBusy || stampBusy}
+              badgeActive="مفعّل"
+              badgeInactive="موقوف"
             />
-            <button
-              type="button"
-              className="button secondary"
-              disabled={busy || logoBusy}
-              onClick={() => watermarkInputRef.current?.click()}
-            >
-              {logoBusy ? <LoaderCircle size={15} className="spin" /> : <Upload size={15} />}
-              <span>{hasWatermarkLogo ? "تغيير اللوجو" : "رفع لوجو الشركة"}</span>
-            </button>
-            {hasWatermarkLogo && (
-              <button
-                type="button"
-                className="button secondary watermark-remove-btn"
-                disabled={busy || logoBusy}
-                onClick={() => void removeWatermarkLogo()}
-              >
-                <Trash2 size={15} />
-                <span>إزالة</span>
-              </button>
-            )}
+            <ToggleSwitch
+              id="watermark-code-enabled-toggle"
+              title="كتابة كود الصنف على الصورة"
+              description="يكتب كود الموديل (Code : ...) بوضوح أسفل يسار الصورة المحسّنة عبر Gemini."
+              checked={watermarkCodeEnabled}
+              onChange={(next) => void handleToggleStampOption("watermarkCodeEnabled", next)}
+              disabled={busy || logoBusy || stampBusy}
+              badgeActive="مفعّل"
+              badgeInactive="موقوف"
+            />
           </div>
+
+          {!processingEnabled && (watermarkLogoEnabled || watermarkCodeEnabled) && (
+            <p className="watermark-disabled-note">
+              ملاحظة: طباعة اللوجو وكود الصنف تعمل فقط عند تفعيل التحسين التلقائي للصور (Gemini) أعلاه.
+            </p>
+          )}
         </div>
 
         <details className="gemini-advanced-details">
