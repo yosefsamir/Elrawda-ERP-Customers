@@ -298,6 +298,289 @@ function Ensure-GeminiWorkerBridgeToken([string]$StateRoot) {
     }
 }
 
+function Get-DomainGpoHint {
+    try {
+        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        if ($cs -and $cs.PartOfDomain) {
+            return "This computer is joined to domain '$($cs.Domain)'. Check domain Group Policy (GPO) in Computer Configuration -> Windows Settings -> Security Settings -> Local Policies -> User Rights Assignment."
+        }
+    } catch {}
+    return 'Check Local Security Policy (secpol.msc -> Local Policies -> User Rights Assignment) or local Group Policy.'
+}
+
+function Resolve-PolicyTokenSid([string]$Token) {
+    $trimmed = if ($Token) { $Token.Trim() } else { '' }
+    if (-not $trimmed) { return $null }
+    if ($trimmed.StartsWith('*')) {
+        return $trimmed.Substring(1).Trim()
+    }
+    if ($trimmed -match '^S-\d-\d+(-\d+)+$') {
+        return $trimmed
+    }
+    try {
+        $nt = New-Object System.Security.Principal.NTAccount($trimmed)
+        return $nt.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        return $null
+    }
+}
+
+function Get-WindowsUserRightsAssignment {
+    param([string[]]$RightNames = @('SeBatchLogonRight', 'SeDenyBatchLogonRight'))
+
+    $tmpDir = Join-Path $env:TEMP ("whatsapp-erp-sec-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+    try {
+        $exportCfg = Join-Path $tmpDir 'user-rights.inf'
+        $exportLog = Join-Path $tmpDir 'secedit-export.log'
+        $output = & secedit.exe /export /cfg $exportCfg /areas USER_RIGHTS /log $exportLog 2>&1
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exportCfg)) {
+            $joined = ($output | ForEach-Object { "$_" }) -join ' '
+            throw "Failed to export Windows User Rights Assignment (secedit /export exit=$LASTEXITCODE): $joined. $(Get-DomainGpoHint)"
+        }
+
+        $result = @{}
+        foreach ($name in $RightNames) {
+            $result[$name] = @()
+        }
+
+        $inPrivilegeSection = $false
+        foreach ($line in (Get-Content -LiteralPath $exportCfg)) {
+            $trimmed = $line.Trim()
+            if ($trimmed -match '^\[(.+)\]$') {
+                $inPrivilegeSection = ($Matches[1] -ieq 'Privilege Rights')
+                continue
+            }
+            if (-not $inPrivilegeSection -or -not ($trimmed -match '^([^=]+?)\s*=\s*(.*)$')) {
+                continue
+            }
+            $key = $Matches[1].Trim()
+            $rawVal = $Matches[2].Trim()
+            foreach ($name in $RightNames) {
+                if ($key -ieq $name) {
+                    if ($rawVal) {
+                        $result[$name] = @($rawVal.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                    } else {
+                        $result[$name] = @()
+                    }
+                }
+            }
+        }
+        return $result
+    } finally {
+        if (Test-Path -LiteralPath $tmpDir) {
+            Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Test-PrincipalInUserRights([string[]]$Tokens, [string]$UserName, [string[]]$CandidateSids) {
+    $sidSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($s in $CandidateSids) {
+        if ($s) { [void]$sidSet.Add($s.Trim()) }
+    }
+
+    $nameSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    if ($UserName) {
+        [void]$nameSet.Add($UserName)
+        [void]$nameSet.Add("$env:COMPUTERNAME\$UserName")
+        [void]$nameSet.Add(".\$UserName")
+    }
+
+    $matched = @()
+    foreach ($token in $Tokens) {
+        if (-not $token) { continue }
+        $trimmed = $token.Trim()
+        if ($nameSet.Contains($trimmed)) {
+            $matched += $trimmed
+            continue
+        }
+        $resolvedSid = Resolve-PolicyTokenSid $trimmed
+        if ($resolvedSid -and $sidSet.Contains($resolvedSid)) {
+            $matched += $trimmed
+        }
+    }
+    return $matched
+}
+
+function Assert-NoDenyBatchLogonConflict([string]$UserName, [string]$WorkerSid, $Rights = $null) {
+    if (-not $Rights) {
+        $Rights = Get-WindowsUserRightsAssignment -RightNames @('SeBatchLogonRight', 'SeDenyBatchLogonRight')
+    }
+
+    $denyTokens = @($Rights['SeDenyBatchLogonRight'])
+    if ($denyTokens.Count -eq 0) {
+        return
+    }
+
+    # Built-in identities/groups that standard local users inherit (Users, Everyone, Authenticated Users)
+    $inheritedSids = @($WorkerSid, 'S-1-5-32-545', 'S-1-1-0', 'S-1-5-11')
+    $conflicts = @(Test-PrincipalInUserRights -Tokens $denyTokens -UserName $UserName -CandidateSids $inheritedSids)
+    if ($conflicts.Count -gt 0) {
+        $conflictList = $conflicts -join ', '
+        throw "Windows security policy blocks background Gemini Worker logon: 'Deny log on as a batch job' (SeDenyBatchLogonRight) currently includes [$conflictList], which applies to '$UserName' ($WorkerSid). Remove those entries from 'Deny log on as a batch job' so the Scheduled Task can run without an interactive desktop session. $(Get-DomainGpoHint)"
+    }
+}
+
+function Ensure-GeminiWorkerBatchLogonRight([string]$UserName, [string]$WorkerSid) {
+    if (-not $WorkerSid) {
+        throw "Cannot provision SeBatchLogonRight: empty SID for '$UserName'."
+    }
+
+    $rights = Get-WindowsUserRightsAssignment -RightNames @('SeBatchLogonRight', 'SeDenyBatchLogonRight')
+    Assert-NoDenyBatchLogonConflict -UserName $UserName -WorkerSid $WorkerSid -Rights $rights
+
+    $current = @($rights['SeBatchLogonRight'])
+    $alreadyPresent = @(Test-PrincipalInUserRights -Tokens $current -UserName $UserName -CandidateSids @($WorkerSid))
+    if ($alreadyPresent.Count -gt 0) {
+        Write-Host "[OK] Verified SeBatchLogonRight ('Log on as a batch job') for '$UserName'." -ForegroundColor Green
+        return [pscustomobject]@{
+            Changed = $false
+            WorkerSid = $WorkerSid
+            Token = "*$WorkerSid"
+        }
+    }
+
+    $updated = @($current) + "*$WorkerSid"
+    $tmpDir = Join-Path $env:TEMP ("whatsapp-erp-secset-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+    try {
+        $infPath = Join-Path $tmpDir 'grant-batch-logon.inf'
+        $sdbPath = Join-Path $tmpDir 'grant-batch-logon.sdb'
+        $logPath = Join-Path $tmpDir 'secedit-configure.log'
+
+        $infLines = @(
+            '[Unicode]',
+            'Unicode=yes',
+            '[Version]',
+            'signature="$CHICAGO$"',
+            'Revision=1',
+            '[Privilege Rights]',
+            ('SeBatchLogonRight = ' + ($updated -join ','))
+        )
+        # UTF-16LE with BOM is required by secedit.exe when Unicode=yes.
+        Set-Content -LiteralPath $infPath -Value $infLines -Encoding Unicode
+
+        $output = & secedit.exe /configure /db $sdbPath /cfg $infPath /areas USER_RIGHTS /log $logPath /quiet 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $logExcerpt = ''
+            if (Test-Path -LiteralPath $logPath) {
+                $logExcerpt = ((Get-Content -LiteralPath $logPath -Tail 8 -ErrorAction SilentlyContinue) -join ' | ').Trim()
+            }
+            $joined = ($output | ForEach-Object { "$_" }) -join ' '
+            throw "Failed to grant SeBatchLogonRight ('Log on as a batch job') to '$UserName' (secedit /configure exit=$LASTEXITCODE): $joined $logExcerpt. $(Get-DomainGpoHint)"
+        }
+    } finally {
+        if (Test-Path -LiteralPath $tmpDir) {
+            Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $verify = Get-WindowsUserRightsAssignment -RightNames @('SeBatchLogonRight', 'SeDenyBatchLogonRight')
+    Assert-NoDenyBatchLogonConflict -UserName $UserName -WorkerSid $WorkerSid -Rights $verify
+    $verified = @(Test-PrincipalInUserRights -Tokens @($verify['SeBatchLogonRight']) -UserName $UserName -CandidateSids @($WorkerSid))
+    if ($verified.Count -eq 0) {
+        throw "Windows policy check failed: granted SeBatchLogonRight ('Log on as a batch job') to '$UserName' ($WorkerSid), but post-update verification showed the right did not persist. $(Get-DomainGpoHint)"
+    }
+
+    Write-Host "[OK] Granted and verified SeBatchLogonRight ('Log on as a batch job') for '$UserName'." -ForegroundColor Green
+    return [pscustomobject]@{
+        Changed = $true
+        WorkerSid = $WorkerSid
+        Token = "*$WorkerSid"
+    }
+}
+
+function Remove-GeminiWorkerBatchLogonRight([string]$UserName, [string]$WorkerSid) {
+    $rights = Get-WindowsUserRightsAssignment -RightNames @('SeBatchLogonRight')
+    $current = @($rights['SeBatchLogonRight'])
+    if ($current.Count -eq 0) {
+        return $false
+    }
+
+    $targets = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    if ($UserName) {
+        [void]$targets.Add($UserName)
+        [void]$targets.Add("$env:COMPUTERNAME\$UserName")
+        [void]$targets.Add(".\$UserName")
+    }
+    if ($WorkerSid) {
+        [void]$targets.Add("*$WorkerSid")
+        [void]$targets.Add($WorkerSid)
+    }
+
+    $removed = @()
+    $remaining = @()
+    foreach ($token in $current) {
+        $resolvedSid = Resolve-PolicyTokenSid $token
+        if ($targets.Contains($token) -or ($WorkerSid -and $resolvedSid -and $resolvedSid -ieq $WorkerSid)) {
+            $removed += $token
+        } else {
+            $remaining += $token
+        }
+    }
+
+    if ($removed.Count -eq 0) {
+        return $false
+    }
+
+    $tmpDir = Join-Path $env:TEMP ("whatsapp-erp-secrm-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+    try {
+        $infPath = Join-Path $tmpDir 'remove-batch-logon.inf'
+        $sdbPath = Join-Path $tmpDir 'remove-batch-logon.sdb'
+        $logPath = Join-Path $tmpDir 'secedit-configure.log'
+
+        $infLines = @(
+            '[Unicode]',
+            'Unicode=yes',
+            '[Version]',
+            'signature="$CHICAGO$"',
+            'Revision=1',
+            '[Privilege Rights]',
+            ('SeBatchLogonRight = ' + ($remaining -join ','))
+        )
+        Set-Content -LiteralPath $infPath -Value $infLines -Encoding Unicode
+
+        $output = & secedit.exe /configure /db $sdbPath /cfg $infPath /areas USER_RIGHTS /log $logPath /quiet 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $joined = ($output | ForEach-Object { "$_" }) -join ' '
+            throw "Failed to remove '$UserName' from SeBatchLogonRight (secedit /configure exit=$LASTEXITCODE): $joined"
+        }
+    } finally {
+        if (Test-Path -LiteralPath $tmpDir) {
+            Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return $true
+}
+
+function Get-GeminiWorkerStartFailureDiagnostic([string]$TaskName, [string]$StateRoot) {
+    $logsDir = Join-Path $StateRoot 'logs'
+    if (-not $TaskName) {
+        return "Gemini worker task name is not configured. Inspect logs under '$logsDir'."
+    }
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $task) {
+        return "Scheduled task '$TaskName' is not registered."
+    }
+    $info = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $info) {
+        return "Scheduled task '$TaskName' status unavailable (State=$($task.State)). Inspect logs under '$logsDir'."
+    }
+    $codeUInt = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$info.LastTaskResult), 0)
+    $hex = '0x{0:X8}' -f $codeUInt
+    $hint = switch ($hex) {
+        '0x80070569' { "ERROR_LOGON_TYPE_NOT_GRANTED: 'Log on as a batch job' (SeBatchLogonRight) is missing or blocked by 'Deny log on as a batch job' (SeDenyBatchLogonRight). $(Get-DomainGpoHint)" }
+        '0x8007052E' { "Logon failure (bad username/password or stale stored task credential for '$($task.Principal.UserId)')." }
+        '0x8007056F' { "Logon restricted by Windows account/NTLM/GPO policy. $(Get-DomainGpoHint)" }
+        '0x80070005' { "Access denied executing Scheduled Task '$TaskName' or accessing '$StateRoot'." }
+        default { "Inspect gemini-worker-launcher.log and gemini-worker-*.err.log under '$logsDir'." }
+    }
+    return "Scheduled Task '$TaskName' State=$($task.State), LastTaskResult=$hex. $hint"
+}
+
 # Creates or reuses the dedicated standard Windows user for Gemini.
 # Upgrades NEVER reset the password if the user + DPAPI credential already validate cleanly,
 # preserving the Windows DPAPI master key and Chromium cookies.
@@ -377,21 +660,54 @@ function Initialize-GeminiWorkerUserProfile([string]$StateRoot, [pscredential]$C
     }
     [IO.File]::WriteAllText($sidMarker, $WorkerSid, [Text.UTF8Encoding]::new($false))
 
-    $profileObj = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
-        Where-Object { $_.SID -eq $WorkerSid } |
-        Select-Object -First 1
-    $ntUserReady = ($profileObj -and (Test-Path -LiteralPath (Join-Path $profileObj.LocalPath 'NTUSER.DAT')))
+    $resolveNtUserPath = {
+        $wmiProfile = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
+            Where-Object { $_.SID -eq $WorkerSid } |
+            Select-Object -First 1
+        if ($wmiProfile -and $wmiProfile.LocalPath) {
+            return (Join-Path $wmiProfile.LocalPath 'NTUSER.DAT')
+        }
+        $regKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$WorkerSid"
+        if (Test-Path -LiteralPath $regKey) {
+            $props = Get-ItemProperty -LiteralPath $regKey -ErrorAction SilentlyContinue
+            if ($props -and $props.ProfileImagePath) {
+                return (Join-Path $props.ProfileImagePath 'NTUSER.DAT')
+            }
+        }
+        return $null
+    }
+
+    $ntUserPath = & $resolveNtUserPath
+    $ntUserReady = ($ntUserPath -and (Test-Path -LiteralPath $ntUserPath))
 
     if (-not $ntUserReady) {
-        $proc = Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" `
-            -ArgumentList '/c', 'exit 0' `
-            -Credential $Credential `
-            -LoadUserProfile `
-            -WindowStyle Hidden `
-            -Wait `
-            -PassThru
+        try {
+            $proc = Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" `
+                -ArgumentList '/c', 'exit 0' `
+                -Credential $Credential `
+                -LoadUserProfile `
+                -WindowStyle Hidden `
+                -Wait `
+                -PassThru
+        } catch {
+            $seclogon = Get-Service -Name 'seclogon' -ErrorAction SilentlyContinue
+            $seclogonState = if ($seclogon) { "$($seclogon.Status)/$($seclogon.StartType)" } else { 'unknown' }
+            throw "Failed to launch profile initialization process for $($Credential.UserName) ($($_.Exception.Message)). Verify 'Secondary Logon' service (seclogon: $seclogonState) is enabled and interactive/secondary logon is not denied by Windows policy. $(Get-DomainGpoHint)"
+        }
         if ($proc.ExitCode -ne 0) {
             throw "Failed to initialize Windows user profile for $($Credential.UserName) (exit $($proc.ExitCode))."
+        }
+
+        for ($attempt = 0; $attempt -lt 10; $attempt++) {
+            $ntUserPath = & $resolveNtUserPath
+            if ($ntUserPath -and (Test-Path -LiteralPath $ntUserPath)) {
+                $ntUserReady = $true
+                break
+            }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $ntUserReady) {
+            throw "Windows user profile registry/hive (NTUSER.DAT) was not created for $($Credential.UserName) ($WorkerSid). DPAPI encryption requires an initialized profile."
         }
     }
 }
@@ -626,20 +942,54 @@ function Register-GeminiWorkerTask($Config, [string]$StateRoot, [pscredential]$C
     }
 }
 
-function Wait-Ready($Config, [int]$TimeoutSec = 90) {
+function Wait-Ready($Config, [int]$TimeoutSec = 90, [switch]$SkipGeminiWorkerCheck) {
     $releasePath = Get-ConfigProperty $Config 'ReleasePath'
     $port = Get-ConfigProperty $Config 'Port' 3211
     $dataDir = Get-ConfigProperty $Config 'DataDir'
+    $stateRoot = if ($dataDir) { Split-Path -Parent $dataDir } else { "$env:ProgramData\WhatsApp-ERP" }
+    $workerTask = Get-GeminiWorkerTaskName $Config
     $expected = (Get-Content -Raw -Encoding UTF8 (Join-Path $releasePath 'package.json') | ConvertFrom-Json).version
     $maxAttempts = [math]::Max(5, [int]($TimeoutSec / 2))
+    $serverReady = $false
+    $lastHealth = $null
+    $benignTaskCodes = @('0x00000000', '0x00041300', '0x00041301', '0x00041303', '0x00041306')
+
     for ($i = 0; $i -lt $maxAttempts; $i++) {
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/healthz" -TimeoutSec 2
+            $lastHealth = $health
             if ($health.ok -and $health.version -eq $expected -and (Test-Path (Join-Path $dataDir 'shutdown.json'))) {
-                return
+                $serverReady = $true
+                $workerRequired = (-not $SkipGeminiWorkerCheck) -and $workerTask -and $health.PSObject.Properties['geminiWorker'] -and $health.geminiWorker -and ([string]$health.geminiWorker.workerMode -eq 'external')
+                if (-not $workerRequired) {
+                    return
+                }
+                if ($health.geminiWorker.worker -and $health.geminiWorker.worker.connected -eq $true) {
+                    return
+                }
             }
         } catch {}
+
+        if (-not $SkipGeminiWorkerCheck -and $workerTask -and $i -ge 2) {
+            $wTask = Get-ScheduledTask -TaskName $workerTask -ErrorAction SilentlyContinue
+            if ($wTask -and [string]$wTask.State -ne 'Running') {
+                $wInfo = Get-ScheduledTaskInfo -TaskName $workerTask -ErrorAction SilentlyContinue
+                if ($wInfo) {
+                    $wHex = '0x{0:X8}' -f ([BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$wInfo.LastTaskResult), 0))
+                    if ($benignTaskCodes -notcontains $wHex) {
+                        throw "External Gemini worker task failed to stay running: $(Get-GeminiWorkerStartFailureDiagnostic $workerTask $stateRoot)"
+                    }
+                }
+            }
+        }
+
         Start-Sleep -Seconds 2
+    }
+
+    if ($serverReady -and -not $SkipGeminiWorkerCheck -and $workerTask) {
+        $workerState = if ($lastHealth -and $lastHealth.geminiWorker -and $lastHealth.geminiWorker.worker) { [string]$lastHealth.geminiWorker.worker.state } else { 'unknown' }
+        $diag = Get-GeminiWorkerStartFailureDiagnostic $workerTask $stateRoot
+        throw "Backend server became ready, but external Gemini worker '$workerTask' did not connect to the localhost bridge within ${TimeoutSec}s (bridge worker.state='$workerState'). $diag"
     }
     throw "Server did not become ready within ${TimeoutSec}s. Inspect logs in the state directory."
 }

@@ -40,9 +40,18 @@ Set-InstallRootAcl $InstallRoot
 Set-StateAcl $StateRoot $config.TaskName
 $workerUser = Get-GeminiWorkerUserName $config
 $workerTask = Get-GeminiWorkerTaskName $config
-$workerAccount = Ensure-GeminiWorkerAccount $StateRoot $workerUser
-Initialize-GeminiWorkerUserProfile $StateRoot $workerAccount.Credential $workerAccount.Sid
-Set-GeminiWorkerAcl $StateRoot $config.TaskName $workerAccount.Sid
+$workerAccount = $null
+try {
+    $workerAccount = Ensure-GeminiWorkerAccount $StateRoot $workerUser
+    [void](Ensure-GeminiWorkerBatchLogonRight $workerAccount.UserName $workerAccount.Sid)
+    Initialize-GeminiWorkerUserProfile $StateRoot $workerAccount.Credential $workerAccount.Sid
+    Set-GeminiWorkerAcl $StateRoot $config.TaskName $workerAccount.Sid
+} catch {
+    if (Test-Path -LiteralPath $target) {
+        Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    throw
+}
 Write-InstallStage 'browser'
 Assert-ServiceBrowser $target $StateRoot
 
@@ -121,8 +130,12 @@ try {
     Remove-Item $flag -Force
     Write-InstallStage 'service'
     Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
-    Start-ScheduledTask -TaskName $workerTask -ErrorAction SilentlyContinue
-    Wait-Ready $config -TimeoutSec 25
+    try {
+        Start-ScheduledTask -TaskName $workerTask
+    } catch {
+        throw "Failed to start Gemini worker task '$workerTask': $($_.Exception.Message). $(Get-GeminiWorkerStartFailureDiagnostic $workerTask $StateRoot)"
+    }
+    Wait-Ready $config -TimeoutSec 60
 
     # Prune older releases (keep active release and previous release only) (L13)
     try {
@@ -178,8 +191,10 @@ try {
             Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
             if (Test-Path -LiteralPath $oldWorkerLauncher) {
                 Start-ScheduledTask -TaskName $workerTask -ErrorAction SilentlyContinue
+                Wait-Ready $config -TimeoutSec 45
+            } else {
+                Wait-Ready $config -TimeoutSec 25 -SkipGeminiWorkerCheck
             }
-            Wait-Ready $config -TimeoutSec 25
             throw "Update to $version failed during startup verification, but automatically rolled back to $oldRelease. Customer state preserved. Backup: $backup. Error: $err"
         } else {
             throw "Update to $version failed and schema cannot be safely read by previous release. Maintenance mode remains active to prevent data loss. Backup preserved at: $backup. Inspect logs at $(Join-Path $StateRoot 'logs'). Error: $err"

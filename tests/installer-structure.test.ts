@@ -78,7 +78,13 @@ test('common.ps1 self-contained runtime helpers', () => {
   assert.match(commonPs1, /function Get-ChromiumPath/, 'common.ps1 must define Get-ChromiumPath');
   assert.match(commonPs1, /function Assert-ReleaseReady/, 'common.ps1 must define Assert-ReleaseReady');
   assert.match(commonPs1, /function Ensure-GeminiWorkerAccount/, 'common.ps1 must define Ensure-GeminiWorkerAccount');
+  assert.match(commonPs1, /function Ensure-GeminiWorkerBatchLogonRight/, 'common.ps1 must define Ensure-GeminiWorkerBatchLogonRight');
+  assert.match(commonPs1, /function Assert-NoDenyBatchLogonConflict/, 'common.ps1 must define Assert-NoDenyBatchLogonConflict');
+  assert.match(commonPs1, /function Remove-GeminiWorkerBatchLogonRight/, 'common.ps1 must define Remove-GeminiWorkerBatchLogonRight');
   assert.match(commonPs1, /function Register-GeminiWorkerTask/, 'common.ps1 must define Register-GeminiWorkerTask');
+  assert.match(commonPs1, /SeDenyBatchLogonRight/, 'common.ps1 must inspect SeDenyBatchLogonRight conflicts');
+  assert.match(commonPs1, /NTUSER\.DAT/, 'common.ps1 must verify NTUSER.DAT after profile initialization');
+  assert.match(commonPs1, /geminiWorker\.worker\.connected/, 'Wait-Ready must verify external Gemini worker bridge connection');
   assert.doesNotMatch(commonPs1, /npm ci/, 'common.ps1 must never execute npm ci on customer computers');
 });
 
@@ -91,14 +97,18 @@ test('dedicated Gemini worker scripts and upgrade/uninstall wiring', () => {
 
   const installPs1 = readFileSync(resolve(root, 'scripts/windows/install.ps1'), 'utf8');
   assert.match(installPs1, /Ensure-GeminiWorkerAccount/, 'install.ps1 must provision dedicated Gemini worker account');
+  assert.match(installPs1, /Ensure-GeminiWorkerBatchLogonRight/, 'install.ps1 must grant and verify SeBatchLogonRight');
+  assert.match(installPs1, /Remove-GeminiWorkerBatchLogonRight/, 'install.ps1 fresh rollback must revert newly added SeBatchLogonRight');
   assert.match(installPs1, /Register-GeminiWorkerTask/, 'install.ps1 must register Password-logon worker task');
 
   const updatePs1 = readFileSync(resolve(root, 'scripts/windows/update.ps1'), 'utf8');
   assert.match(updatePs1, /Ensure-GeminiWorkerAccount/, 'update.ps1 must preserve/reuse Gemini worker account');
+  assert.match(updatePs1, /Ensure-GeminiWorkerBatchLogonRight/, 'update.ps1 must grant and verify SeBatchLogonRight');
   assert.match(updatePs1, /gemini-worker-launcher\.ps1/, 'update.ps1 must update worker launcher script');
 
   const uninstallPs1 = readFileSync(resolve(root, 'scripts/windows/uninstall.ps1'), 'utf8');
   assert.match(uninstallPs1, /WhatsAppERPGeminiWorker/, 'uninstall.ps1 must stop & unregister worker task');
+  assert.match(uninstallPs1, /Remove-GeminiWorkerBatchLogonRight/, 'uninstall.ps1 must surgically clean SeBatchLogonRight before user removal');
   assert.match(uninstallPs1, /Remove-LocalUser/, 'uninstall.ps1 must remove dedicated worker local user');
 
   const loginPs1 = readFileSync(resolve(root, 'scripts/windows/gemini-login.ps1'), 'utf8');

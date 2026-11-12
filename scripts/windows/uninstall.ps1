@@ -80,6 +80,24 @@ Invoke-UninstallStep 'Remove application binaries' {
 # Dedicated Gemini worker account, DPAPI credential, and browser profile are cleaned up
 # here while preserving customer data\, backups\, and logs\.
 Invoke-UninstallStep 'Remove service registration and Gemini worker account' {
+    $workerRoot = Join-Path $StateRoot 'gemini-worker'
+    $workerUser = Get-LocalUser -Name $workerUserName -ErrorAction SilentlyContinue
+    $workerSid = if ($workerUser -and $workerUser.SID) { $workerUser.SID.Value } else { $null }
+    if (-not $workerSid) {
+        $sidMarker = Join-Path $workerRoot '.locks\worker-sid.txt'
+        if (Test-Path -LiteralPath $sidMarker) {
+            try { $workerSid = ([IO.File]::ReadAllText($sidMarker)).Trim() } catch {}
+        }
+    }
+    if (-not $workerSid) {
+        $matchedProfile = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
+            Where-Object { -not $_.Special -and $_.LocalPath -and ($_.LocalPath -match ("\\$([regex]::Escape($workerUserName))(\..*)?$")) } |
+            Select-Object -First 1
+        if ($matchedProfile -and $matchedProfile.SID) {
+            $workerSid = $matchedProfile.SID
+        }
+    }
+
     $generated = @(
         'service.json', 'launcher.ps1', 'gemini-worker-launcher.ps1', 'scheduled-backup.ps1',
         'gemini-bridge.json', 'installing.flag', 'data\maintenance.flag', 'data\runtime.lock', 'data\shutdown.json'
@@ -89,23 +107,30 @@ Invoke-UninstallStep 'Remove service registration and Gemini worker account' {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
     }
 
-    $workerRoot = Join-Path $StateRoot 'gemini-worker'
     if (Test-Path -LiteralPath $workerRoot) {
         Remove-Item -LiteralPath $workerRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    $workerUser = Get-LocalUser -Name $workerUserName -ErrorAction SilentlyContinue
-    if ($workerUser) {
-        $workerSid = $workerUser.SID.Value
-        Remove-LocalUser -Name $workerUserName -ErrorAction SilentlyContinue
-        if ($workerSid) {
-            $profileObj = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
-                Where-Object { $_.SID -eq $workerSid } |
-                Select-Object -First 1
-            if ($profileObj) {
-                Remove-CimInstance -InputObject $profileObj -ErrorAction SilentlyContinue
-            }
+    # Remove only the dedicated worker principal from SeBatchLogonRight before removing the account
+    [void](Remove-GeminiWorkerBatchLogonRight $workerUserName $workerSid)
+
+    if ($workerSid) {
+        $profileObjs = @(Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
+            Where-Object { -not $_.Special -and $_.SID -eq $workerSid })
+        foreach ($profileObj in $profileObjs) {
+            Remove-CimInstance -InputObject $profileObj -ErrorAction SilentlyContinue
         }
+    }
+
+    if ($workerUser) {
+        Remove-LocalUser -Name $workerUserName -ErrorAction SilentlyContinue
+    }
+
+    $leftoverProfileDirs = @(Get-ChildItem -Path 'C:\Users' -Directory -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -ieq $workerUserName -or $_.Name -ilike "$workerUserName.*"
+    })
+    foreach ($dir in $leftoverProfileDirs) {
+        Remove-Item -LiteralPath $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

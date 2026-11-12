@@ -68,6 +68,7 @@ try {
             Add-Member -InputObject $existingConfig -NotePropertyName 'GeminiWorkerTaskName' -NotePropertyValue $workerTask -Force
         }
         $workerAccount = Ensure-GeminiWorkerAccount $StateRoot $workerUser
+        [void](Ensure-GeminiWorkerBatchLogonRight $workerAccount.UserName $workerAccount.Sid)
         Initialize-GeminiWorkerUserProfile $StateRoot $workerAccount.Credential $workerAccount.Sid
 
         Write-InstallStage 'browser'
@@ -84,10 +85,14 @@ try {
         Register-ApplicationTasks $existingConfig $StateRoot
         Register-GeminiWorkerTask $existingConfig $StateRoot $workerAccount.Credential
 
-        # Verify service readiness
+        # Verify service readiness and external Gemini worker bridge connection
         Write-InstallStage 'service'
-        Start-ScheduledTask -TaskName $existingConfig.TaskName -ErrorAction SilentlyContinue
-        Start-ScheduledTask -TaskName $workerTask -ErrorAction SilentlyContinue
+        Start-ScheduledTask -TaskName $existingConfig.TaskName
+        try {
+            Start-ScheduledTask -TaskName $workerTask
+        } catch {
+            throw "Failed to start Gemini worker task '$workerTask': $($_.Exception.Message). $(Get-GeminiWorkerStartFailureDiagnostic $workerTask $StateRoot)"
+        }
         Wait-Ready $existingConfig
         Write-Host "Repaired WhatsApp-ERP version $version successfully. Customer data preserved." -ForegroundColor Green
         exit 0
@@ -127,10 +132,13 @@ try {
 
     # 5. Create persistent state directory structure (preserve existing customer data if reinstalling)
     Set-StateAcl $StateRoot 'WhatsAppERPOperations'
-    $workerAccount = Ensure-GeminiWorkerAccount $StateRoot 'WhatsAppERPGemini'
-    Initialize-GeminiWorkerUserProfile $StateRoot $workerAccount.Credential $workerAccount.Sid
-    Write-InstallStage 'browser'
-    Assert-ServiceBrowser $target $StateRoot
+    $workerUserDefault = 'WhatsAppERPGemini'
+    $workerTaskDefault = 'WhatsAppERPGeminiWorker'
+    $hadWorkerUserBefore = [bool](Get-LocalUser -Name $workerUserDefault -ErrorAction SilentlyContinue)
+    $hadWorkerProfileBefore = Test-Path -LiteralPath (Join-Path $StateRoot 'gemini-worker\profile')
+    $workerAccount = $null
+    $batchRightGrant = $null
+    $installMarker = Join-Path $StateRoot 'installing.flag'
 
     $config = [pscustomobject]@{
         ReleasePath = $target
@@ -140,41 +148,87 @@ try {
         CacheDir = (Join-Path $StateRoot 'cache')
         Port = $Port
         TaskName = 'WhatsAppERPOperations'
-        GeminiWorkerUser = $workerAccount.UserName
-        GeminiWorkerTaskName = 'WhatsAppERPGeminiWorker'
+        GeminiWorkerUser = $workerUserDefault
+        GeminiWorkerTaskName = $workerTaskDefault
     }
 
-    Copy-Item (Join-Path $target 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
-    Copy-Item (Join-Path $target 'scripts\windows\gemini-worker-launcher.ps1') (Join-Path $StateRoot 'gemini-worker-launcher.ps1') -Force
-    Copy-Item (Join-Path $target 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
-
-    # Write installing marker to track active deployment
-    $installMarker = Join-Path $StateRoot 'installing.flag'
-    [IO.File]::WriteAllText($installMarker, 'installing', [Text.UTF8Encoding]::new($false))
-
-    # Provision provisional service.json for launcher startup and scope ACLs
-    Write-JsonFile $serviceJsonPath $config
-    Set-GeminiWorkerAcl $StateRoot $config.TaskName $workerAccount.Sid
-
-    # Register scheduled tasks idempotently
-    Register-ApplicationTasks $config $StateRoot
-    Register-GeminiWorkerTask $config $StateRoot $workerAccount.Credential
-
-    # Start service tasks and wait for HTTP readiness
-    Write-InstallStage 'service'
-    Start-ScheduledTask -TaskName $config.TaskName
-    Start-ScheduledTask -TaskName $config.GeminiWorkerTaskName -ErrorAction SilentlyContinue
     try {
+        $workerAccount = Ensure-GeminiWorkerAccount $StateRoot $workerUserDefault
+        $batchRightGrant = Ensure-GeminiWorkerBatchLogonRight $workerAccount.UserName $workerAccount.Sid
+        Initialize-GeminiWorkerUserProfile $StateRoot $workerAccount.Credential $workerAccount.Sid
+        Write-InstallStage 'browser'
+        Assert-ServiceBrowser $target $StateRoot
+
+        Copy-Item (Join-Path $target 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
+        Copy-Item (Join-Path $target 'scripts\windows\gemini-worker-launcher.ps1') (Join-Path $StateRoot 'gemini-worker-launcher.ps1') -Force
+        Copy-Item (Join-Path $target 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
+
+        # Write installing marker to track active deployment
+        [IO.File]::WriteAllText($installMarker, 'installing', [Text.UTF8Encoding]::new($false))
+
+        # Provision provisional service.json for launcher startup and scope ACLs
+        Write-JsonFile $serviceJsonPath $config
+        Set-GeminiWorkerAcl $StateRoot $config.TaskName $workerAccount.Sid
+
+        # Register scheduled tasks idempotently
+        Register-ApplicationTasks $config $StateRoot
+        Register-GeminiWorkerTask $config $StateRoot $workerAccount.Credential
+
+        # Start service tasks and verify both HTTP server and Gemini worker bridge readiness
+        Write-InstallStage 'service'
+        Start-ScheduledTask -TaskName $config.TaskName
+        try {
+            Start-ScheduledTask -TaskName $config.GeminiWorkerTaskName
+        } catch {
+            throw "Failed to start Gemini worker task '$($config.GeminiWorkerTaskName)': $($_.Exception.Message). $(Get-GeminiWorkerStartFailureDiagnostic $config.GeminiWorkerTaskName $StateRoot)"
+        }
         Wait-Ready $config
     } catch {
-        # CRITICAL C4 FIX: If readiness verification fails, rollback service.json and stop task
-        # so this failed attempt does not leave an unverified service.json behind!
-        Write-Host "Deployment verification failed. Rolling back provisional service.json..." -ForegroundColor Red
+        Write-Host "Deployment failed. Rolling back fresh installation artifacts while preserving customer data..." -ForegroundColor Red
         try { Stop-ServiceProcessTree $config } catch { Write-Warning $_.Exception.Message }
         foreach ($taskName in @($config.TaskName, ($config.TaskName + 'Backup'), $config.GeminiWorkerTaskName)) {
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         }
-        Remove-Item -LiteralPath $serviceJsonPath -Force -ErrorAction SilentlyContinue
+        foreach ($generatedFile in @('service.json', 'installing.flag', 'launcher.ps1', 'gemini-worker-launcher.ps1', 'scheduled-backup.ps1')) {
+            $p = Join-Path $StateRoot $generatedFile
+            if (Test-Path -LiteralPath $p) {
+                Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($workerAccount) {
+            if ($batchRightGrant -and $batchRightGrant.Changed) {
+                try {
+                    [void](Remove-GeminiWorkerBatchLogonRight $workerAccount.UserName $workerAccount.Sid)
+                } catch {
+                    Write-Warning "Could not revert SeBatchLogonRight during rollback: $($_.Exception.Message)"
+                }
+            }
+            if (-not $hadWorkerUserBefore) {
+                if (-not ($batchRightGrant -and $batchRightGrant.Changed)) {
+                    try { [void](Remove-GeminiWorkerBatchLogonRight $workerAccount.UserName $workerAccount.Sid) } catch {}
+                }
+                $profileObj = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
+                    Where-Object { $_.SID -eq $workerAccount.Sid } |
+                    Select-Object -First 1
+                if ($profileObj) {
+                    Remove-CimInstance -InputObject $profileObj -ErrorAction SilentlyContinue
+                }
+                Remove-LocalUser -Name $workerAccount.UserName -ErrorAction SilentlyContinue
+                if (-not $hadWorkerProfileBefore) {
+                    $workerRoot = Get-GeminiWorkerRoot $StateRoot
+                    if (Test-Path -LiteralPath $workerRoot) {
+                        Remove-Item -LiteralPath $workerRoot -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                    $bridgeFile = Get-GeminiBridgeTokenPath $StateRoot
+                    if (Test-Path -LiteralPath $bridgeFile) {
+                        Remove-Item -LiteralPath $bridgeFile -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+        }
+        if (Test-Path -LiteralPath $target) {
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+        }
         throw
     }
 
