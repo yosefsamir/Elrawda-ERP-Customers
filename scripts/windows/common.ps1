@@ -622,8 +622,8 @@ function Ensure-GeminiWorkerAccount([string]$StateRoot, [string]$UserName = 'Wha
 
     $usersGroup = ([System.Security.Principal.SecurityIdentifier]'S-1-5-32-545').Translate([System.Security.Principal.NTAccount]).Value.Split('\')[-1]
     $adminsGroup = ([System.Security.Principal.SecurityIdentifier]'S-1-5-32-544').Translate([System.Security.Principal.NTAccount]).Value.Split('\')[-1]
-    try { Add-LocalGroupMember -Group $usersGroup -Member $UserName -ErrorAction Stop } catch {}
-    try { Remove-LocalGroupMember -Group $adminsGroup -Member $UserName -ErrorAction Stop } catch {}
+    Add-LocalGroupMember -Group $usersGroup -Member $UserName -ErrorAction SilentlyContinue
+    Remove-LocalGroupMember -Group $adminsGroup -Member $UserName -ErrorAction SilentlyContinue
 
     $sid = (Get-LocalUser -Name $UserName).SID.Value
     return [pscustomobject]@{
@@ -686,6 +686,7 @@ function Initialize-GeminiWorkerUserProfile([string]$StateRoot, [pscredential]$C
                 -ArgumentList '/c', 'exit 0' `
                 -Credential $Credential `
                 -LoadUserProfile `
+                -WorkingDirectory "$env:SystemRoot\System32" `
                 -WindowStyle Hidden `
                 -Wait `
                 -PassThru

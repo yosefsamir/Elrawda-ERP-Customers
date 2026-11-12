@@ -84,6 +84,7 @@ test('common.ps1 self-contained runtime helpers', () => {
   assert.match(commonPs1, /function Register-GeminiWorkerTask/, 'common.ps1 must define Register-GeminiWorkerTask');
   assert.match(commonPs1, /SeDenyBatchLogonRight/, 'common.ps1 must inspect SeDenyBatchLogonRight conflicts');
   assert.match(commonPs1, /NTUSER\.DAT/, 'common.ps1 must verify NTUSER.DAT after profile initialization');
+  assert.match(commonPs1, /-LoadUserProfile[\s\S]*?-WorkingDirectory\s+"\$env:SystemRoot\\System32"/, 'Start-Process -LoadUserProfile must specify an accessible -WorkingDirectory');
   assert.match(commonPs1, /geminiWorker\.worker\.connected/, 'Wait-Ready must verify external Gemini worker bridge connection');
   assert.doesNotMatch(commonPs1, /New-LocalUser\s[^|{}]*?-UserMayChangePassword/, 'New-LocalUser uses -UserMayNotChangePassword (Set-LocalUser uses -UserMayChangePassword)');
   const descMatch = commonPs1.match(/New-LocalUser\s[^|{}]*?-Description\s+'([^']+)'/);
