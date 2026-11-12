@@ -467,10 +467,15 @@ export function PortalSettings({
                         : "active"
                   }`}
                 >
-                  {geminiStatus.requiresReauth || !geminiStatus.profileExists ? (
+                  {!geminiStatus.profileExists ? (
                     <>
                       <AlertTriangle size={13} style={{ verticalAlign: "text-bottom", marginInlineEnd: 4 }} />
                       حساب Google غير متصل
+                    </>
+                  ) : geminiStatus.requiresReauth ? (
+                    <>
+                      <AlertTriangle size={13} style={{ verticalAlign: "text-bottom", marginInlineEnd: 4 }} />
+                      توقفت جلسة Google — أعد تسجيل الدخول
                     </>
                   ) : !processingEnabled ? (
                     "متوقف مؤقتًا (الحساب متصل)"
@@ -481,8 +486,12 @@ export function PortalSettings({
                   )}
                 </span>
                 <span className="gemini-account-hint">
-                  {geminiStatus.requiresReauth || !geminiStatus.profileExists
+                  {!geminiStatus.profileExists
                     ? "سجّل الدخول مرة واحدة لبدء تحسين الصور تلقائيًا."
+                    : geminiStatus.requiresReauth
+                      ? geminiStatus.authenticatedAt
+                        ? `تم حفظ جلسة بتاريخ ${dateTime(geminiStatus.authenticatedAt)} لكنها توقفت في الخلفية؛ أعد تشغيل «Gemini Web Login» ثم اضغط «استئناف».`
+                        : "انتهت أو رُفضت جلسة Google في الخلفية؛ أعد تشغيل «Gemini Web Login» ثم اضغط «استئناف»."
                     : !processingEnabled
                       ? "الصور الجديدة تُعرض مباشرةً بدون تعديل حتى تعيد التفعيل."
                       : "يتم تحسين الصور الجديدة تلقائيًا في الخلفية."}

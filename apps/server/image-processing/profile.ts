@@ -84,11 +84,30 @@ export interface GeminiProfileLockOptions {
 
 export type GeminiStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
 
+export interface GeminiCdpCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+  priority?: "Low" | "Medium" | "High";
+  sourceScheme?: "Unset" | "NonSecure" | "Secure";
+  sourcePort?: number;
+  partitionKey?: {
+    topLevelSite: string;
+    hasCrossSiteAncestor?: boolean;
+  };
+}
+
 export interface GeminiEncryptedAuthSnapshot {
   version: 1;
   savedAt: string;
   userAgent: string;
   storageState: GeminiStorageState;
+  cdpCookies?: GeminiCdpCookie[];
 }
 
 export function getEncryptedStorageStatePath(profileRoot: string): string {
@@ -104,6 +123,7 @@ export function saveEncryptedGeminiStorageState(options: {
   dataDir: string;
   storageState: GeminiStorageState;
   userAgent: string;
+  cdpCookies?: GeminiCdpCookie[];
   savedAt?: string;
 }): GeminiEncryptedAuthSnapshot {
   const locks = join(resolve(options.profileRoot), ".locks");
@@ -116,6 +136,7 @@ export function saveEncryptedGeminiStorageState(options: {
     savedAt: options.savedAt ?? new Date().toISOString(),
     userAgent: options.userAgent,
     storageState: options.storageState,
+    ...(options.cdpCookies?.length ? { cdpCookies: options.cdpCookies } : {}),
   };
   const encrypted = localSecretStore(resolvedDataDir).encrypt(snapshot);
   const target = getEncryptedStorageStatePath(options.profileRoot);
@@ -154,7 +175,26 @@ export function loadEncryptedGeminiStorageState(
     ) {
       return null;
     }
-    return parsed as GeminiEncryptedAuthSnapshot;
+    const cdpCookies = Array.isArray(parsed.cdpCookies)
+      ? parsed.cdpCookies.filter(
+          (cookie): cookie is GeminiCdpCookie =>
+            Boolean(cookie) &&
+            typeof cookie === "object" &&
+            typeof cookie.name === "string" &&
+            cookie.name.length > 0 &&
+            typeof cookie.value === "string" &&
+            typeof cookie.domain === "string" &&
+            cookie.domain.length > 0 &&
+            typeof cookie.path === "string",
+        )
+      : undefined;
+    return {
+      version: 1,
+      savedAt: parsed.savedAt,
+      userAgent: parsed.userAgent,
+      storageState: parsed.storageState,
+      ...(cdpCookies?.length ? { cdpCookies } : {}),
+    };
   } catch {
     return null;
   }

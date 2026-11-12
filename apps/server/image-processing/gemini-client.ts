@@ -226,26 +226,221 @@ function normalizeDesktopUserAgent(userAgent?: string | null): string | undefine
   return normalized || undefined;
 }
 
-async function applyEncryptedStorageStateToContext(
+function isFullChromeExecutable(executablePath?: string): boolean {
+  if (!executablePath) return false;
+  const fileName = executablePath.split(/[/\\]/).pop()?.toLowerCase() ?? "";
+  return Boolean(fileName) && !fileName.includes("headless-shell");
+}
+
+function isKnownHttpsGoogleDomain(domain: string): boolean {
+  const normalized = domain.trim().replace(/^\./, "").toLowerCase();
+  return (
+    /(^|\.)google(\.[a-z]{2,3})+$/i.test(normalized) ||
+    /(^|\.)(youtube\.com|gstatic\.com|googleusercontent\.com|googleapis\.com|withgoogle\.com)$/i.test(normalized)
+  );
+}
+
+type GeminiCdpCookieItem = NonNullable<GeminiEncryptedAuthSnapshot["cdpCookies"]>[number];
+type CdpCookieParamInput = {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  httpOnly: boolean;
+  secure: boolean;
+  expires?: number;
+  sameSite?: "Strict" | "Lax" | "None";
+  priority?: "Low" | "Medium" | "High";
+  sourceScheme?: "Unset" | "NonSecure" | "Secure";
+  sourcePort?: number;
+  partitionKey?: {
+    topLevelSite: string;
+    hasCrossSiteAncestor: boolean;
+  };
+};
+
+async function captureCdpCookies(context: BrowserContext, page: Page): Promise<GeminiCdpCookieItem[]> {
+  try {
+    const cdp = await context.newCDPSession(page);
+    try {
+      const { cookies } = await cdp.send("Storage.getCookies");
+      const captured: GeminiCdpCookieItem[] = [];
+      for (const cookie of cookies) {
+        if (!cookie.name || !cookie.domain) continue;
+        const entry: GeminiCdpCookieItem = {
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain,
+          path: cookie.path || "/",
+          httpOnly: Boolean(cookie.httpOnly),
+          secure: Boolean(cookie.secure),
+        };
+        if (!cookie.session && typeof cookie.expires === "number" && Number.isFinite(cookie.expires) && cookie.expires > 0) {
+          entry.expires = cookie.expires;
+        }
+        if (cookie.sameSite === "Strict" || cookie.sameSite === "Lax" || cookie.sameSite === "None") {
+          entry.sameSite = cookie.sameSite;
+        }
+        if (cookie.priority === "Low" || cookie.priority === "Medium" || cookie.priority === "High") {
+          entry.priority = cookie.priority;
+        }
+        if (cookie.sourceScheme === "Unset" || cookie.sourceScheme === "NonSecure" || cookie.sourceScheme === "Secure") {
+          entry.sourceScheme = cookie.sourceScheme;
+        }
+        if (typeof cookie.sourcePort === "number" && (cookie.sourcePort === -1 || (cookie.sourcePort >= 1 && cookie.sourcePort <= 65535))) {
+          entry.sourcePort = cookie.sourcePort;
+        }
+        if (cookie.partitionKey && !cookie.partitionKeyOpaque && typeof cookie.partitionKey.topLevelSite === "string" && cookie.partitionKey.topLevelSite.length > 0) {
+          entry.partitionKey = {
+            topLevelSite: cookie.partitionKey.topLevelSite,
+            hasCrossSiteAncestor: Boolean(cookie.partitionKey.hasCrossSiteAncestor),
+          };
+        }
+        captured.push(entry);
+      }
+      return captured;
+    } finally {
+      await cdp.detach().catch(() => {});
+    }
+  } catch {
+    return [];
+  }
+}
+
+function buildCdpCookieParamsFromSnapshot(snapshot: GeminiEncryptedAuthSnapshot): CdpCookieParamInput[] {
+  if (snapshot.cdpCookies?.length) {
+    const params: CdpCookieParamInput[] = [];
+    for (const cookie of snapshot.cdpCookies) {
+      if (!cookie.name || !cookie.domain) continue;
+      const param: CdpCookieParamInput = {
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path || "/",
+        httpOnly: Boolean(cookie.httpOnly),
+        secure: Boolean(cookie.secure),
+      };
+      if (typeof cookie.expires === "number" && Number.isFinite(cookie.expires) && cookie.expires > 0) {
+        param.expires = cookie.expires;
+      }
+      if (cookie.sameSite === "Strict" || cookie.sameSite === "Lax" || cookie.sameSite === "None") {
+        param.sameSite = cookie.sameSite;
+      }
+      if (cookie.priority === "Low" || cookie.priority === "Medium" || cookie.priority === "High") {
+        param.priority = cookie.priority;
+      }
+      if (cookie.sourceScheme === "Unset" || cookie.sourceScheme === "NonSecure" || cookie.sourceScheme === "Secure") {
+        param.sourceScheme = cookie.sourceScheme;
+      }
+      if (typeof cookie.sourcePort === "number" && (cookie.sourcePort === -1 || (cookie.sourcePort >= 1 && cookie.sourcePort <= 65535))) {
+        param.sourcePort = cookie.sourcePort;
+      }
+      if (cookie.partitionKey?.topLevelSite) {
+        param.partitionKey = {
+          topLevelSite: cookie.partitionKey.topLevelSite,
+          hasCrossSiteAncestor: Boolean(cookie.partitionKey.hasCrossSiteAncestor),
+        };
+      }
+      params.push(param);
+    }
+    return params;
+  }
+
+  const params: CdpCookieParamInput[] = [];
+  for (const cookie of snapshot.storageState.cookies) {
+    if (!cookie.name || !cookie.domain) continue;
+    const httpsContext = Boolean(cookie.secure) || isKnownHttpsGoogleDomain(cookie.domain);
+    const param: CdpCookieParamInput = {
+      name: cookie.name,
+      value: cookie.value,
+      domain: cookie.domain,
+      path: cookie.path || "/",
+      httpOnly: Boolean(cookie.httpOnly),
+      secure: Boolean(cookie.secure),
+      ...(httpsContext ? { sourceScheme: "Secure", sourcePort: 443 } : {}),
+    };
+    if (typeof cookie.expires === "number" && Number.isFinite(cookie.expires) && cookie.expires > 0) {
+      param.expires = cookie.expires;
+    }
+    if (cookie.sameSite === "Strict" || cookie.sameSite === "Lax" || cookie.sameSite === "None") {
+      param.sameSite = cookie.sameSite;
+    }
+    params.push(param);
+  }
+  return params;
+}
+
+async function applyEncryptedCookiesToContext(
   context: BrowserContext,
   snapshot: GeminiEncryptedAuthSnapshot,
   log: (event: string, fields?: Record<string, unknown>) => void,
 ): Promise<void> {
   await context.clearCookies();
-  const cookies = snapshot.storageState.cookies.filter((cookie) => Boolean(cookie.name && cookie.domain));
-  if (cookies.length > 0) {
+  const cdpParams = buildCdpCookieParamsFromSnapshot(snapshot);
+  if (cdpParams.length === 0) return;
+
+  const existingPages = context.pages().filter((page) => !page.isClosed());
+  const cdpPage = existingPages[0] ?? (await context.newPage());
+  const createdTempPage = existingPages.length === 0;
+  try {
+    const cdp = await context.newCDPSession(cdpPage);
     try {
-      await context.addCookies(cookies);
+      await cdp.send("Network.clearBrowserCookies").catch(() => {});
+      try {
+        await cdp.send("Network.setCookies", { cookies: cdpParams });
+        return;
+      } catch (error) {
+        log("gemini_cookie_batch_fallback", {
+          mode: "cdp",
+          count: cdpParams.length,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        let appliedAny = false;
+        for (const cookie of cdpParams) {
+          try {
+            await cdp.send("Network.setCookies", { cookies: [cookie] });
+            appliedAny = true;
+          } catch {}
+        }
+        if (appliedAny) return;
+      }
+    } finally {
+      await cdp.detach().catch(() => {});
+    }
+  } catch (error) {
+    log("gemini_cookie_cdp_fallback", {
+      count: cdpParams.length,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    if (createdTempPage) {
+      await cdpPage.close().catch(() => {});
+    }
+  }
+
+  const fallbackCookies = snapshot.storageState.cookies.filter((cookie) => Boolean(cookie.name && cookie.domain));
+  if (fallbackCookies.length > 0) {
+    try {
+      await context.addCookies(fallbackCookies);
     } catch (error) {
       log("gemini_cookie_batch_fallback", {
-        count: cookies.length,
+        mode: "playwright",
+        count: fallbackCookies.length,
         message: error instanceof Error ? error.message : String(error),
       });
-      for (const cookie of cookies) {
+      for (const cookie of fallbackCookies) {
         await context.addCookies([cookie]).catch(() => {});
       }
     }
   }
+}
+
+async function applyEncryptedStorageStateToContext(
+  context: BrowserContext,
+  snapshot: GeminiEncryptedAuthSnapshot,
+  log: (event: string, fields?: Record<string, unknown>) => void,
+): Promise<void> {
+  await applyEncryptedCookiesToContext(context, snapshot, log);
 
   const origins = snapshot.storageState.origins.filter(
     (entry) =>
@@ -320,17 +515,32 @@ export class GeminiBrowserClient implements ImageProcessor {
     this.lock = new GeminiProfileLock(this.config.profileRoot);
     try {
       await this.lock.prepare();
+      if (needsSync) {
+        // Drop any poisoned cookies/Preferences from previous headless runs before launching Chrome
+        try {
+          rmSync(this.config.profileDir, { recursive: true, force: true });
+        } catch (error) {
+          this.log("gemini_profile_reset_warning", {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        mkdirSync(this.config.profileDir, { recursive: true });
+      }
       const executablePath = resolveChromiumExecutable(this.root);
       const userAgent = normalizeDesktopUserAgent(snapshot?.userAgent);
+      const useNewHeadless = isFullChromeExecutable(executablePath);
       this.context = await chromium.launchPersistentContext(this.config.profileDir, {
         ...(executablePath ? { executablePath } : {}),
         headless: true,
         acceptDownloads: true,
         downloadsPath: tempDownloadDir,
-        viewport: { width: 1366, height: 900 },
-        ...(userAgent ? { userAgent } : {}),
-        ignoreDefaultArgs: ["--enable-automation"],
+        viewport: { width: 1280, height: 900 },
+        ...(!useNewHeadless && userAgent ? { userAgent } : {}),
+        ignoreDefaultArgs: useNewHeadless ? ["--enable-automation", "--headless"] : ["--enable-automation"],
         args: [
+          ...(useNewHeadless ? ["--headless=new"] : []),
+          ...(useNewHeadless && userAgent ? [`--user-agent=${userAgent}`] : []),
+          "--window-size=1280,900",
           "--disable-dev-shm-usage",
           "--no-first-run",
           "--disable-blink-features=AutomationControlled",
@@ -339,10 +549,12 @@ export class GeminiBrowserClient implements ImageProcessor {
       if (snapshot && needsSync) {
         await applyEncryptedStorageStateToContext(this.context, snapshot, this.log);
         markStorageStateSynced(this.config.profileRoot, snapshot.savedAt);
+        const syncedCookieCount = snapshot.cdpCookies?.length ?? snapshot.storageState.cookies.length;
         this.log("gemini_storage_state_synced", {
           savedAt: snapshot.savedAt,
-          cookies: snapshot.storageState.cookies.length,
-          origins: snapshot.storageState.origins.length,
+          cookieCount: syncedCookieCount,
+          cdpCookieCount: snapshot.cdpCookies?.length ?? 0,
+          originCount: snapshot.storageState.origins.length,
         });
       }
       return this.context;
@@ -405,6 +617,25 @@ export class GeminiBrowserClient implements ImageProcessor {
     }
 
     if (isGoogleOriginUrl(page.url()) && !(await hasGoogleAuthCookies(page.context(), page.url()))) {
+      const currentCookies = await page.context().cookies().catch(() => []);
+      let host = "";
+      try {
+        host = new URL(page.url()).hostname;
+      } catch {}
+      const googleCookieNames = [...new Set(
+        currentCookies
+          .filter((cookie) => cookie.domain.includes("google") || cookie.domain.includes("gemini"))
+          .map((cookie) => cookie.name),
+      )].slice(0, 30);
+      this.log("gemini_reauth_triggered", {
+        reason: "MISSING_GOOGLE_AUTH_COOKIES",
+        host,
+        cookieCount: currentCookies.length,
+        hasSid: currentCookies.some((cookie) => cookie.name === "SID" || cookie.name === "__Secure-1PSID"),
+        hasOsid: currentCookies.some((cookie) => cookie.name === "OSID" || cookie.name === "__Secure-OSID"),
+        hasLsid: currentCookies.some((cookie) => cookie.name === "LSID" || cookie.name === "__Host-1PLSID"),
+        googleCookieNames,
+      });
       markGeminiReauthRequired(this.config.profileRoot, "REAUTH_REQUIRED");
       throw new GeminiAutomationError(
         "REAUTH_REQUIRED",
@@ -1262,14 +1493,14 @@ export async function runInteractiveGeminiLogin(options: {
 
       if (await isInteractiveGeminiSessionAuthenticated(context, config.geminiUrl)) {
         onStage?.("confirming");
-        await openPages[0]!.waitForTimeout(1000).catch(() => {});
+        await openPages[0]!.waitForTimeout(600).catch(() => {});
         if (await isInteractiveGeminiSessionAuthenticated(context, config.geminiUrl)) {
           authenticated = true;
           break;
         }
         onStage?.("waiting_for_login");
       }
-      await openPages[0]!.waitForTimeout(1500).catch(() => {});
+      await openPages[0]!.waitForTimeout(800).catch(() => {});
     }
 
     if (signal?.aborted) {
@@ -1282,11 +1513,13 @@ export async function runInteractiveGeminiLogin(options: {
     const activePage = context.pages().find((p) => !p.isClosed()) ?? (await context.newPage());
     const rawUserAgent = await activePage.evaluate(() => navigator.userAgent).catch(() => "");
     const userAgent = normalizeDesktopUserAgent(rawUserAgent) ?? rawUserAgent;
+    const cdpCookies = await captureCdpCookies(context, activePage);
     const storageState = await context.storageState();
     saveEncryptedGeminiStorageState({
       profileRoot: config.profileRoot,
       dataDir: config.dataDir,
       storageState,
+      cdpCookies,
       userAgent,
     });
 

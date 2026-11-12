@@ -23,7 +23,20 @@ async function main() {
     const config = getImageProcessingConfig({ db: db as any, dataDir, root });
 
     if (command === "login") {
-      await runInteractiveGeminiLogin({ config, root });
+      let lastStage = "";
+      await runInteractiveGeminiLogin({
+        config,
+        root,
+        onStage(stage: string) {
+          if (stage === lastStage) return;
+          lastStage = stage;
+          if (stage === "waiting_for_login") {
+            console.log("Browser opened at Gemini Web. Sign in to Google and wait for the Gemini prompt box to load...");
+          } else if (stage === "confirming") {
+            console.log("Detected signed-in Gemini session (/app) — encrypting & saving session (do not close Chrome yet)...");
+          }
+        },
+      });
       if (db) {
         try {
           db.prepare(

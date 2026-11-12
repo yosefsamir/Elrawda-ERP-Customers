@@ -34,6 +34,7 @@ import {
   getEncryptedStorageStatePath,
   getGeminiProfileStatus,
   getSyncedStorageStateTimestamp,
+  loadEncryptedGeminiStorageState,
   saveEncryptedGeminiStorageState,
   markGeminiAuthenticated,
 } from "../apps/server/image-processing/profile.js";
@@ -2371,6 +2372,289 @@ test("Stamp options independently control Logo & Code on processed images and st
     try {
       fixture.db.close();
     } catch {}
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CDP cookies preserve Unspecified SameSite & Secure scheme/port, reset stale profileDir, and log cookieCount", async () => {
+  const root = mkdtempSync(join(tmpdir(), "imgproc-cdp-cookies-"));
+  const prevUrl = process.env.GEMINI_WEB_URL;
+  const prevProfile = process.env.GEMINI_PROFILE_DIR;
+
+  const sampleOutPng = await makeSolidPng(320, 320, { r: 25, g: 185, b: 95 });
+  const sampleInPng = await makeSolidPng(200, 200, { r: 210, g: 40, b: 40 });
+  const seenUserAgents: string[] = [];
+  const seenCookies: string[] = [];
+
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const reqUrl = req.url || "/";
+    if (reqUrl.startsWith("/generated-preview.png")) {
+      res.writeHead(200, { "Content-Type": "image/png" });
+      res.end(sampleOutPng);
+      return;
+    }
+    if (reqUrl.startsWith("/generated-fullres.png")) {
+      res.writeHead(200, {
+        "Content-Type": "image/png",
+        "Content-Disposition": 'attachment; filename="gemini-generated-fullres.png"',
+      });
+      res.end(sampleOutPng);
+      return;
+    }
+    if (reqUrl.startsWith("/submit") && req.method === "POST") {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end('{"ok":true}');
+      });
+      return;
+    }
+    if (reqUrl.startsWith("/app")) {
+      seenUserAgents.push(String(req.headers["user-agent"] ?? ""));
+      const cookieHeader = String(req.headers.cookie ?? "");
+      seenCookies.push(cookieHeader);
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html>
+<html><body>
+  <main id="chat">
+    <button type="button" id="toolsBtn" aria-label="Upload & tools">Upload &amp; tools</button>
+    <div id="toolsMenu" role="menu" style="display:none">
+      <button type="button" id="uploadMenuItem" role="menuitem">Upload files</button>
+    </div>
+    <input id="fileInput" type="file" accept="image/*" style="display:none" />
+    <div id="previewMount"></div>
+    <div id="promptBox" role="textbox" aria-label="Enter a prompt for Gemini" contenteditable="true"></div>
+    <button type="button" id="sendBtn" aria-label="Send message">Send</button>
+  </main>
+  <script>
+    const toolsBtn = document.getElementById("toolsBtn");
+    const toolsMenu = document.getElementById("toolsMenu");
+    const uploadMenuItem = document.getElementById("uploadMenuItem");
+    const fileInput = document.getElementById("fileInput");
+    const previewMount = document.getElementById("previewMount");
+    const promptBox = document.getElementById("promptBox");
+    const sendBtn = document.getElementById("sendBtn");
+    const chat = document.getElementById("chat");
+    toolsBtn.addEventListener("click", () => { toolsMenu.style.display = "block"; });
+    uploadMenuItem.addEventListener("click", () => { toolsMenu.style.display = "none"; fileInput.click(); });
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const preview = document.createElement("uploader-file-preview");
+      preview.textContent = file.name;
+      previewMount.appendChild(preview);
+    });
+    sendBtn.addEventListener("click", async () => {
+      await fetch("/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const turn = document.createElement("model-response");
+      turn.setAttribute("aria-busy", "true");
+      setTimeout(() => {
+        turn.removeAttribute("aria-busy");
+        const img = document.createElement("img");
+        img.src = "/generated-preview.png?ts=" + Date.now();
+        const dl = document.createElement("a");
+        dl.href = "/generated-fullres.png?ts=" + Date.now();
+        dl.setAttribute("download", "gemini-generated-fullres.png");
+        dl.setAttribute("aria-label", "Download full size image");
+        turn.appendChild(img);
+        turn.appendChild(dl);
+      }, 150);
+      chat.appendChild(turn);
+    });
+  </script>
+</body></html>`);
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end("ok");
+  });
+
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const addr = server.address();
+  assert.ok(addr && typeof addr === "object");
+  const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+  const dataDir = join(root, "data");
+  const profileRoot = join(root, "gemini-auth");
+  mkdirSync(dataDir, { recursive: true });
+  const db = openDatabase(join(dataDir, "app.sqlite"));
+
+  try {
+    process.env.GEMINI_WEB_URL = `${baseUrl}/app`;
+    process.env.GEMINI_PROFILE_DIR = profileRoot;
+    const cfg = getImageProcessingConfig({ db, dataDir, root });
+    const sampleInputPath = join(root, "sample.png");
+    writeFileSync(sampleInputPath, sampleInPng);
+
+    // Seed stale marker in profileDir to confirm needsSync resets poisoned profileDir cleanly
+    const staleMarker = join(cfg.profileDir, "Default", "poisoned-marker.txt");
+    mkdirSync(join(cfg.profileDir, "Default"), { recursive: true });
+    writeFileSync(staleMarker, "stale-poisoned-state");
+
+    const futureExpires = Math.floor(Date.now() / 1000) + 86400;
+    saveEncryptedGeminiStorageState({
+      profileRoot: cfg.profileRoot,
+      dataDir: cfg.dataDir,
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) HeadlessChrome/156.0.0.0 Safari/537.36",
+      savedAt: "2026-11-12T02:00:00.000Z",
+      storageState: {
+        cookies: [
+          {
+            name: "sid",
+            value: "local_http_sid",
+            domain: "127.0.0.1",
+            path: "/",
+            expires: futureExpires,
+            httpOnly: true,
+            secure: false,
+            sameSite: "Lax",
+          },
+          {
+            name: "SID",
+            value: "google_sid_secret",
+            domain: ".google.com",
+            path: "/",
+            expires: futureExpires,
+            httpOnly: false,
+            secure: false,
+            sameSite: "Lax",
+          },
+        ],
+        origins: [],
+      },
+      cdpCookies: [
+        {
+          name: "sid",
+          value: "local_http_sid",
+          domain: "127.0.0.1",
+          path: "/",
+          expires: futureExpires,
+          httpOnly: true,
+          secure: false,
+          sourceScheme: "NonSecure",
+          sourcePort: addr.port,
+        },
+        {
+          name: "SID",
+          value: "google_sid_secret",
+          domain: ".google.com",
+          path: "/",
+          expires: futureExpires,
+          httpOnly: false,
+          secure: false,
+          priority: "High",
+          sourceScheme: "Secure",
+          sourcePort: 443,
+        },
+      ],
+    });
+
+    const loaded = loadEncryptedGeminiStorageState(cfg.profileRoot, cfg.dataDir);
+    assert.ok(loaded, "encrypted snapshot should decrypt");
+    assert.equal(loaded.cdpCookies?.length, 2);
+    const loadedGoogleSid = loaded.cdpCookies?.find((c) => c.domain === ".google.com" && c.name === "SID");
+    assert.ok(loadedGoogleSid);
+    assert.equal(loadedGoogleSid.sameSite, undefined, "omitted SameSite (Unspecified) must survive encryption round-trip");
+    assert.equal(loadedGoogleSid.sourceScheme, "Secure");
+    assert.equal(loadedGoogleSid.sourcePort, 443);
+
+    const loggedEvents: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+    const client = new GeminiBrowserClient(cfg, root, (event, fields) => {
+      loggedEvents.push({ event, fields });
+    });
+    try {
+      const result = await client.process({
+        jobId: "cdp-sync-1",
+        sourceImagePath: sampleInputPath,
+        prompt: "studio",
+      });
+      assert.ok(result.buffer.length > 50);
+    } finally {
+      await client.close();
+    }
+
+    assert.equal(existsSync(staleMarker), false, "needsSync must wipe stale profileDir contents");
+    const syncEvent = loggedEvents.find((e) => e.event === "gemini_storage_state_synced");
+    assert.ok(syncEvent, "gemini_storage_state_synced event should be logged");
+    assert.equal(syncEvent.fields?.cookieCount, 2);
+    assert.equal(syncEvent.fields?.cdpCookieCount, 2);
+    assert.equal("cookies" in (syncEvent.fields ?? {}), false, "must log cookieCount rather than sensitive 'cookies' key");
+    assert.ok(seenUserAgents.some((ua) => ua.includes("Chrome/156.0.0.0") && !ua.includes("HeadlessChrome/")));
+    assert.ok(seenCookies.some((c) => c.includes("sid=local_http_sid")));
+
+    // Inspect Chromium cookie store via CDP Storage.getCookies to confirm exact SameSite + sourceScheme + sourcePort
+    const executablePath = resolveChromiumExecutable(root);
+    const inspectCtx = await chromium.launchPersistentContext(cfg.profileDir, {
+      ...(executablePath ? { executablePath } : {}),
+      headless: true,
+    });
+    try {
+      const inspectPage = inspectCtx.pages()[0] ?? (await inspectCtx.newPage());
+      const cdp = await inspectCtx.newCDPSession(inspectPage);
+      const { cookies: storedCookies } = await cdp.send("Storage.getCookies");
+      await cdp.detach().catch(() => {});
+      const googleSid = storedCookies.find((c) => c.domain === ".google.com" && c.name === "SID");
+      assert.ok(googleSid, ".google.com SID cookie must be present in Chromium store");
+      assert.equal(googleSid.sameSite, undefined, "SameSite=Unspecified must not be coerced to Lax");
+      assert.equal(googleSid.sourceScheme, "Secure", "sourceScheme must stay Secure");
+      assert.equal(googleSid.sourcePort, 443, "sourcePort must stay 443");
+    } finally {
+      await inspectCtx.close();
+    }
+
+    // Legacy snapshot fallback (no cdpCookies) must still upgrade Google cookies to sourceScheme=Secure / sourcePort=443
+    saveEncryptedGeminiStorageState({
+      profileRoot: cfg.profileRoot,
+      dataDir: cfg.dataDir,
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/156.0.0.0 Safari/537.36",
+      savedAt: "2026-11-12T02:05:00.000Z",
+      storageState: {
+        cookies: [
+          {
+            name: "SID",
+            value: "legacy_google_sid",
+            domain: ".google.com",
+            path: "/",
+            expires: futureExpires,
+            httpOnly: false,
+            secure: false,
+            sameSite: "Lax",
+          },
+        ],
+        origins: [],
+      },
+    });
+    const legacyClient = new GeminiBrowserClient(cfg, root);
+    try {
+      await legacyClient.process({
+        jobId: "cdp-sync-legacy",
+        sourceImagePath: sampleInputPath,
+        prompt: "studio",
+      });
+    } finally {
+      await legacyClient.close();
+    }
+    const inspectLegacyCtx = await chromium.launchPersistentContext(cfg.profileDir, {
+      ...(executablePath ? { executablePath } : {}),
+      headless: true,
+    });
+    try {
+      const p = inspectLegacyCtx.pages()[0] ?? (await inspectLegacyCtx.newPage());
+      const cdp = await inspectLegacyCtx.newCDPSession(p);
+      const { cookies: legacyStored } = await cdp.send("Storage.getCookies");
+      await cdp.detach().catch(() => {});
+      const googleSid = legacyStored.find((c) => c.domain === ".google.com" && c.name === "SID");
+      assert.ok(googleSid);
+      assert.equal(googleSid.sourceScheme, "Secure");
+      assert.equal(googleSid.sourcePort, 443);
+    } finally {
+      await inspectLegacyCtx.close();
+    }
+  } finally {
+    restoreEnvVar("GEMINI_WEB_URL", prevUrl);
+    restoreEnvVar("GEMINI_PROFILE_DIR", prevProfile);
+    db.close();
+    server.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
