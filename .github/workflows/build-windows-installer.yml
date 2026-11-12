@@ -16,6 +16,8 @@ on:
 jobs:
   build-windows-installer:
     name: Build Self-Contained Windows Installer
+    # Release commits are built once by their tag, avoiding a duplicate main run.
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[release-tag]')
     runs-on: windows-2022
 
     steps:
@@ -47,6 +49,8 @@ jobs:
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/update-rollback.test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/process-assertions.test.ps1
 
       - name: Fast Inno Setup Compiler Validation (Stub Payload)
         shell: powershell

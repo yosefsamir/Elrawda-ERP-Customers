@@ -9,6 +9,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 . (Join-Path $RepoRoot 'scripts\windows\common.ps1')
+. (Join-Path $PSScriptRoot 'process-assertions.ps1')
 $ErrorActionPreference = 'Continue'
 
 Write-Host "====================================================" -ForegroundColor Cyan
@@ -96,10 +97,10 @@ $UninstallRegKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8
 
 # True only once nothing runs from the install root and port 3211 is free. A /healthz reply alone
 # cannot prove a restart: an orphaned old server answers it too.
-function Wait-ServiceDown([int]$TimeoutSec = 20) {
+function Wait-ServiceDown([int]$TimeoutSec = 20, [switch]$BackendOnly) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     do {
-        $running = @(Get-OwnedProcess $InstallPath)
+        $running = @(Get-InstallProcessesForShutdownCheck $InstallPath -BackendOnly:$BackendOnly)
         $listener = Get-NetTCPConnection -LocalPort 3211 -State Listen -ErrorAction SilentlyContinue
         if ($running.Count -eq 0 -and -not $listener) { return $true }
         Start-Sleep -Milliseconds 500
@@ -286,7 +287,7 @@ try {
     # Test 10: Stopping the task must stop the server, and a restart must start a new one
     $serverPidBefore = Get-ServerPid
     Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
-    $stoppedCleanly = Wait-ServiceDown 20
+    $stoppedCleanly = Wait-ServiceDown 20 -BackendOnly
     Record-Test "Stopping the Service Task Leaves No Orphaned Server" $stoppedCleanly "Server PID $serverPidBefore stopped with its supervisor: $stoppedCleanly." "H2"
 
     Start-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
@@ -300,7 +301,7 @@ try {
     # -------------------------------------------------------------------------
     Write-Host "`n[Test 11] Verifying Stale Runtime Lock Recovery (H3)..." -ForegroundColor Cyan
     Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
-    $downBeforeLock = Wait-ServiceDown 20
+    $downBeforeLock = Wait-ServiceDown 20 -BackendOnly
 
     # Write simulated stale lock file from a previous boot session
     $lockFile = "$env:ProgramData\WhatsApp-ERP\data\runtime.lock"
@@ -324,7 +325,7 @@ try {
     # -------------------------------------------------------------------------
     Write-Host "`n[Test 12] Verifying Stale Maintenance Flag Recovery (H4)..." -ForegroundColor Cyan
     Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
-    $downBeforeFlag = Wait-ServiceDown 20
+    $downBeforeFlag = Wait-ServiceDown 20 -BackendOnly
 
     # Write simulated stale maintenance flag with dead PID
     $flagFile = "$env:ProgramData\WhatsApp-ERP\data\maintenance.flag"
