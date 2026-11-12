@@ -135,7 +135,7 @@ try {
     if ($null -eq $existingUser) {
         New-LocalUser -Name $PoCUser `
             -Password $secPassword `
-            -Description 'Temporary isolated account for Gemini DPAPI/Task Scheduler PoC' `
+            -Description 'Temporary Gemini PoC user' `
             -PasswordNeverExpires `
             -UserMayNotChangePassword | Out-Null
         Write-Host "[OK] Created local user '$PoCUser'." -ForegroundColor Green

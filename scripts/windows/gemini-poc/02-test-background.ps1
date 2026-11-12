@@ -171,10 +171,35 @@ for ($attempt = 0; $attempt -lt 15; $attempt++) {
 }
 Write-LogLine ("NETWORK CHECK ready={0} waitSec={1}" -f $networkReady, $networkWaitSec)
 
-# 3) Check stale PoC Chrome processes
+# 3) Check whether Default\LOCK is an idle file or genuinely locked by a competing process
 $lockFile = Join-Path $PoCProfileDir 'Default\LOCK'
 $lockExistedBeforeRun = Test-Path -LiteralPath $lockFile
-Write-LogLine ("PROFILE LOCK BEFORE RUN present={0}" -f $lockExistedBeforeRun)
+$lockFileHeldByProcess = $false
+if ($lockExistedBeforeRun) {
+    try {
+        $lockStream = [System.IO.File]::Open(
+            $lockFile,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        $lockStream.Dispose()
+    } catch {
+        $lockFileHeldByProcess = $true
+    }
+}
+
+$competingProcs = @(
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ProcessId -ne $PID -and
+            $_.CommandLine -and
+            $_.CommandLine -like "*$PoCProfileDir*"
+        } |
+        Select-Object ProcessId, Name
+)
+$competingProcsCount = $competingProcs.Count
+Write-LogLine ("PROFILE LOCK BEFORE RUN filePresent={0} fileLockedByProcess={1} competingProcs={2}" -f $lockExistedBeforeRun, $lockFileHeldByProcess, $competingProcsCount)
 
 # 4) Execute standalone Playwright headless PoC
 if (Test-Path -LiteralPath $PocTempJson) {
@@ -183,6 +208,7 @@ if (Test-Path -LiteralPath $PocTempJson) {
 
 $env:POC_PROFILE_DIR = $PoCProfileDir
 $env:POC_RESULT_JSON = $PocTempJson
+$env:POC_SCREENSHOT_PATH = (Join-Path $PoCRoot 'failure-screenshot.png')
 
 $pocOutput = @()
 $pocExitCode = 1
@@ -232,6 +258,8 @@ $summary = [ordered]@{
     networkReady = $networkReady
     networkWaitSec = $networkWaitSec
     lockExistedBeforeRun = $lockExistedBeforeRun
+    lockFileHeldByProcess = $lockFileHeldByProcess
+    competingProcsCount = $competingProcsCount
     dpapi = $dpapiResult
     pocExitCode = $pocExitCode
     headless = $headlessResult
@@ -342,10 +370,25 @@ exit 1
         Write-Host ("DPAPI Unprotect  : ok={0} prefix={1} keyBytes={2} err={3}" -f $res.dpapi.ok, $res.dpapi.prefix, $res.dpapi.keyBytes, $res.dpapi.error)
         if ($res.headless) {
             Write-Host ("Chrome UA        : HeadlessToken={0} | {1}" -f $res.headless.userAgentHasHeadless, $res.headless.userAgent)
+            Write-Host ("Profile Lock     : fileExists={0} lockedByProcess={1} competingProcs={2}" -f $res.lockExistedBeforeRun, $res.lockFileHeldByProcess, $res.competingProcsCount)
             Write-Host ("Current URL      : {0} (kind={1})" -f $res.headless.currentUrl, $res.headless.urlKind)
             Write-Host ("Cookies (flags)  : count={0} SID={1} SAPISID={2} LSID={3} OSID={4}" -f $res.headless.cookieCount, $res.headless.hasGoogleSid, $res.headless.hasGoogleSapisid, $res.headless.hasAccountsLsid, $res.headless.hasGeminiOsid)
             Write-Host ("Gemini UI        : signInVisible={0} promptVisible={1} captcha={2} authOk={3}" -f $res.headless.signInVisible, $res.headless.promptVisible, $res.headless.captchaVisible, $res.headless.authOk)
-            Write-Host ("Gemini Real Op   : ok={0} replyChars={1} elapsedMs={2} preview={3}" -f $res.headless.geminiOp.ok, $res.headless.geminiOp.replyChars, $res.headless.geminiOp.elapsedMs, $res.headless.geminiOp.preview)
+            Write-Host ("Gemini Real Op   : ok={0} err={1} replyChars={2} elapsedMs={3} preview={4}" -f $res.headless.geminiOp.ok, $res.headless.geminiOp.error, $res.headless.geminiOp.replyChars, $res.headless.geminiOp.elapsedMs, $res.headless.geminiOp.preview)
+            if ($res.headless.geminiOp.submitDiagnostics) {
+                $sd = $res.headless.geminiOp.submitDiagnostics
+                Write-Host ("Submit Diag      : method={0} enabledBtn={1} waitMs={2} promptLenFill={3} promptLenAfter={4} userQ={5}->{6}" -f $sd.submitMethod, $sd.enabledSendBtnFound, $sd.enabledSendBtnWaitMs, $sd.promptLenAfterFill, $sd.promptLenAfterSubmit, $sd.beforeUserQueryCount, $sd.userQueryCountAfterSubmit)
+            }
+            if ($res.headless.streamGenerateEvents) {
+                Write-Host ("StreamGenerate   : {0}" -f (($res.headless.streamGenerateEvents | ForEach-Object { "$($_.status)@$($_.tMs)ms" }) -join ', '))
+            }
+            if ($res.headless.geminiOp.failureDiag -and $res.headless.geminiOp.failureDiag.screenshotPath) {
+                Write-Host ("Failure Shot     : {0}" -f $res.headless.geminiOp.failureDiag.screenshotPath) -ForegroundColor Yellow
+            }
+            if ($res.headless.geminiOp.failureDiag -and $res.headless.geminiOp.failureDiag.domSummary) {
+                $ds = $res.headless.geminiOp.failureDiag.domSummary
+                Write-Host ("Failure DOM      : userQ={0} turns={1} broad={2} msgContent={3} stopVis={4} text='{5}'" -f $ds.userQueryCount, $ds.turnCount, $ds.broadContainerCount, $ds.messageContentCount, $ds.stopVisibleCount, $ds.mainTextSnippet) -ForegroundColor Yellow
+            }
         }
         Write-Host ''
         if ($res.overallOk) {

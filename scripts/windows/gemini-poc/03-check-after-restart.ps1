@@ -124,6 +124,21 @@ try {
                 }
             }
 
+            if ($res.headless -and $res.headless.geminiOp -and $res.headless.geminiOp.submitDiagnostics) {
+                $sd = $res.headless.geminiOp.submitDiagnostics
+                Write-Report ("Submit Diag: method={0} enabledBtn={1} waitMs={2} promptLenFill={3} promptLenAfter={4} userQ={5}->{6}" -f $sd.submitMethod, $sd.enabledSendBtnFound, $sd.enabledSendBtnWaitMs, $sd.promptLenAfterFill, $sd.promptLenAfterSubmit, $sd.beforeUserQueryCount, $sd.userQueryCountAfterSubmit) 'Gray'
+            }
+
+            if ($res.headless -and $res.headless.geminiOp -and $res.headless.geminiOp.failureDiag) {
+                $fd = $res.headless.geminiOp.failureDiag
+                if ($fd.screenshotPath) {
+                    Write-Report ("Failure Screenshot: {0}" -f $fd.screenshotPath) 'Yellow'
+                }
+                if ($fd.domSummary) {
+                    Write-Report ("Failure DOM: url={0} userQ={1} turns={2} broad={3} sendBtns={4} stopVis={5} text='{6}'" -f $fd.currentUrlAtFailure, $fd.domSummary.userQueryCount, $fd.domSummary.turnCount, $fd.domSummary.broadContainerCount, $fd.domSummary.sendSelectorCount, $fd.domSummary.stopVisibleCount, $fd.domSummary.mainTextSnippet) 'Yellow'
+                }
+            }
+
             if ($res.headless -and $res.headless.recentHttp) {
                 Write-Report '' 'White'
                 Write-Report 'Recent Sanitized HTTP Statuses:' 'Gray'
