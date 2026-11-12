@@ -1,12 +1,12 @@
 ; WhatsApp-ERP Inno Setup Script
-; Builds Windows Setup executable: WhatsAppERP-Setup-1.0.6.exe
+; Builds Windows Setup executable: WhatsAppERP-Setup-1.0.7.exe
 
 #ifndef MyAppName
 #define MyAppName "WhatsApp-ERP"
 #endif
 
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.6"
+#define MyAppVersion "1.0.7"
 #endif
 
 #ifndef MyAppPublisher
@@ -113,6 +113,8 @@ Name: "{autoprograms}\{#MyAppName}\Gemini Web Login"; Filename: "{app}\scripts\w
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{#MyAppURL}"; Tasks: desktopicon
 
 [Run]
+; Offer interactive Gemini login on finish if dedicated worker profile has not been authenticated yet
+Filename: "{app}\scripts\windows\gemini-login.bat"; WorkingDir: "{app}\scripts\windows"; Description: "Sign in to Gemini Web account now (first-time setup for image processing)"; Flags: postinstall waituntilterminated skipifsilent; Check: NeedsFirstTimeGeminiLogin
 ; Offer to open the web management interface on success (skipped during silent installs)
 Filename: "{#MyAppURL}"; Description: "Open WhatsApp-ERP Web Interface ({#MyAppURL})"; Flags: postinstall shellexec nowait skipifsilent; Check: InstallSucceeded
 
@@ -164,6 +166,11 @@ end;
 function InstallSucceeded(): Boolean;
 begin
   Result := InstallSuccess;
+end;
+
+function NeedsFirstTimeGeminiLogin(): Boolean;
+begin
+  Result := InstallSuccess and (not FileExists(ExpandConstant('{commonappdata}\WhatsApp-ERP\gemini-worker\.locks\auth-state.json')));
 end;
 
 function GetCustomSetupExitCode(): Integer;

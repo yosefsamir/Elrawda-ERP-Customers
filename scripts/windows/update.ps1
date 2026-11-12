@@ -38,6 +38,11 @@ try {
 # Machines installed before the low-privilege identity get their permissions corrected here
 Set-InstallRootAcl $InstallRoot
 Set-StateAcl $StateRoot $config.TaskName
+$workerUser = Get-GeminiWorkerUserName $config
+$workerTask = Get-GeminiWorkerTaskName $config
+$workerAccount = Ensure-GeminiWorkerAccount $StateRoot $workerUser
+Initialize-GeminiWorkerUserProfile $StateRoot $workerAccount.Credential $workerAccount.Sid
+Set-GeminiWorkerAcl $StateRoot $config.TaskName $workerAccount.Sid
 Write-InstallStage 'browser'
 Assert-ServiceBrowser $target $StateRoot
 
@@ -95,18 +100,28 @@ try {
     $config.PreviousRelease = $oldRelease
     $config.ReleasePath = $target
     $config.NodePath = $targetNode
+    if (-not $config.PSObject.Properties['GeminiWorkerUser']) {
+        Add-Member -InputObject $config -NotePropertyName 'GeminiWorkerUser' -NotePropertyValue $workerUser -Force
+    }
+    if (-not $config.PSObject.Properties['GeminiWorkerTaskName']) {
+        Add-Member -InputObject $config -NotePropertyName 'GeminiWorkerTaskName' -NotePropertyValue $workerTask -Force
+    }
     Write-JsonFile (Join-Path $StateRoot 'service.json') $config
 
     Copy-Item (Join-Path $target 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
+    Copy-Item (Join-Path $target 'scripts\windows\gemini-worker-launcher.ps1') (Join-Path $StateRoot 'gemini-worker-launcher.ps1') -Force
     Copy-Item (Join-Path $target 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
+    Set-GeminiWorkerAcl $StateRoot $config.TaskName $workerAccount.Sid
 
     # Idempotently re-register scheduled tasks with latest settings (M1)
     Register-ApplicationTasks $config $StateRoot
+    Register-GeminiWorkerTask $config $StateRoot $workerAccount.Credential
 
     $switched = $true
     Remove-Item $flag -Force
     Write-InstallStage 'service'
     Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
+    Start-ScheduledTask -TaskName $workerTask -ErrorAction SilentlyContinue
     Wait-Ready $config -TimeoutSec 25
 
     # Prune older releases (keep active release and previous release only) (L13)
@@ -151,10 +166,19 @@ try {
             Write-JsonFile (Join-Path $StateRoot 'service.json') $config
             Copy-Item (Join-Path $oldRelease 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
             Copy-Item (Join-Path $oldRelease 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
+            $oldWorkerLauncher = Join-Path $oldRelease 'scripts\windows\gemini-worker-launcher.ps1'
+            if (Test-Path -LiteralPath $oldWorkerLauncher) {
+                Copy-Item $oldWorkerLauncher (Join-Path $StateRoot 'gemini-worker-launcher.ps1') -Force
+            } else {
+                Unregister-ScheduledTask -TaskName $workerTask -Confirm:$false -ErrorAction SilentlyContinue
+            }
             Remove-Item $flag -Force
             # Clean up the aborted release folder so future update retry works cleanly (C4)
             Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
             Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $oldWorkerLauncher) {
+                Start-ScheduledTask -TaskName $workerTask -ErrorAction SilentlyContinue
+            }
             Wait-Ready $config -TimeoutSec 25
             throw "Update to $version failed during startup verification, but automatically rolled back to $oldRelease. Customer state preserved. Backup: $backup. Error: $err"
         } else {

@@ -77,7 +77,33 @@ test('common.ps1 self-contained runtime helpers', () => {
   assert.match(commonPs1, /function Get-NodePath/, 'common.ps1 must define Get-NodePath');
   assert.match(commonPs1, /function Get-ChromiumPath/, 'common.ps1 must define Get-ChromiumPath');
   assert.match(commonPs1, /function Assert-ReleaseReady/, 'common.ps1 must define Assert-ReleaseReady');
+  assert.match(commonPs1, /function Ensure-GeminiWorkerAccount/, 'common.ps1 must define Ensure-GeminiWorkerAccount');
+  assert.match(commonPs1, /function Register-GeminiWorkerTask/, 'common.ps1 must define Register-GeminiWorkerTask');
   assert.doesNotMatch(commonPs1, /npm ci/, 'common.ps1 must never execute npm ci on customer computers');
+});
+
+test('dedicated Gemini worker scripts and upgrade/uninstall wiring', () => {
+  const workerLauncherPath = resolve(root, 'scripts/windows/gemini-worker-launcher.ps1');
+  assert.ok(existsSync(workerLauncherPath), 'scripts/windows/gemini-worker-launcher.ps1 must exist');
+  const workerLauncher = readFileSync(workerLauncherPath, 'utf8');
+  assert.match(workerLauncher, /GEMINI_DIRECT_PROFILE/, 'worker launcher must enforce direct profile mode');
+  assert.match(workerLauncher, /worker-runner\.js/, 'worker launcher must start worker-runner.js');
+
+  const installPs1 = readFileSync(resolve(root, 'scripts/windows/install.ps1'), 'utf8');
+  assert.match(installPs1, /Ensure-GeminiWorkerAccount/, 'install.ps1 must provision dedicated Gemini worker account');
+  assert.match(installPs1, /Register-GeminiWorkerTask/, 'install.ps1 must register Password-logon worker task');
+
+  const updatePs1 = readFileSync(resolve(root, 'scripts/windows/update.ps1'), 'utf8');
+  assert.match(updatePs1, /Ensure-GeminiWorkerAccount/, 'update.ps1 must preserve/reuse Gemini worker account');
+  assert.match(updatePs1, /gemini-worker-launcher\.ps1/, 'update.ps1 must update worker launcher script');
+
+  const uninstallPs1 = readFileSync(resolve(root, 'scripts/windows/uninstall.ps1'), 'utf8');
+  assert.match(uninstallPs1, /WhatsAppERPGeminiWorker/, 'uninstall.ps1 must stop & unregister worker task');
+  assert.match(uninstallPs1, /Remove-LocalUser/, 'uninstall.ps1 must remove dedicated worker local user');
+
+  const loginPs1 = readFileSync(resolve(root, 'scripts/windows/gemini-login.ps1'), 'utf8');
+  assert.match(loginPs1, /Stop-GeminiWorkerProcess/, 'gemini-login.ps1 must stop worker before opening interactive Chrome');
+  assert.match(loginPs1, /--direct-profile/, 'gemini-login.ps1 must pass --direct-profile under dedicated user');
 });
 
 test('third-party notices keep license text', async () => {

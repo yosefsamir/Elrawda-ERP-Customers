@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Database from "better-sqlite3";
+import { readBridgeToken } from "./bridge.js";
 import { getImageProcessingConfig } from "./config.js";
 import { GeminiBrowserClient, runInteractiveGeminiLogin } from "./gemini-client.js";
 import { getGeminiProfileStatus } from "./profile.js";
@@ -8,19 +9,46 @@ import { getGeminiProfileStatus } from "./profile.js";
 const [command, ...rest] = process.argv.slice(2);
 const root = resolve(process.env.EMOJI_APP_ROOT ?? process.cwd());
 const dataDir = resolve(process.env.EMOJI_DATA_DIR ?? resolve(root, "data/application"));
+const directProfileFlag = rest.includes("--direct-profile") || process.env.GEMINI_DIRECT_PROFILE === "1";
 
 function flagValue(name: string): string | undefined {
   const index = rest.indexOf(name);
   return index >= 0 ? rest[index + 1] : undefined;
 }
 
+async function notifyBridgeAuthCompleted(bridgeUrl: string, bridgeTokenFile: string): Promise<void> {
+  const token = readBridgeToken(bridgeTokenFile);
+  if (!token) return;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      await fetch(`${bridgeUrl.replace(/\/+$/, "")}/internal/gemini-worker/auth-completed`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          windowsUser: process.env.EMOJI_WORKER_WINDOWS_USER || process.env.USERNAME || null,
+          authenticatedAt: new Date().toISOString(),
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {}
+}
+
 async function main() {
   const dbPath = resolve(dataDir, "app.sqlite");
-  const db = existsSync(dbPath) ? new Database(dbPath) : undefined;
+  const db = !directProfileFlag && existsSync(dbPath) ? new Database(dbPath) : undefined;
   db?.pragma("busy_timeout = 5000");
 
   try {
-    const config = getImageProcessingConfig({ db: db as any, dataDir, root });
+    const baseCfg = getImageProcessingConfig({ db: db as any, dataDir, root });
+    const config = directProfileFlag ? { ...baseCfg, directProfile: true } : baseCfg;
 
     if (command === "login") {
       let lastStage = "";
@@ -33,7 +61,11 @@ async function main() {
           if (stage === "waiting_for_login") {
             console.log("Browser opened at Gemini Web. Sign in to Google and wait for the Gemini prompt box to load...");
           } else if (stage === "confirming") {
-            console.log("Detected signed-in Gemini session (/app) — encrypting & saving session (do not close Chrome yet)...");
+            console.log(
+              config.directProfile
+                ? "Detected signed-in Gemini session (/app) — saving persistent profile state (do not close Chrome yet)..."
+                : "Detected signed-in Gemini session (/app) — encrypting & saving session (do not close Chrome yet)...",
+            );
           }
         },
       });
@@ -44,7 +76,10 @@ async function main() {
           ).run();
         } catch {}
       }
-      console.log(JSON.stringify({ ok: true, profileDir: config.profileDir }));
+      if (config.directProfile) {
+        await notifyBridgeAuthCompleted(config.bridgeUrl, config.bridgeTokenFile);
+      }
+      console.log(JSON.stringify({ ok: true, profileDir: config.profileDir, directProfile: config.directProfile }));
       return;
     }
 

@@ -15,7 +15,8 @@ New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 try { Start-Transcript -Path (Join-Path $logDir 'uninstall.log') -Append -Force | Out-Null } catch {}
 
 $failures = [System.Collections.Generic.List[string]]::new()
-$taskNames = @('WhatsAppERPOperationsBackup', 'WhatsAppERPOperations')
+$taskNames = @('WhatsAppERPOperationsBackup', 'WhatsAppERPOperations', 'WhatsAppERPGeminiWorker')
+$workerUserName = 'WhatsAppERPGemini'
 
 function Invoke-UninstallStep([string]$Name, [scriptblock]$Action) {
     Write-Host "[uninstall] $Name"
@@ -39,6 +40,10 @@ Invoke-UninstallStep 'Stop service' {
             $config.ReleasePath = Get-ConfigProperty $saved 'ReleasePath'
             $config.CacheDir = Get-ConfigProperty $saved 'CacheDir'
             $config.Port = Get-ConfigProperty $saved 'Port' 3211
+            $savedWorkerUser = Get-ConfigProperty $saved 'GeminiWorkerUser'
+            if ($savedWorkerUser) { $workerUserName = [string]$savedWorkerUser }
+            $savedWorkerTask = Get-ConfigProperty $saved 'GeminiWorkerTaskName'
+            if ($savedWorkerTask) { $taskNames = @('WhatsAppERPOperationsBackup', 'WhatsAppERPOperations', [string]$savedWorkerTask) }
         } catch {
             Write-Warning "service.json is unreadable, stopping by install root only: $($_.Exception.Message)"
         }
@@ -72,14 +77,35 @@ Invoke-UninstallStep 'Remove application binaries' {
 
 # service.json must go so a later Setup is a fresh install that adopts the preserved data,
 # not an upgrade of a release that no longer exists. Everything listed here is regenerated.
-Invoke-UninstallStep 'Remove service registration from state folder' {
+# Dedicated Gemini worker account, DPAPI credential, and browser profile are cleaned up
+# here while preserving customer data\, backups\, and logs\.
+Invoke-UninstallStep 'Remove service registration and Gemini worker account' {
     $generated = @(
-        'service.json', 'launcher.ps1', 'scheduled-backup.ps1', 'installing.flag',
-        'data\maintenance.flag', 'data\runtime.lock', 'data\shutdown.json'
+        'service.json', 'launcher.ps1', 'gemini-worker-launcher.ps1', 'scheduled-backup.ps1',
+        'gemini-bridge.json', 'installing.flag', 'data\maintenance.flag', 'data\runtime.lock', 'data\shutdown.json'
     )
     foreach ($name in $generated) {
         $path = Join-Path $StateRoot $name
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    }
+
+    $workerRoot = Join-Path $StateRoot 'gemini-worker'
+    if (Test-Path -LiteralPath $workerRoot) {
+        Remove-Item -LiteralPath $workerRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $workerUser = Get-LocalUser -Name $workerUserName -ErrorAction SilentlyContinue
+    if ($workerUser) {
+        $workerSid = $workerUser.SID.Value
+        Remove-LocalUser -Name $workerUserName -ErrorAction SilentlyContinue
+        if ($workerSid) {
+            $profileObj = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
+                Where-Object { $_.SID -eq $workerSid } |
+                Select-Object -First 1
+            if ($profileObj) {
+                Remove-CimInstance -InputObject $profileObj -ErrorAction SilentlyContinue
+            }
+        }
     }
 }
 

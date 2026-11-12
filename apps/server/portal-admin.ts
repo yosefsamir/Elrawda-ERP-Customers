@@ -16,7 +16,11 @@ import {
 import { canLaunchInteractiveBrowser, runInteractiveGeminiLogin } from "./image-processing/gemini-client.js";
 import { markGeminiAuthenticated } from "./image-processing/profile.js";
 import { normalizeWatermarkLogo } from "./image-processing/storage.js";
-import { enqueueImageProcessingJob, getImageProcessingStatusSummary } from "./image-processing/worker.js";
+import {
+  clearExternalWorkerReauth,
+  enqueueImageProcessingJob,
+  getImageProcessingStatusSummary,
+} from "./image-processing/worker.js";
 export const photoCredentials = z.object({ username: z.string().trim().min(3).max(80), password: z.string().min(10).max(200) });
 export function auditPortal(db: AppDatabase, companyId: string, event: string, details: object) {
   db.prepare("INSERT INTO audit_events(company_id,event,details,created_at) VALUES(?,?,?,?)")
@@ -49,7 +53,26 @@ export function registerPortalAdmin(
     if (single) return single.id;
     throw Object.assign(new Error("أضف شركة أولًا"),{statusCode:400});
   }
-  const checkInteractive = options?.canLaunchInteractive ?? canLaunchInteractiveBrowser;
+  const statusSummary = (companyId?: string) => {
+    const imageCfg = getImageProcessingConfig({ db, dataDir, root });
+    return getImageProcessingStatusSummary(db, imageCfg.profileRoot, companyId, {
+      dataDir,
+      workerMode: imageCfg.workerMode,
+    });
+  };
+  const checkInteractive =
+    options?.canLaunchInteractive ??
+    (() => {
+      const imageCfg = getImageProcessingConfig({ db, dataDir, root });
+      if (imageCfg.workerMode === "external") {
+        return {
+          supported: false,
+          reason:
+            "يعمل Gemini تحت حساب Windows المخصّص؛ افتح «Gemini Web Login» من قائمة ابدأ على جهاز الخادم أو شغّل gemini-login.bat لتسجيل الدخول.",
+        };
+      }
+      return canLaunchInteractiveBrowser();
+    });
   const loginRunner = options?.interactiveLoginRunner ?? runInteractiveGeminiLogin;
   let loginAbort: AbortController | null = null;
   let loginPromise: Promise<void> | null = null;
@@ -82,7 +105,6 @@ export function registerPortalAdmin(
   app.get("/api/portal/settings", async request => {
     const id=company(request);
     const settings=db.prepare("SELECT company_id,enabled,origin,image_prompt,image_processing_enabled,watermark_logo IS NOT NULL AS has_watermark_logo,watermark_logo_enabled,watermark_code_enabled FROM portal_settings WHERE id=1").get() as any;
-    const imageCfg=getImageProcessingConfig({db,dataDir,root});
     return { enabled: Boolean(settings?.enabled), origin:settings?.origin || "",
       selected: true,
       imageProcessingEnabled: Boolean(settings?.image_processing_enabled ?? 1),
@@ -92,7 +114,7 @@ export function registerPortalAdmin(
       imagePrompt: getConfiguredImagePrompt(db, dataDir, root),
       customImagePrompt: settings?.image_prompt || "",
       defaultImagePrompt: DEFAULT_IMAGE_PROMPT,
-      geminiStatus: getImageProcessingStatusSummary(db, imageCfg.profileRoot, id),
+      geminiStatus: statusSummary(id),
       interactiveLogin: getLoginStatusPayload(),
       users:db.prepare("SELECT id,username,enabled,created_at FROM photo_users WHERE company_id=? ORDER BY created_at").all(id) };
   });
@@ -121,7 +143,6 @@ export function registerPortalAdmin(
   });
   app.get("/api/portal/image-processing", async request => {
     const id = company(request);
-    const imageCfg = getImageProcessingConfig({ db, dataDir, root });
     const watermarkRow = db
       .prepare("SELECT watermark_logo IS NOT NULL AS has_watermark_logo, watermark_logo_enabled, watermark_code_enabled FROM portal_settings WHERE id=1")
       .get() as
@@ -142,7 +163,7 @@ export function registerPortalAdmin(
       watermarkCodeEnabled: Boolean(watermarkRow?.watermark_code_enabled ?? 1),
       imagePrompt: getConfiguredImagePrompt(db, dataDir, root),
       defaultImagePrompt: DEFAULT_IMAGE_PROMPT,
-      geminiStatus: getImageProcessingStatusSummary(db, imageCfg.profileRoot, id),
+      geminiStatus: statusSummary(id),
       interactiveLogin: getLoginStatusPayload(),
       jobs,
     };
@@ -254,11 +275,10 @@ export function registerPortalAdmin(
       auditPortal(db, id, "portal.image_processing.toggled", { operatorId: request.operatorId, enabled });
     })();
     await options?.onToggleProcessing?.(enabled);
-    const imageCfg = getImageProcessingConfig({ db, dataDir, root });
     return {
       ok: true,
       enabled,
-      geminiStatus: getImageProcessingStatusSummary(db, imageCfg.profileRoot, id),
+      geminiStatus: statusSummary(id),
     };
   });
   app.post("/api/portal/image-processing/login", async (request, reply) => {
@@ -354,11 +374,10 @@ export function registerPortalAdmin(
   });
   app.get("/api/portal/image-processing/login/status", async request => {
     const id = company(request);
-    const imageCfg = getImageProcessingConfig({ db, dataDir, root });
     return {
       ok: true,
       interactiveLogin: getLoginStatusPayload(),
-      geminiStatus: getImageProcessingStatusSummary(db, imageCfg.profileRoot, id),
+      geminiStatus: statusSummary(id),
     };
   });
   app.post("/api/portal/image-processing/login/cancel", async request => {
@@ -386,7 +405,11 @@ export function registerPortalAdmin(
       db.prepare("UPDATE portal_settings SET gemini_paused=0, gemini_requires_reauth=0, gemini_pause_reason=NULL WHERE id=1").run();
       auditPortal(db, id, "portal.image_processing.resumed", { operatorId: request.operatorId });
     })();
-    markGeminiAuthenticated(imageCfg.profileRoot);
+    if (imageCfg.workerMode === "external") {
+      clearExternalWorkerReauth(dataDir);
+    } else {
+      markGeminiAuthenticated(imageCfg.profileRoot);
+    }
     options?.onResumeWorker?.();
     return { ok: true };
   });

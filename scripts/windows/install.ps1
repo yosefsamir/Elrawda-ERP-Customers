@@ -59,19 +59,35 @@ try {
         }
 
         Set-StateAcl $StateRoot $existingConfig.TaskName
+        $workerUser = Get-GeminiWorkerUserName $existingConfig
+        $workerTask = Get-GeminiWorkerTaskName $existingConfig
+        if (-not $existingConfig.PSObject.Properties['GeminiWorkerUser']) {
+            Add-Member -InputObject $existingConfig -NotePropertyName 'GeminiWorkerUser' -NotePropertyValue $workerUser -Force
+        }
+        if (-not $existingConfig.PSObject.Properties['GeminiWorkerTaskName']) {
+            Add-Member -InputObject $existingConfig -NotePropertyName 'GeminiWorkerTaskName' -NotePropertyValue $workerTask -Force
+        }
+        $workerAccount = Ensure-GeminiWorkerAccount $StateRoot $workerUser
+        Initialize-GeminiWorkerUserProfile $StateRoot $workerAccount.Credential $workerAccount.Sid
+
         Write-InstallStage 'browser'
         Assert-ServiceBrowser $target $StateRoot
 
-        # Refresh launcher and backup scripts
+        # Refresh launcher, worker launcher, and backup scripts
         Copy-Item (Join-Path $target 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
+        Copy-Item (Join-Path $target 'scripts\windows\gemini-worker-launcher.ps1') (Join-Path $StateRoot 'gemini-worker-launcher.ps1') -Force
         Copy-Item (Join-Path $target 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
+        Write-JsonFile $serviceJsonPath $existingConfig
+        Set-GeminiWorkerAcl $StateRoot $existingConfig.TaskName $workerAccount.Sid
 
         # Idempotently re-register scheduled tasks (M1)
         Register-ApplicationTasks $existingConfig $StateRoot
+        Register-GeminiWorkerTask $existingConfig $StateRoot $workerAccount.Credential
 
         # Verify service readiness
         Write-InstallStage 'service'
         Start-ScheduledTask -TaskName $existingConfig.TaskName -ErrorAction SilentlyContinue
+        Start-ScheduledTask -TaskName $workerTask -ErrorAction SilentlyContinue
         Wait-Ready $existingConfig
         Write-Host "Repaired WhatsApp-ERP version $version successfully. Customer data preserved." -ForegroundColor Green
         exit 0
@@ -111,6 +127,8 @@ try {
 
     # 5. Create persistent state directory structure (preserve existing customer data if reinstalling)
     Set-StateAcl $StateRoot 'WhatsAppERPOperations'
+    $workerAccount = Ensure-GeminiWorkerAccount $StateRoot 'WhatsAppERPGemini'
+    Initialize-GeminiWorkerUserProfile $StateRoot $workerAccount.Credential $workerAccount.Sid
     Write-InstallStage 'browser'
     Assert-ServiceBrowser $target $StateRoot
 
@@ -122,24 +140,30 @@ try {
         CacheDir = (Join-Path $StateRoot 'cache')
         Port = $Port
         TaskName = 'WhatsAppERPOperations'
+        GeminiWorkerUser = $workerAccount.UserName
+        GeminiWorkerTaskName = 'WhatsAppERPGeminiWorker'
     }
 
     Copy-Item (Join-Path $target 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
+    Copy-Item (Join-Path $target 'scripts\windows\gemini-worker-launcher.ps1') (Join-Path $StateRoot 'gemini-worker-launcher.ps1') -Force
     Copy-Item (Join-Path $target 'scripts\windows\scheduled-backup.ps1') (Join-Path $StateRoot 'scheduled-backup.ps1') -Force
 
     # Write installing marker to track active deployment
     $installMarker = Join-Path $StateRoot 'installing.flag'
     [IO.File]::WriteAllText($installMarker, 'installing', [Text.UTF8Encoding]::new($false))
 
-    # Provision provisional service.json for launcher startup
+    # Provision provisional service.json for launcher startup and scope ACLs
     Write-JsonFile $serviceJsonPath $config
+    Set-GeminiWorkerAcl $StateRoot $config.TaskName $workerAccount.Sid
 
     # Register scheduled tasks idempotently
     Register-ApplicationTasks $config $StateRoot
+    Register-GeminiWorkerTask $config $StateRoot $workerAccount.Credential
 
-    # Start service task and wait for HTTP readiness
+    # Start service tasks and wait for HTTP readiness
     Write-InstallStage 'service'
     Start-ScheduledTask -TaskName $config.TaskName
+    Start-ScheduledTask -TaskName $config.GeminiWorkerTaskName -ErrorAction SilentlyContinue
     try {
         Wait-Ready $config
     } catch {
@@ -147,7 +171,7 @@ try {
         # so this failed attempt does not leave an unverified service.json behind!
         Write-Host "Deployment verification failed. Rolling back provisional service.json..." -ForegroundColor Red
         try { Stop-ServiceProcessTree $config } catch { Write-Warning $_.Exception.Message }
-        foreach ($taskName in @($config.TaskName, ($config.TaskName + 'Backup'))) {
+        foreach ($taskName in @($config.TaskName, ($config.TaskName + 'Backup'), $config.GeminiWorkerTaskName)) {
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         }
         Remove-Item -LiteralPath $serviceJsonPath -Force -ErrorAction SilentlyContinue

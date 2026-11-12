@@ -66,12 +66,18 @@ function Set-ServiceEnvironment($Config) {
     $cacheDir = Get-ConfigProperty $Config 'CacheDir'
     $port = Get-ConfigProperty $Config 'Port' 3211
     $releasePath = Get-ConfigProperty $Config 'ReleasePath'
+    $stateRoot = if ($dataDir) { Split-Path -Parent $dataDir } else { "$env:ProgramData\WhatsApp-ERP" }
 
     if ($dataDir) { $env:EMOJI_DATA_DIR = $dataDir }
     if ($cacheDir) { $env:PUPPETEER_CACHE_DIR = $cacheDir }
     $env:PORT = [string]$port
     $env:EMOJI_PORTAL_PORT = [string](Get-ConfigProperty $Config 'PortalPort' 3212)
     $env:NODE_ENV = 'production'
+
+    # Server always delegates Gemini browser automation to the dedicated WhatsAppERPGemini worker
+    $env:EMOJI_GEMINI_WORKER_MODE = 'external'
+    $env:EMOJI_GEMINI_BRIDGE_URL = "http://127.0.0.1:$port"
+    $env:EMOJI_GEMINI_BRIDGE_TOKEN_FILE = Join-Path $stateRoot 'gemini-bridge.json'
 
     if ($releasePath) {
         $env:EMOJI_APP_ROOT = $releasePath
@@ -88,7 +94,6 @@ function Set-ServiceEnvironment($Config) {
     # Keep profile and temp paths inside the state folder when running as a service account
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     if ($identity.User -and $identity.User.Value -in @('S-1-5-18', 'S-1-5-19')) {
-        $stateRoot = if ($dataDir) { Split-Path -Parent $dataDir } else { "$env:ProgramData\WhatsApp-ERP" }
         $cDir = if ($cacheDir) { $cacheDir } else { Join-Path $stateRoot 'cache' }
         $tDir = Join-Path $stateRoot 'temp'
         New-Item -ItemType Directory -Path $cDir -Force -ErrorAction SilentlyContinue | Out-Null
@@ -145,14 +150,283 @@ function Invoke-Icacls([string[]]$IcaclsArgs) {
 
 # Grants by SID object. icacls resolves the SID to a name first, and a task SID has no name
 # until its task exists, so it fails with error 1332 on a fresh machine.
-function Grant-SidAccess([string]$Path, [string]$Sid, [Security.AccessControl.FileSystemRights]$Rights) {
-    $folder = Get-Item -LiteralPath $Path
-    $acl = $folder.GetAccessControl('Access')
+function Grant-SidAccess([string]$Path, [string]$Sid, [Security.AccessControl.FileSystemRights]$Rights, [bool]$Inherited = $true) {
+    $item = Get-Item -LiteralPath $Path
+    $acl = $item.GetAccessControl('Access')
     $identity = [Security.Principal.SecurityIdentifier]::new($Sid)
-    $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    if ($Inherited -and -not $item.PSIsContainer) {
+        $Inherited = $false
+    }
+    $inherit = if ($Inherited) {
+        [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    } else {
+        [Security.AccessControl.InheritanceFlags]::None
+    }
     $rule = [Security.AccessControl.FileSystemAccessRule]::new($identity, $Rights, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
     $acl.SetAccessRule($rule)
-    $folder.SetAccessControl($acl)
+    $item.SetAccessControl($acl)
+}
+
+function Get-GeminiWorkerUserName($Config = $null) {
+    return [string](Get-ConfigProperty $Config 'GeminiWorkerUser' 'WhatsAppERPGemini')
+}
+
+function Get-GeminiWorkerTaskName($Config = $null) {
+    return [string](Get-ConfigProperty $Config 'GeminiWorkerTaskName' 'WhatsAppERPGeminiWorker')
+}
+
+function Get-GeminiWorkerRoot([string]$StateRoot) {
+    return Join-Path $StateRoot 'gemini-worker'
+}
+
+function Get-GeminiWorkerCredentialPath([string]$StateRoot) {
+    return Join-Path (Get-GeminiWorkerRoot $StateRoot) 'admin-only\worker-cred.dpapi'
+}
+
+function Get-GeminiBridgeTokenPath([string]$StateRoot) {
+    return Join-Path $StateRoot 'gemini-bridge.json'
+}
+
+function New-RandomGeminiWorkerPassword {
+    $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*_-+'
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $bytes = New-Object byte[] 24
+        $rng.GetBytes($bytes)
+        $sb = New-Object System.Text.StringBuilder
+        foreach ($b in $bytes) {
+            [void]$sb.Append($chars[$b % $chars.Length])
+        }
+        # Guarantee character diversity to satisfy local complexity policy if enabled
+        $plain = 'Wa!' + $sb.ToString()
+        return (ConvertTo-SecureString -String $plain -AsPlainText -Force)
+    } finally {
+        $rng.Dispose()
+    }
+}
+
+function Convert-SecureStringToPlainText([System.Security.SecureString]$Secret) {
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secret)
+    try {
+        return [System.Runtime.InteropServices.Marshal]::PtrToStringUni($bstr)
+    } finally {
+        if ($bstr -ne [IntPtr]::Zero) {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+    }
+}
+
+function Save-GeminiWorkerCredential([string]$StateRoot, [pscredential]$Credential) {
+    Add-Type -AssemblyName System.Security
+    $credPath = Get-GeminiWorkerCredentialPath $StateRoot
+    $adminDir = Split-Path -Parent $credPath
+    New-Item -ItemType Directory -Path $adminDir -Force | Out-Null
+    Invoke-Icacls @($adminDir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
+
+    $plain = $Credential.GetNetworkCredential().Password
+    $payload = (@{ username = $Credential.UserName; password = $plain } | ConvertTo-Json -Compress)
+    $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
+    $protected = [System.Security.Cryptography.ProtectedData]::Protect(
+        $bytes,
+        $null,
+        [System.Security.Cryptography.DataProtectionScope]::LocalMachine
+    )
+    $temp = "$credPath.tmp"
+    [IO.File]::WriteAllBytes($temp, $protected)
+    Move-Item -LiteralPath $temp -Destination $credPath -Force
+    Invoke-Icacls @($credPath, '/inheritance:r', '/grant:r', '*S-1-5-18:F', '*S-1-5-32-544:F')
+}
+
+function Read-GeminiWorkerCredential([string]$StateRoot) {
+    Add-Type -AssemblyName System.Security
+    $credPath = Get-GeminiWorkerCredentialPath $StateRoot
+    if (-not (Test-Path -LiteralPath $credPath)) { return $null }
+    try {
+        $protected = [IO.File]::ReadAllBytes($credPath)
+        $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $protected,
+            $null,
+            [System.Security.Cryptography.DataProtectionScope]::LocalMachine
+        )
+        $obj = ([Text.Encoding]::UTF8.GetString($bytes)) | ConvertFrom-Json
+        if (-not $obj -or -not $obj.username -or -not $obj.password) { return $null }
+        $sec = ConvertTo-SecureString -String ([string]$obj.password) -AsPlainText -Force
+        return [pscredential]::new([string]$obj.username, $sec)
+    } catch {
+        return $null
+    }
+}
+
+function Test-LocalMachineCredential([string]$UserName, [pscredential]$Credential) {
+    try {
+        Add-Type -AssemblyName System.DirectoryServices.AccountManagement -ErrorAction Stop
+        $ctx = [System.DirectoryServices.AccountManagement.PrincipalContext]::new(
+            [System.DirectoryServices.AccountManagement.ContextType]::Machine
+        )
+        try {
+            return [bool]$ctx.ValidateCredentials($UserName, $Credential.GetNetworkCredential().Password)
+        } finally {
+            $ctx.Dispose()
+        }
+    } catch {
+        # Fallback if AccountManagement assembly is unavailable: assume DPAPI stored credential is valid
+        return $true
+    }
+}
+
+function Ensure-GeminiWorkerBridgeToken([string]$StateRoot) {
+    $tokenPath = Get-GeminiBridgeTokenPath $StateRoot
+    if (Test-Path -LiteralPath $tokenPath) {
+        try {
+            $existing = Get-Content -LiteralPath $tokenPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($existing -and $existing.token -and ([string]$existing.token).Trim().Length -ge 32) {
+                return
+            }
+        } catch {}
+    }
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $buf = New-Object byte[] 32
+        $rng.GetBytes($buf)
+        $hex = [BitConverter]::ToString($buf).Replace('-', '').ToLowerInvariant()
+        Write-JsonFile $tokenPath ([pscustomobject]@{
+            token = $hex
+            createdAt = (Get-Date).ToUniversalTime().ToString('o')
+        })
+    } finally {
+        $rng.Dispose()
+    }
+}
+
+# Creates or reuses the dedicated standard Windows user for Gemini.
+# Upgrades NEVER reset the password if the user + DPAPI credential already validate cleanly,
+# preserving the Windows DPAPI master key and Chromium cookies.
+function Ensure-GeminiWorkerAccount([string]$StateRoot, [string]$UserName = 'WhatsAppERPGemini') {
+    $accountName = "$env:COMPUTERNAME\$UserName"
+    $existingUser = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
+    $cred = $null
+    $reused = $false
+
+    if ($existingUser) {
+        $storedCred = Read-GeminiWorkerCredential $StateRoot
+        if ($storedCred -and (Test-LocalMachineCredential $UserName $storedCred)) {
+            $cred = $storedCred
+            $reused = $true
+            Set-LocalUser -Name $UserName -PasswordNeverExpires $true -UserMayChangePassword $false
+            if (-not $existingUser.Enabled) {
+                Enable-LocalUser -Name $UserName
+            }
+        }
+    }
+
+    if (-not $reused) {
+        $sec = New-RandomGeminiWorkerPassword
+        if (-not $existingUser) {
+            New-LocalUser -Name $UserName `
+                -Password $sec `
+                -FullName 'WhatsApp-ERP Gemini Worker' `
+                -Description 'Dedicated standard Windows account for isolated Gemini image processing' `
+                -PasswordNeverExpires `
+                -UserMayChangePassword:$false `
+                -AccountNeverExpires | Out-Null
+        } else {
+            Set-LocalUser -Name $UserName -Password $sec -PasswordNeverExpires $true -UserMayChangePassword $false
+            Enable-LocalUser -Name $UserName
+        }
+        $cred = [pscredential]::new($accountName, $sec)
+        Save-GeminiWorkerCredential $StateRoot $cred
+    }
+
+    $usersGroup = ([System.Security.Principal.SecurityIdentifier]'S-1-5-32-545').Translate([System.Security.Principal.NTAccount]).Value.Split('\')[-1]
+    $adminsGroup = ([System.Security.Principal.SecurityIdentifier]'S-1-5-32-544').Translate([System.Security.Principal.NTAccount]).Value.Split('\')[-1]
+    try { Add-LocalGroupMember -Group $usersGroup -Member $UserName -ErrorAction Stop } catch {}
+    try { Remove-LocalGroupMember -Group $adminsGroup -Member $UserName -ErrorAction Stop } catch {}
+
+    $sid = (Get-LocalUser -Name $UserName).SID.Value
+    return [pscustomobject]@{
+        UserName = $UserName
+        AccountName = $accountName
+        Sid = $sid
+        Credential = $cred
+        Reused = $reused
+    }
+}
+
+function Initialize-GeminiWorkerUserProfile([string]$StateRoot, [pscredential]$Credential, [string]$WorkerSid) {
+    $workerRoot = Get-GeminiWorkerRoot $StateRoot
+    $locksDir = Join-Path $workerRoot '.locks'
+    $profileDir = Join-Path $workerRoot 'profile'
+    $sidMarker = Join-Path $locksDir 'worker-sid.txt'
+
+    New-Item -ItemType Directory -Path $locksDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+
+    if (Test-Path -LiteralPath $sidMarker) {
+        $prevSid = ([IO.File]::ReadAllText($sidMarker)).Trim()
+        if ($prevSid -and $prevSid -ne $WorkerSid) {
+            # Account SID changed (e.g., reinstalled after full user removal): old DPAPI Chrome profile cannot decrypt.
+            if (Test-Path -LiteralPath $profileDir) {
+                Remove-Item -LiteralPath $profileDir -Recurse -Force -ErrorAction SilentlyContinue
+                New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+            }
+            foreach ($stateFile in @('auth-state.json', 'reauth.json')) {
+                $p = Join-Path $locksDir $stateFile
+                if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+    [IO.File]::WriteAllText($sidMarker, $WorkerSid, [Text.UTF8Encoding]::new($false))
+
+    $profileObj = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
+        Where-Object { $_.SID -eq $WorkerSid } |
+        Select-Object -First 1
+    $ntUserReady = ($profileObj -and (Test-Path -LiteralPath (Join-Path $profileObj.LocalPath 'NTUSER.DAT')))
+
+    if (-not $ntUserReady) {
+        $proc = Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" `
+            -ArgumentList '/c', 'exit 0' `
+            -Credential $Credential `
+            -LoadUserProfile `
+            -WindowStyle Hidden `
+            -Wait `
+            -PassThru
+        if ($proc.ExitCode -ne 0) {
+            throw "Failed to initialize Windows user profile for $($Credential.UserName) (exit $($proc.ExitCode))."
+        }
+    }
+}
+
+function Set-GeminiWorkerAcl([string]$StateRoot, [string]$MainTaskName, [string]$WorkerSid) {
+    $workerRoot = Get-GeminiWorkerRoot $StateRoot
+    $adminOnlyDir = Join-Path $workerRoot 'admin-only'
+    foreach ($dir in @($workerRoot, (Join-Path $workerRoot 'profile'), (Join-Path $workerRoot '.locks'), (Join-Path $workerRoot 'temp'), $adminOnlyDir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    Ensure-GeminiWorkerBridgeToken $StateRoot
+
+    $mainSid = Get-TaskSid $MainTaskName
+
+    # Allow traversal through StateRoot only (non-inherited) so data\, backups\, cache\, temp\ stay blocked
+    Grant-SidAccess $StateRoot $WorkerSid 'ReadAndExecute, Synchronize' $false
+
+    # Allow worker read access to shared runtime config and bridge token file only
+    $bridgeFile = Get-GeminiBridgeTokenPath $StateRoot
+    Invoke-Icacls @($bridgeFile, '/inheritance:r', '/grant:r', '*S-1-5-18:F', '*S-1-5-32-544:F')
+    Grant-SidAccess $bridgeFile $mainSid 'ReadAndExecute, Synchronize' $false
+    Grant-SidAccess $bridgeFile $WorkerSid 'ReadAndExecute, Synchronize' $false
+
+    foreach ($cfgFile in @((Join-Path $StateRoot 'service.json'), (Join-Path $StateRoot 'gemini-worker-launcher.ps1'))) {
+        if (Test-Path -LiteralPath $cfgFile) {
+            Grant-SidAccess $cfgFile $WorkerSid 'ReadAndExecute, Synchronize' $false
+        }
+    }
+
+    # Isolate gemini-worker\ under SYSTEM + Administrators + WorkerSid only (no LOCAL SERVICE cookie access)
+    Invoke-Icacls @($workerRoot, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', "*${WorkerSid}:(OI)(CI)M")
+    Invoke-Icacls @($adminOnlyDir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
+
+    # Logs directory: worker writes its own logs only
+    Grant-SidAccess (Join-Path $StateRoot 'logs') $WorkerSid 'Modify, Synchronize' $true
 }
 
 # New folders under C:\ give Authenticated Users Modify. Code here runs as a service and as
@@ -205,10 +479,42 @@ function Get-OwnedProcess($InstallRoot) {
 
 function Get-LauncherProcess($StateRoot) {
     if (-not $StateRoot) { return }
-    $launcher = Join-Path $StateRoot 'launcher.ps1'
+    $mainLauncher = Join-Path $StateRoot 'launcher.ps1'
+    $workerLauncher = Join-Path $StateRoot 'gemini-worker-launcher.ps1'
     Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
-        $_.CommandLine -and $_.CommandLine.IndexOf($launcher, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        $_.CommandLine -and (
+            $_.CommandLine.IndexOf($mainLauncher, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $_.CommandLine.IndexOf($workerLauncher, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        )
     }
+}
+
+function Stop-GeminiWorkerProcess($Config, [string]$StateRoot) {
+    $workerTask = Get-GeminiWorkerTaskName $Config
+    if ($workerTask) {
+        Stop-ScheduledTask -TaskName $workerTask -ErrorAction SilentlyContinue
+    }
+    $workerLauncher = Join-Path $StateRoot 'gemini-worker-launcher.ps1'
+    $workerRoot = Get-GeminiWorkerRoot $StateRoot
+    $workerProfile = Join-Path $workerRoot 'profile'
+
+    $launcherProcs = Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue | Where-Object {
+        $_.CommandLine -and $_.CommandLine.IndexOf($workerLauncher, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    }
+    foreach ($p in $launcherProcs) {
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+
+    $workerNodeAndChrome = Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.CommandLine -and (
+            $_.CommandLine.IndexOf('worker-runner.js', [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $_.CommandLine.IndexOf($workerProfile, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        )
+    }
+    foreach ($p in $workerNodeAndChrome) {
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 500
 }
 
 function Wait-OwnedProcessExit($InstallRoot, [int]$TimeoutSec) {
@@ -220,10 +526,11 @@ function Wait-OwnedProcessExit($InstallRoot, [int]$TimeoutSec) {
     return (@(Get-OwnedProcess $InstallRoot).Count -eq 0)
 }
 
-# Stops the whole service: supervisor first so nothing respawns, then a graceful server
+# Stops the whole service: supervisors first so nothing respawns, then a graceful server
 # shutdown, then a forced stop limited to our own binaries. Throws if anything survives.
 function Stop-ServiceProcessTree($Config) {
     $taskName = Get-ConfigProperty $Config 'TaskName'
+    $workerTaskName = Get-GeminiWorkerTaskName $Config
     $releasePath = Get-ConfigProperty $Config 'ReleasePath'
     $dataDir = Get-ConfigProperty $Config 'DataDir'
     $port = [int](Get-ConfigProperty $Config 'Port' 3211)
@@ -232,6 +539,9 @@ function Stop-ServiceProcessTree($Config) {
 
     if ($taskName) {
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    }
+    if ($workerTaskName) {
+        Stop-ScheduledTask -TaskName $workerTaskName -ErrorAction SilentlyContinue
     }
     foreach ($launcher in (Get-LauncherProcess $stateRoot)) {
         Stop-Process -Id $launcher.ProcessId -Force -ErrorAction SilentlyContinue
@@ -243,6 +553,10 @@ function Stop-ServiceProcessTree($Config) {
         } catch {
             Write-Warning "Graceful server stop did not complete: $($_.Exception.Message)"
         }
+    }
+
+    if ($stateRoot) {
+        Stop-GeminiWorkerProcess $Config $stateRoot
     }
 
     if (-not (Wait-OwnedProcessExit $installRoot 45)) {
@@ -284,6 +598,34 @@ function Register-ApplicationTasks($Config, $StateRoot) {
     Register-ScheduledTask -TaskName ($Config.TaskName + 'Backup') -Action $backupAction -Trigger $backupTrigger -Principal $principal -Settings $backupSettings -Force | Out-Null
 }
 
+function Register-GeminiWorkerTask($Config, [string]$StateRoot, [pscredential]$Credential) {
+    $workerTask = Get-GeminiWorkerTaskName $Config
+    $workerLauncher = Join-Path $StateRoot 'gemini-worker-launcher.ps1'
+    $workerRoot = Get-GeminiWorkerRoot $StateRoot
+
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$workerLauncher`" -StateRoot `"$StateRoot`"" -WorkingDirectory $workerRoot
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 4
+    $plain = $Credential.GetNetworkCredential().Password
+
+    Register-ScheduledTask `
+        -TaskName $workerTask `
+        -Action $action `
+        -Trigger $trigger `
+        -Settings $settings `
+        -User $Credential.UserName `
+        -Password $plain `
+        -RunLevel Limited `
+        -Description 'Dedicated WhatsApp-ERP Gemini Worker (Password logon, AtStartup)' `
+        -Force | Out-Null
+
+    $registered = Get-ScheduledTask -TaskName $workerTask
+    if ([string]$registered.Principal.LogonType -ne 'Password') {
+        Unregister-ScheduledTask -TaskName $workerTask -Confirm:$false -ErrorAction SilentlyContinue
+        throw "Task '$workerTask' registered with unexpected LogonType '$($registered.Principal.LogonType)' instead of 'Password'."
+    }
+}
+
 function Wait-Ready($Config, [int]$TimeoutSec = 90) {
     $releasePath = Get-ConfigProperty $Config 'ReleasePath'
     $port = Get-ConfigProperty $Config 'Port' 3211
@@ -293,7 +635,9 @@ function Wait-Ready($Config, [int]$TimeoutSec = 90) {
     for ($i = 0; $i -lt $maxAttempts; $i++) {
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/healthz" -TimeoutSec 2
-            if ($health.ok -and $health.version -eq $expected -and (Test-Path (Join-Path $dataDir 'shutdown.json'))) { return }
+            if ($health.ok -and $health.version -eq $expected -and (Test-Path (Join-Path $dataDir 'shutdown.json'))) {
+                return
+            }
         } catch {}
         Start-Sleep -Seconds 2
     }

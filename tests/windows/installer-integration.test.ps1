@@ -1,4 +1,4 @@
-# WhatsApp-ERP Windows Installer Integration Test Suite
+﻿# WhatsApp-ERP Windows Installer Integration Test Suite
 # Tests real Setup.exe and unins000.exe on Windows.
 param(
     [string]$SetupExePath,
@@ -62,9 +62,19 @@ function Record-Test($Name, [bool]$Passed, $Details, $FindingId = "") {
 
 function Clear-TestEnvironment {
     Stop-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
+    Stop-ScheduledTask -TaskName 'WhatsAppERPGeminiWorker' -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName 'WhatsAppERPOperations' -Confirm:$false -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName 'WhatsAppERPOperationsBackup' -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName 'WhatsAppERPGeminiWorker' -Confirm:$false -ErrorAction SilentlyContinue
     Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith('C:\WhatsApp-ERP') } | Stop-Process -Force -ErrorAction SilentlyContinue
+    $wUser = Get-LocalUser -Name 'WhatsAppERPGemini' -ErrorAction SilentlyContinue
+    if ($wUser) {
+        $wSid = $wUser.SID.Value
+        Remove-LocalUser -Name 'WhatsAppERPGemini' -ErrorAction SilentlyContinue
+        if ($wSid) {
+            Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $wSid } | ForEach-Object { Remove-CimInstance -InputObject $_ -ErrorAction SilentlyContinue }
+        }
+    }
     
     Remove-Item "C:\WhatsAppERP-setup.log", "C:\WhatsAppERP-uninstall.log", "C:\WhatsAppERP-setup-conflict.log" -Force -ErrorAction SilentlyContinue
     if (Test-Path 'C:\WhatsApp-ERP') {
@@ -217,12 +227,19 @@ try {
     Write-Host "`n[Test 6, 7, 8] Verifying Scheduled Tasks..." -ForegroundColor Cyan
     $task = Get-ScheduledTask -TaskName 'WhatsAppERPOperations' -ErrorAction SilentlyContinue
     $taskBackup = Get-ScheduledTask -TaskName 'WhatsAppERPOperationsBackup' -ErrorAction SilentlyContinue
+    $taskGemini = Get-ScheduledTask -TaskName 'WhatsAppERPGeminiWorker' -ErrorAction SilentlyContinue
 
-    # Test 6: WhatsAppERPOperations task registered
+    # Test 6: WhatsAppERPOperations & WhatsAppERPGeminiWorker tasks registered
     if ($task) {
         Record-Test "Scheduled Task Registration (WhatsAppERPOperations)" $true "Task WhatsAppERPOperations is registered."
     } else {
         Record-Test "Scheduled Task Registration (WhatsAppERPOperations)" $false "Task WhatsAppERPOperations was not registered."
+    }
+    if ($taskGemini -and [string]$taskGemini.Principal.LogonType -eq 'Password') {
+        Record-Test "Scheduled Task Registration (WhatsAppERPGeminiWorker)" $true "Task WhatsAppERPGeminiWorker registered with LogonType=Password."
+    } else {
+        $lt = if ($taskGemini) { [string]$taskGemini.Principal.LogonType } else { 'missing' }
+        Record-Test "Scheduled Task Registration (WhatsAppERPGeminiWorker)" $false "Task WhatsAppERPGeminiWorker LogonType=$lt (expected Password)."
     }
 
     # Test 7: Task action specifies -ExecutionPolicy Bypass (C2)
@@ -664,7 +681,7 @@ writeFileSync(String.raw``$boundaryDir\result.json``, JSON.stringify(result));
     Record-Test "Uninstaller Log Has No Delete Failures" ($deleteFailures.Count -eq 0) "Delete failures logged: $($deleteFailures.Count). $($deleteFailures | Select-Object -First 3)" "H2"
 
     # Test: tasks removed (H1)
-    $tasksRemaining = @(Get-ScheduledTask -TaskName 'WhatsAppERPOperations*' -ErrorAction SilentlyContinue)
+    $tasksRemaining = @(Get-ScheduledTask -TaskName 'WhatsAppERP*' -ErrorAction SilentlyContinue)
     $taskNames = ($tasksRemaining | ForEach-Object { $_.TaskName }) -join ', '
     Record-Test "Uninstaller Removes Scheduled Tasks via uninstall.ps1" ($tasksRemaining.Count -eq 0) "Remaining tasks: [$taskNames]." "H1"
 
@@ -703,7 +720,7 @@ writeFileSync(String.raw``$boundaryDir\result.json``, JSON.stringify(result));
 
     # Test: a second uninstall of the reinstalled product also comes out clean
     $secondExitCode = Invoke-Uninstaller "C:\WhatsAppERP-uninstall-second.log"
-    $secondClean = ($secondExitCode -eq 0) -and (Wait-ServiceDown 15) -and (-not (Get-ScheduledTask -TaskName 'WhatsAppERPOperations*' -ErrorAction SilentlyContinue)) -and (-not (Test-Path -LiteralPath (Join-Path $InstallPath 'releases')))
+    $secondClean = ($secondExitCode -eq 0) -and (Wait-ServiceDown 15) -and (-not (Get-ScheduledTask -TaskName 'WhatsAppERP*' -ErrorAction SilentlyContinue)) -and (-not (Test-Path -LiteralPath (Join-Path $InstallPath 'releases')))
     Record-Test "Second Uninstall After Reinstall Is Clean" $secondClean "Exit code: $secondExitCode." "H2"
 }
 catch {

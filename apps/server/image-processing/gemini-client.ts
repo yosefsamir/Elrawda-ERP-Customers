@@ -503,9 +503,12 @@ export class GeminiBrowserClient implements ImageProcessor {
   ) {}
 
   private async ensureContext(tempDownloadDir: string): Promise<BrowserContext> {
-    const snapshot = loadEncryptedGeminiStorageState(this.config.profileRoot, this.config.dataDir);
-    const syncedAt = getSyncedStorageStateTimestamp(this.config.profileRoot);
-    const needsSync = Boolean(snapshot && snapshot.savedAt !== syncedAt);
+    const useDirectProfile = Boolean(this.config.directProfile);
+    const snapshot = useDirectProfile
+      ? null
+      : loadEncryptedGeminiStorageState(this.config.profileRoot, this.config.dataDir);
+    const syncedAt = useDirectProfile ? null : getSyncedStorageStateTimestamp(this.config.profileRoot);
+    const needsSync = !useDirectProfile && Boolean(snapshot && snapshot.savedAt !== syncedAt);
 
     if (this.context && !needsSync) return this.context;
     if (this.context && needsSync) {
@@ -527,7 +530,7 @@ export class GeminiBrowserClient implements ImageProcessor {
         mkdirSync(this.config.profileDir, { recursive: true });
       }
       const executablePath = resolveChromiumExecutable(this.root);
-      const userAgent = normalizeDesktopUserAgent(snapshot?.userAgent);
+      const userAgent = useDirectProfile ? undefined : normalizeDesktopUserAgent(snapshot?.userAgent);
       const useNewHeadless = isFullChromeExecutable(executablePath);
       this.context = await chromium.launchPersistentContext(this.config.profileDir, {
         ...(executablePath ? { executablePath } : {}),
@@ -1452,23 +1455,27 @@ export async function runInteractiveGeminiLogin(options: {
   if (signal?.aborted) {
     throw new Error("تم إلغاء عملية تسجيل الدخول.");
   }
+  const useDirectProfile = Boolean(config.directProfile);
+  const targetProfileDir = useDirectProfile ? config.profileDir : config.loginProfileDir;
   const lock = new GeminiProfileLock(config.profileRoot, {
-    profileDir: config.loginProfileDir,
-    lockName: "login.sqlite",
+    profileDir: targetProfileDir,
+    lockName: useDirectProfile ? "gemini.sqlite" : "login.sqlite",
   });
   let context: BrowserContext | null = null;
+  let authenticated = false;
   try {
     onStage?.("launching");
     await lock.prepare();
     const executablePath = resolveChromiumExecutable(root);
-    mkdirSync(config.loginProfileDir, { recursive: true, mode: 0o700 });
-    onStatus(`Opening Chromium with persistent login profile: ${config.loginProfileDir}`);
-    context = await chromium.launchPersistentContext(config.loginProfileDir, {
+    mkdirSync(targetProfileDir, { recursive: true, mode: 0o700 });
+    onStatus(`Opening Chromium with persistent profile: ${targetProfileDir}`);
+    context = await chromium.launchPersistentContext(targetProfileDir, {
       ...(executablePath ? { executablePath } : {}),
       headless: false,
       viewport: { width: 1280, height: 900 },
       ignoreDefaultArgs: ["--enable-automation"],
       args: [
+        "--window-size=1280,900",
         "--no-first-run",
         "--disable-blink-features=AutomationControlled",
       ],
@@ -1485,7 +1492,6 @@ export async function runInteractiveGeminiLogin(options: {
     onStatus("Please sign in to your Google account in the browser window. Waiting for an authenticated Gemini session...");
 
     const deadline = Date.now() + 10 * 60_000;
-    let authenticated = false;
     while (Date.now() < deadline) {
       if (signal?.aborted) break;
       const openPages = context.pages().filter((p) => !p.isClosed());
@@ -1493,7 +1499,7 @@ export async function runInteractiveGeminiLogin(options: {
 
       if (await isInteractiveGeminiSessionAuthenticated(context, config.geminiUrl)) {
         onStage?.("confirming");
-        await openPages[0]!.waitForTimeout(600).catch(() => {});
+        await openPages[0]!.waitForTimeout(useDirectProfile ? 1200 : 600).catch(() => {});
         if (await isInteractiveGeminiSessionAuthenticated(context, config.geminiUrl)) {
           authenticated = true;
           break;
@@ -1510,23 +1516,30 @@ export async function runInteractiveGeminiLogin(options: {
       throw new Error("Timed out or browser closed before Gemini authentication was confirmed.");
     }
 
-    const activePage = context.pages().find((p) => !p.isClosed()) ?? (await context.newPage());
-    const rawUserAgent = await activePage.evaluate(() => navigator.userAgent).catch(() => "");
-    const userAgent = normalizeDesktopUserAgent(rawUserAgent) ?? rawUserAgent;
-    const cdpCookies = await captureCdpCookies(context, activePage);
-    const storageState = await context.storageState();
-    saveEncryptedGeminiStorageState({
-      profileRoot: config.profileRoot,
-      dataDir: config.dataDir,
-      storageState,
-      cdpCookies,
-      userAgent,
-    });
-
-    markGeminiAuthenticated(config.profileRoot);
-    onStatus("Gemini authentication confirmed and encrypted auth snapshot saved.");
+    if (!useDirectProfile) {
+      const activePage = context.pages().find((p) => !p.isClosed()) ?? (await context.newPage());
+      const rawUserAgent = await activePage.evaluate(() => navigator.userAgent).catch(() => "");
+      const userAgent = normalizeDesktopUserAgent(rawUserAgent) ?? rawUserAgent;
+      const cdpCookies = await captureCdpCookies(context, activePage);
+      const storageState = await context.storageState();
+      saveEncryptedGeminiStorageState({
+        profileRoot: config.profileRoot,
+        dataDir: config.dataDir,
+        storageState,
+        cdpCookies,
+        userAgent,
+      });
+    }
   } finally {
     if (context) await context.close().catch(() => {});
+    if (authenticated) {
+      markGeminiAuthenticated(config.profileRoot);
+      onStatus(
+        useDirectProfile
+          ? "Gemini authentication confirmed in persistent worker profile."
+          : "Gemini authentication confirmed and encrypted auth snapshot saved.",
+      );
+    }
     lock.release();
   }
 }

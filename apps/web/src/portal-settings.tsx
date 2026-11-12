@@ -24,6 +24,18 @@ import {
 import { api, post, put, dateTime } from "./api";
 import { Button, Field, Notice, ToggleSwitch } from "./components";
 
+type GeminiWorkerDiagnostics = {
+  connected: boolean;
+  workerId: string | null;
+  pid: number | null;
+  windowsUser: string | null;
+  sessionId: number | null;
+  chromeAvailable: boolean | null;
+  currentJobId: string | null;
+  state: string;
+  lastHeartbeatAt: string | null;
+};
+
 type GeminiStatus = {
   enabled?: boolean;
   paused: boolean;
@@ -31,6 +43,8 @@ type GeminiStatus = {
   pauseReason: string | null;
   profileExists: boolean;
   authenticatedAt?: string | null;
+  workerMode?: "in-process" | "external";
+  worker?: GeminiWorkerDiagnostics | null;
   counts: { pending: number; processing: number; completed: number; failed: number };
 };
 
@@ -492,10 +506,18 @@ export function PortalSettings({
                       ? geminiStatus.authenticatedAt
                         ? `تم حفظ جلسة بتاريخ ${dateTime(geminiStatus.authenticatedAt)} لكنها توقفت في الخلفية؛ أعد تشغيل «Gemini Web Login» ثم اضغط «استئناف».`
                         : "انتهت أو رُفضت جلسة Google في الخلفية؛ أعد تشغيل «Gemini Web Login» ثم اضغط «استئناف»."
-                    : !processingEnabled
-                      ? "الصور الجديدة تُعرض مباشرةً بدون تعديل حتى تعيد التفعيل."
-                      : "يتم تحسين الصور الجديدة تلقائيًا في الخلفية."}
+                      : !processingEnabled
+                        ? "الصور الجديدة تُعرض مباشرةً بدون تعديل حتى تعيد التفعيل."
+                        : "يتم تحسين الصور الجديدة تلقائيًا في الخلفية."}
                 </span>
+                {geminiStatus.workerMode === "external" && geminiStatus.worker && (
+                  <span className="gemini-account-hint">
+                    {`عامل المعالجة المستقل: ${geminiStatus.worker.connected ? "متصل" : "غير متصل"}` +
+                      (geminiStatus.worker.windowsUser ? ` — حساب Windows: ${geminiStatus.worker.windowsUser}` : "") +
+                      (geminiStatus.worker.sessionId !== null ? ` (Session ${geminiStatus.worker.sessionId})` : "") +
+                      (geminiStatus.worker.lastHeartbeatAt ? ` — آخر نبضة: ${dateTime(geminiStatus.worker.lastHeartbeatAt)}` : "")}
+                  </span>
+                )}
               </div>
 
               <div className="gemini-account-actions">
@@ -569,6 +591,18 @@ export function PortalSettings({
             {geminiStatus.pauseReason && processingEnabled && (
               <Notice tone={geminiStatus.requiresReauth ? "error" : "info"}>
                 {geminiStatus.pauseReason}
+              </Notice>
+            )}
+
+            {geminiStatus.workerMode === "external" && geminiStatus.worker && !geminiStatus.worker.connected && processingEnabled && (
+              <Notice tone="warning">
+                عامل Gemini المستقل غير متصل حاليًا بالخادم المحلي؛ تأكد من تشغيل مهمة WhatsAppERPGeminiWorker أو راجع أداة الفحص diagnose.ps1.
+              </Notice>
+            )}
+
+            {geminiStatus.workerMode === "external" && geminiStatus.worker?.chromeAvailable === false && (
+              <Notice tone="error">
+                لم يتم العثور على متصفح Chromium لبيئة عامل Gemini المستقل؛ أعد تشغيل المثبّت أو أصلح حزمة التشغيل.
               </Notice>
             )}
 

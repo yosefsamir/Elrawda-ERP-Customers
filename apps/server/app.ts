@@ -16,8 +16,9 @@ import { registerCompanyRoutes } from "./company-routes.js";
 import { registerPortalAdmin } from "./portal-admin.js";
 import { createPortal } from "./portal.js";
 import { createProductReader } from "../../packages/erp/products.js";
+import { registerGeminiWorkerBridge } from "./image-processing/bridge.js";
 import { getImageProcessingConfig } from "./image-processing/config.js";
-import { ImageProcessingWorker } from "./image-processing/worker.js";
+import { getImageProcessingStatusSummary, ImageProcessingWorker } from "./image-processing/worker.js";
 export async function createApp(options: {
   dataDir: string;
   root: string;
@@ -182,6 +183,15 @@ export async function createApp(options: {
   });
   registerAuth(app, { db, repo, secrets, wa, sync, root: options.root });
   registerCompanyRoutes(app, { db, repo, secrets, wa, sync, root: options.root });
+  if (imageCfg.workerMode === "external") {
+    registerGeminiWorkerBridge(app, {
+      db,
+      worker: imageWorker,
+      dataDir: options.dataDir,
+      root: options.root,
+      bridgeTokenFile: imageCfg.bridgeTokenFile,
+    });
+  }
   registerPortalAdmin(app, db, {
     dataDir: options.dataDir,
     root: options.root,
@@ -226,6 +236,10 @@ export async function createApp(options: {
       restriction: wa.state.restriction ?? null,
       retryAttempt: wa.state.retryAttempt ?? 0,
     },
+    geminiWorker: getImageProcessingStatusSummary(db, imageCfg.profileRoot, undefined, {
+      dataDir: options.dataDir,
+      workerMode: imageCfg.workerMode,
+    }),
   }));
   const syncTimer = setInterval(() => {
     const sources = db.prepare("SELECT company_id FROM sources WHERE kind='sql'").all() as Array<{company_id:string}>;
