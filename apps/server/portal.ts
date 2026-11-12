@@ -32,6 +32,8 @@ import { enqueueImageProcessingJob, getImageProcessingStatusSummary, recordUnpro
 const productParams=z.object({id:z.string().regex(/^\d{1,18}$/),unit:z.string().regex(/^\d{1,18}$/)});
 const lookupQuery=z.object({code:z.string().trim().min(1).max(100).transform(v=>v.replace(/\s+/g," ")).refine(v=>/^[A-Za-z0-9 _-]+$/.test(v)&&/[A-Za-z0-9]/.test(v))});
 const loginCredentials=z.object({username:z.unknown().transform(v=>typeof v==="string"?v.trim():""),password:z.unknown().transform(v=>typeof v==="string"?v:"")});
+const processingPausedMessage="معالجة الصور متوقفة مؤقتًا. تُحفظ الصور وتُعرض كما هي؛ تواصل مع المسؤول.";
+const processingFailedMessage="تعذرت معالجة الصورة. يمكنك إعادة المحاولة أو التواصل مع المسؤول.";
 const fail=(message:string,statusCode=400)=>Object.assign(new Error(message),{statusCode});
 const cookieName="emoji_photo_session";
 export function createLimiter() {
@@ -108,7 +110,7 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
         status,
         jobId: r.active_job_id,
         errorCode: status === "failed" ? r.error_code : null,
-        error: status === "failed" ? r.error_message : null,
+        error: status === "failed" ? processingFailedMessage : null,
         updatedAt: r.job_updated_at,
       };
     });
@@ -490,8 +492,12 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
     const config=settings();
     requireUser(request,config);
     const imageCfg=getImageProcessingConfig({db,dataDir:options.dataDir,root:options.root});
-    const summary=getImageProcessingStatusSummary(db,imageCfg.profileRoot,config.company_id);
-    return {enabled:summary.enabled,paused:summary.paused,requiresReauth:summary.requiresReauth,pauseReason:summary.pauseReason,counts:summary.counts};
+    const summary=getImageProcessingStatusSummary(db,imageCfg.profileRoot,config.company_id,{
+      dataDir:options.dataDir,workerMode:imageCfg.workerMode,
+    });
+    const unavailable=summary.workerMode==="external" && (!summary.worker?.connected || summary.worker.chromeAvailable===false);
+    const paused=!summary.enabled || summary.paused || summary.requiresReauth || unavailable;
+    return {enabled:summary.enabled,paused,requiresReauth:summary.requiresReauth,pauseReason:paused?processingPausedMessage:null,counts:summary.counts};
   });
   app.get("/api/image-jobs/:jobId",async request=>{
     const config=settings();
@@ -513,7 +519,7 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
       retryCount:row.retry_count,
       maxRetries:row.max_retries,
       errorCode:row.error_code,
-      errorMessage:row.error_message,
+      errorMessage:row.error_message?processingFailedMessage:null,
       resultImageUrl:row.result_image_id?`/api/images/${row.product_image_id}?v=${row.result_image_id}`:null,
       createdAt:row.created_at,
       updatedAt:row.updated_at,

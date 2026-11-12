@@ -118,9 +118,20 @@ function App() {
   useEffect(()=>{setActiveImage(0);},[selected]);
   useEffect(()=>{
     if(!manage||!session.authenticated){setQueueStatus(null);return;}
-    let cancelled=false;
-    void request("/image-jobs/status").then(data=>{if(!cancelled)setQueueStatus(data);}).catch(()=>{});
-    return()=>{cancelled=true;};
+    let cancelled=false,refreshing=false;
+    const controller=new AbortController();
+    const refresh=async()=>{
+      if(refreshing||cancelled)return;
+      refreshing=true;
+      try{
+        const data=await request("/image-jobs/status","GET",undefined,controller.signal);
+        if(!cancelled)setQueueStatus(data);
+      }catch{}finally{refreshing=false;}
+    };
+    void refresh();
+    const timer=window.setInterval(()=>{void refresh();},5000);
+    window.addEventListener("focus",refresh);
+    return()=>{cancelled=true;controller.abort();window.clearInterval(timer);window.removeEventListener("focus",refresh);};
   },[manage,session.authenticated]);
   useEffect(()=>{
     if(!product||!hasActiveProcessing)return;
@@ -139,9 +150,6 @@ function App() {
         prevById=new Map(fresh.images.map(img=>[img.id,img]));
         setProducts(current=>current.map(p=>`${p.id}:${p.unitId}`===key?{...p,images:fresh.images}:p));
         if(completedAny)setSuccess("تمت معالجة الصورة وتحديثها تلقائيًا");
-        if(manage&&session.authenticated){
-          void request("/image-jobs/status").then(status=>{if(!cancelled)setQueueStatus(status);}).catch(()=>{});
-        }
       }catch{}
     };
     const intervalMs=queueStatus?.paused?6000:2500;
@@ -858,9 +866,7 @@ function App() {
           <section className="results" aria-label="نتائج الاستعلام"><div className={`results-heading${products.length===1?" single-result":""}`}><div><span className="eyebrow muted">نتائج الاستعلام</span><h2>لقينا {products.length===1?"الموديل":"أكتر من نتيجة"} <span className="result-count">{products.length}</span></h2></div><span className="query-chip" dir="ltr">{searched}</span></div>
             {truncated && <p role="status">فيه نتائج إضافية؛ استخدم رقم الصنف لتحديد النتيجة.</p>}
             {products.length>1 && <div className="choices">{products.map((p,i)=><button disabled={mutating} className={selected===i?"active":""} key={`${p.id}:${p.unitId}`} onClick={()=>{setSelected(i);setSuccess("");}}><bdi>{p.code}</bdi><span>{p.description||p.name} · {p.unit} · <bdi>{p.id}</bdi></span></button>)}</div>}
-            {manage && session.authenticated && queueStatus?.enabled===false && <div className="notice warning" role="status"><Clock size={18}/><span>معالجة الصور التلقائية متوقفة من إعدادات الإدارة؛ الصور المرفوعة تُحفظ وتُعرض فورًا كما هي دون تعديل.</span></div>}
-            {manage && session.authenticated && queueStatus?.enabled!==false && queueStatus?.requiresReauth && <div className="notice warning" role="alert"><AlertTriangle size={18}/><span>معالجة الصور متوقفة مؤقتًا لأن جلسة Gemini Web تحتاج لإعادة تسجيل الدخول من لوحة الإدارة. يتم عرض الصور الأصلية ولن تتعطل.</span></div>}
-            {manage && session.authenticated && queueStatus?.enabled!==false && queueStatus?.paused && !queueStatus?.requiresReauth && <div className="notice warning" role="status"><Clock size={18}/><span>{queueStatus.pauseReason || "طابور معالجة الصور متوقف مؤقتًا من لوحة الإدارة."}</span></div>}
+            {manage && session.authenticated && queueStatus && (queueStatus.enabled===false||queueStatus.paused||queueStatus.requiresReauth) && <div className="notice warning" role="status"><Clock size={18}/><span>معالجة الصور متوقفة مؤقتًا. تُحفظ الصور وتُعرض كما هي؛ تواصل مع المسؤول.</span></div>}
             {product && <div className="product-layout"><article className="product-details product-summary"><div className="product-kicker">EMOJI STORE {product.kind ? <><span> / </span>{product.kind}</> : null}<span> / </span>{product.name}</div><div className="product-head"><h2>{product.description||product.name}</h2><div className="model-badge"><span>كود الموديل</span><strong dir="ltr">{product.code}</strong></div></div><div className="price-block"><div className="price-main"><span>سعر البيع</span>{product.price===null?<strong className="unpriced">السعر غير متاح حاليًا</strong>:<div><strong>{money(product.price)}</strong><span>ج.م</span></div>}</div><small>سعر الوحدة: {product.unit||"غير محددة"}</small></div></article><div className="gallery"><div className={`main-image ${product.images.length?"has-image":""}`}>{activePhoto?<button className="image-zoom" onClick={()=>setZoom(true)} aria-label="تكبير صورة الموديل" title="تكبير صورة الموديل"><img src={activePhoto.url} alt={`${product.description||product.name} — صورة ${activeImage+1}`}/><span><ZoomIn size={18}/></span></button>:<><div className="no-image"><Images size={48} strokeWidth={1}/><h3>الصور لسه بتتجهز</h3><p>{manage?"أضف أول صورة للموديل من الزر بالأسفل.":"بيانات الموديل متاحة، والصور هتظهر بمجرد إضافتها."}</p></div><span className="gallery-code" dir="ltr">{product.code}</span></>}{manage && session.authenticated && activePhoto && (activePhoto.status==="pending"||activePhoto.status==="processing"||activePhoto.status==="failed") && <span className={`image-status-pill status-${activePhoto.status}`} role="status">{activePhoto.status==="pending"&&<><Clock size={14}/><span>في انتظار المعالجة</span></>}{activePhoto.status==="processing"&&<><LoaderCircle size={14} className="spin"/><span>جاري معالجة الصورة…</span></>}{activePhoto.status==="failed"&&<><AlertTriangle size={14}/><span>تعذرت المعالجة</span></>}</span>}</div>
               {product.images.length>1 && <div className="thumbnails">{product.images.map((photo,i)=><button className={activeImage===i?"selected":""} key={photo.id} onClick={()=>setActiveImage(i)} aria-label={`عرض الصورة ${i+1}`} aria-pressed={activeImage===i}><img src={photo.url} alt=""/>{manage && session.authenticated && (photo.status==="pending"||photo.status==="processing"||photo.status==="failed") && <span className={`thumb-status-dot status-${photo.status}`} aria-hidden="true"/>}</button>)}</div>}
               {manage && <div className="image-actions">
@@ -882,7 +888,7 @@ function App() {
                 </label>}
                 {activePhoto?.status==="failed" && queueStatus?.enabled!==false && <button type="button" className="retry-button" disabled={mutating} onClick={()=>void retryImage(activePhoto.id)}><RefreshCw size={16}/> إعادة المحاولة</button>}
                 {activePhoto && <button className="delete-button" disabled={mutating} onClick={()=>setDeleteId(activePhoto.id)}><Trash2 size={16}/> حذف الصورة</button>}
-                {activePhoto?.status==="failed" && activePhoto.error && <small className="image-job-error" role="status">{activePhoto.error}</small>}
+                {activePhoto?.status==="failed" && <small className="image-job-error" role="status">تعذرت معالجة الصورة. يمكنك إعادة المحاولة أو التواصل مع المسؤول.</small>}
                 <small>تصوير بالكاميرا أو رفع صورة · JPEG, PNG, WebP</small>
               </div>}
             </div><section className="product-specs" aria-label="مواصفات الصنف"><dl>{product.kind && <div><dt>النوع</dt><dd>{product.kind}</dd></div>}<div><dt>القسم</dt><dd>{product.name}</dd></div>{product.category && <div><dt>التصنيف</dt><dd>{product.category}</dd></div>}<div><dt>رقم الصنف</dt><dd dir="ltr">{product.id}</dd></div><div><dt>الوحدة</dt><dd>{product.unit||"—"}</dd></div></dl><div className="detail-note"><ShieldCheck size={20}/><p>بيانات من نظام الشركة<span>السعر المعروض حسب بيانات الصنف وقت الاستعلام.</span></p></div></section></div>}

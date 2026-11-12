@@ -71,6 +71,10 @@ jobs:
         if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.skip_tests) || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && contains(github.event.head_commit.message, '[fast-build]'))) }}
         run: npm run test:gemini:worker
 
+      - name: Verify photo portal processing status and simple messages
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.skip_tests) || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && contains(github.event.head_commit.message, '[fast-build]'))) }}
+        run: npm run test:portal:processing
+
       - name: Package self-contained Windows release payload
         shell: powershell
         run: |

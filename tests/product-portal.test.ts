@@ -16,6 +16,8 @@ import { registerPortalAdmin } from "../apps/server/portal-admin.js";
 import { hashPassword, localSecretStore } from "../apps/server/security.js";
 import { createBackup, restoreBackup, verifyBackup } from "../packages/storage/backup.js";
 import { productCodePattern, type Product, type ProductReader } from "../packages/erp/products.js";
+import { markGeminiReauthRequired } from "../apps/server/image-processing/profile.js";
+import { updateExternalWorkerHeartbeat } from "../apps/server/image-processing/worker.js";
 const product:Product={id:"186759",unitId:"1",code:"Z3330",name:"بنطلون",category:"جبردين",description:"بنطلون جبردين مستورد",unit:"قطعة",price:650};
 async function fixture(t:any) {
   const dir=mkdtempSync(join(tmpdir(),"emoji-portal-")),db=openDatabase(join(dir,"app.sqlite"));
@@ -42,6 +44,46 @@ function multipart(buffer:Buffer,mime='image/png') {
  return {payload:Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="test.png"\r\nContent-Type: ${mime}\r\n\r\n`),buffer,Buffer.from(`\r\n--${boundary}--\r\n`)]),contentType:`multipart/form-data; boundary=${boundary}`};
 }
 async function png(){return sharp({create:{width:20,height:20,channels:3,background:'#ffc400'}}).png().toBuffer();}
+
+test('photo portal reports the external worker instead of obsolete local auth and hides processing diagnostics',async t=>{
+ const previousMode=process.env.EMOJI_GEMINI_WORKER_MODE,previousProfile=process.env.GEMINI_PROFILE_DIR;
+ t.after(()=>{
+  if(previousMode===undefined)delete process.env.EMOJI_GEMINI_WORKER_MODE;else process.env.EMOJI_GEMINI_WORKER_MODE=previousMode;
+  if(previousProfile===undefined)delete process.env.GEMINI_PROFILE_DIR;else process.env.GEMINI_PROFILE_DIR=previousProfile;
+ });
+ process.env.EMOJI_GEMINI_WORKER_MODE='external';
+ const f=await fixture(t),token=await f.login();
+ process.env.GEMINI_PROFILE_DIR=join(f.dir,'obsolete-local-profile');
+ markGeminiReauthRequired(process.env.GEMINI_PROFILE_DIR,'REAUTH_REQUIRED');
+ const status=async()=>{
+  const response=await f.portal.inject({url:'/api/image-jobs/status',headers:f.headers,cookies:{emoji_photo_session:token}});
+  assert.equal(response.statusCode,200);
+  return response.json();
+ };
+ updateExternalWorkerHeartbeat(f.db,f.dir,{workerId:'external-worker',profileExists:true,requiresReauth:false,state:'idle'});
+ assert.equal((await status()).paused,false,'a working external worker must not inherit the old local profile warning');
+ assert.equal((await status()).requiresReauth,false);
+ updateExternalWorkerHeartbeat(f.db,f.dir,{workerId:'external-worker',profileExists:true,state:'stopped'});
+ assert.equal((await status()).paused,true,'a stopped worker must still show the processing warning');
+ updateExternalWorkerHeartbeat(f.db,f.dir,{workerId:'external-worker',profileExists:true,state:'idle'},Date.now()-120_000);
+ assert.equal((await status()).paused,true,'a disconnected worker must show the processing warning');
+ updateExternalWorkerHeartbeat(f.db,f.dir,{workerId:'external-worker',profileExists:true,requiresReauth:true,reauthReason:'CAPTCHA_OR_CHALLENGE',state:'paused_reauth'});
+ const paused=await status();
+ assert.equal(paused.requiresReauth,true);
+ assert.match(paused.pauseReason,/معالجة الصور متوقفة/);
+ assert.doesNotMatch(JSON.stringify(paused),/Gemini|Google|CAPTCHA|Windows|Session|workerId|windowsUser/i);
+
+ const file=multipart(await png());
+ const uploaded=await f.portal.inject({method:'POST',url:'/api/products/186759/1/images',headers:{...f.headers,'content-type':file.contentType},cookies:{emoji_photo_session:token},payload:file.payload});
+ assert.equal(uploaded.statusCode,200);
+ const jobId=uploaded.json().jobId;
+ f.db.prepare("UPDATE image_processing_jobs SET status='failed',error_code='TIMEOUT',error_message='Gemini Web timeout at C:\\worker\\profile' WHERE id=?").run(jobId);
+ const photo=(await f.portal.inject({url:'/api/products/186759/1',headers:f.headers,cookies:{emoji_photo_session:token}})).json().products[0].images[0];
+ assert.match(photo.error,/تعذرت معالجة الصورة/);
+ assert.doesNotMatch(photo.error,/Gemini|worker|profile|timeout/i);
+ const job=(await f.portal.inject({url:`/api/image-jobs/${jobId}`,headers:f.headers,cookies:{emoji_photo_session:token}})).json();
+ assert.doesNotMatch(job.errorMessage,/Gemini|worker|profile|timeout/i);
+});
 
 test('public lookup supports both codes without a session and preserves literal search text',async t=>{
  const f=await fixture(t);

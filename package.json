@@ -25,6 +25,7 @@
     "reset:all": "node dist/runtime/scripts/maintenance/admin.js reset-all",
     "test:release": "node tests/release-smoke.mjs",
     "test:gemini:worker": "node tests/gemini-worker-smoke.mjs",
+    "test:portal:processing": "tsx --test --test-name-pattern=\"photo portal reports\" tests/product-portal.test.ts && node tests/portal-processing-smoke.mjs",
     "test:whatsapp:browser": "node --test tests/whatsapp-browser-smoke.mjs",
     "gemini:login": "tsx apps/server/image-processing/cli.ts login",
     "gemini:verify": "tsx apps/server/image-processing/cli.ts verify",
