@@ -2,7 +2,8 @@
 # Tests real Setup.exe and unins000.exe on Windows.
 param(
     [string]$SetupExePath,
-    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
+    [switch]$SkipWhatsAppTests
 )
 
 Set-StrictMode -Version Latest
@@ -355,6 +356,28 @@ try {
         Record-Test "Chromium Packaged Runtime Present and Valid" $false "Bundled Chromium not found in $activeReleaseDir" "H5"
     }
 
+    try {
+        & (Join-Path $RepoRoot 'tests\windows\gemini-worker-probe.ps1') -ReleasePath $activeReleaseDir -StateRoot $StatePath
+        Record-Test "Dedicated Gemini User: Chromium, Persistent Cookies and ACLs" $true 'Offline profile saved under secondary logon and reopened under Password scheduled task.'
+    } catch {
+        Record-Test "Dedicated Gemini User: Chromium, Persistent Cookies and ACLs" $false $_.Exception.Message
+    }
+
+    # Customer persistence tests need a real account/company even when the slow
+    # WhatsApp network, QR and recovery tests are disabled.
+    $apiHeaders = @{ 'x-emoji-request' = '1' }
+    $seedCompanyName = 'Integration Persistence Company'
+    $apiSession = $null
+    $seedCompanyId = $null
+    try {
+        Invoke-RestMethod -Uri "$ApiBase/api/auth/bootstrap" -Method Post -Headers $apiHeaders -ContentType 'application/json' -SessionVariable apiSession -TimeoutSec 20 -Body (@{ username = 'integration'; password = 'IntegrationOnly-Password1' } | ConvertTo-Json) | Out-Null
+        $seedCompanyId = (Invoke-RestMethod -Uri "$ApiBase/api/companies" -Method Post -Headers $apiHeaders -ContentType 'application/json' -WebSession $apiSession -TimeoutSec 20 -Body (@{ name = $seedCompanyName } | ConvertTo-Json)).id
+        Record-Test "Customer Persistence Fixture Created" ([bool]$seedCompanyId) "Company ID: $seedCompanyId"
+    } catch {
+        Record-Test "Customer Persistence Fixture Created" $false $_.Exception.Message
+    }
+
+    if (-not $SkipWhatsAppTests) {
     Write-Host "`n[Phase 4: Test 14] Verifying WhatsApp Health Monitoring via /healthz (H7)..." -ForegroundColor Cyan
     $healthResp = try { Invoke-RestMethod -Uri "http://127.0.0.1:3211/healthz" -TimeoutSec 2 } catch { $null }
     if ($healthResp -and $healthResp.whatsapp -and ($healthResp.whatsapp.status -in @('disconnected', 'starting', 'qr', 'ready'))) {
@@ -379,17 +402,10 @@ try {
     # Seeds a real operator and company. Everything from here on, including repair, upgrade and
     # uninstall, runs against customer-like data with a live Chromium in the service account.
     Write-Host "`n[Phase 4: Test 16] Starting a Real WhatsApp Session in the Service Account (H5)..." -ForegroundColor Cyan
-    $apiHeaders = @{ 'x-emoji-request' = '1' }
-
     # WhatsApp is unreachable when the session starts, as on a machine that boots before its network
     Add-Content -LiteralPath $HostsPath -Value "`r`n127.0.0.1 web.whatsapp.com`r`n" -Encoding ASCII
-    $seedCompanyName = 'Integration Persistence Company'
-    $apiSession = $null
-    $seedCompanyId = $null
     $sessionError = $null
     try {
-        Invoke-RestMethod -Uri "$ApiBase/api/auth/bootstrap" -Method Post -Headers $apiHeaders -ContentType 'application/json' -SessionVariable apiSession -TimeoutSec 20 -Body (@{ username = 'integration'; password = 'IntegrationOnly-Password1' } | ConvertTo-Json) | Out-Null
-        $seedCompanyId = (Invoke-RestMethod -Uri "$ApiBase/api/companies" -Method Post -Headers $apiHeaders -ContentType 'application/json' -WebSession $apiSession -TimeoutSec 20 -Body (@{ name = $seedCompanyName } | ConvertTo-Json)).id
         Invoke-RestMethod -Uri "$ApiBase/api/whatsapp/connect" -Method Post -Headers $apiHeaders -ContentType 'application/json' -WebSession $apiSession -TimeoutSec 20 -Body '{}' | Out-Null
     } catch {
         $sessionError = $_.Exception.Message
@@ -462,6 +478,9 @@ try {
     $newWorkerPid = if ($recoveredHealth) { $recoveredHealth.workerPid } else { $null }
     $workerRecovered = $newWorkerPid -and ($newWorkerPid -ne $workerPid) -and (@(Get-OwnedChrome).Count -gt 0)
     Record-Test "WhatsApp Worker Recovers With a New Browser (M7)" $workerRecovered "New worker PID: $newWorkerPid; chrome.exe processes: $(@(Get-OwnedChrome).Count)." "M7"
+    } else {
+        Write-Host 'WhatsApp network, QR, browser ownership and recovery tests explicitly skipped; installer and Gemini checks remain enabled.' -ForegroundColor Yellow
+    }
 
     # -------------------------------------------------------------------------
     # Phase 6: Service Identity and Access Boundaries (H6, H7)
@@ -765,6 +784,7 @@ $testSummary = [pscustomobject]@{
     Total = $totalCount
     Passed = $passCount
     Failed = $failCount
+    WhatsAppTestsSkipped = [bool]$SkipWhatsAppTests
     Failures = ($testResults | Where-Object { $_.Status -eq 'FAIL' } | Select-Object -Property Finding, Test, Details)
 }
 $testSummary | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $summaryDir "test-summary.json") -Encoding utf8

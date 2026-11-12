@@ -12,6 +12,9 @@ import {
   enqueueImageProcessingJob,
   getImageProcessingStatusSummary,
   ImageProcessingWorker,
+  isExternalWorkerConnected,
+  readExternalWorkerStatus,
+  updateExternalWorkerHeartbeat,
 } from "../apps/server/image-processing/worker.js";
 
 async function makeTestImage(width = 256, height = 256, rgb = { r: 210, g: 110, b: 60 }): Promise<Buffer> {
@@ -211,8 +214,67 @@ test("gemini localhost bridge enforces loopback + bearer auth and completes job 
       .get("img-1") as { processed_image_id: string };
     assert.equal(stateRow.processed_image_id, completed.resultImageId);
 
+    const nextJob = seedProductImageJob(db, stored.id, "img-2");
+    const nextClaim = await app.inject({
+      method: "POST", url: "/internal/gemini-worker/claim",
+      headers: { authorization: `Bearer ${token}` }, payload: { workerId: "ext-w1" },
+    });
+    assert.equal(nextClaim.json().job.id, nextJob);
+    const lateFailure = await app.inject({
+      method: "POST", url: `/internal/gemini-worker/jobs/${jobId}/fail`,
+      headers: { authorization: `Bearer ${token}` }, payload: { workerId: "ext-w1", code: "TIMEOUT" },
+    });
+    assert.equal(lateFailure.statusCode, 409);
+    assert.equal(readExternalWorkerStatus(dataDir)?.currentJobId, nextJob, "late retry must not erase the active job");
+    assert.equal(readExternalWorkerStatus(dataDir)?.state, "processing");
+
     await worker.stop();
     await app.close();
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server restart preserves a live external job and recovers it only after the worker becomes stale", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gemini-restart-"));
+  const db = openDatabase(join(dir, "app.sqlite"));
+  let now = Date.now();
+  const options = { dataDir: dir, root: resolve("."), workerMode: "external" as const, now: () => now, log: () => {} };
+  try {
+    const jobId = seedProductImageJob(db, "source");
+    const worker = new ImageProcessingWorker(db, options);
+    updateExternalWorkerHeartbeat(db, dir, { workerId: "live-worker", state: "processing", currentJobId: jobId }, now);
+    assert.equal(worker.claimNextJob("live-worker")?.id, jobId);
+    const restarted = new ImageProcessingWorker(db, options);
+    assert.equal(restarted.getClaimedJob(jobId, "live-worker")?.retry_count, 0);
+    assert.equal(restarted.claimNextJob("other-worker"), null);
+    now += 120_000;
+    assert.equal(restarted.recoverAbandonedExternalJobs(), 1);
+    assert.equal(restarted.claimNextJob("replacement")?.retry_count, 1);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fresh authenticated heartbeat resumes after login while server was unavailable", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gemini-offline-login-"));
+  const db = openDatabase(join(dir, "app.sqlite"));
+  const now = Date.now();
+  const pause = () => db.prepare("UPDATE portal_settings SET gemini_paused=1, gemini_requires_reauth=1, gemini_pause_reason='REAUTH_REQUIRED' WHERE id=1").run();
+  const settings = () => db.prepare("SELECT gemini_requires_reauth FROM portal_settings WHERE id=1").get() as { gemini_requires_reauth: number };
+  try {
+    const oldAuth = new Date(now - 10_000).toISOString();
+    updateExternalWorkerHeartbeat(db, dir, { workerId: "w", requiresReauth: true, authenticatedAt: oldAuth }, now);
+    pause();
+    updateExternalWorkerHeartbeat(db, dir, { workerId: "w", requiresReauth: false, authenticatedAt: oldAuth }, now + 1_000);
+    assert.equal(settings().gemini_requires_reauth, 1, "old auth must not clear a real reauth pause");
+    updateExternalWorkerHeartbeat(db, dir, { workerId: "w", requiresReauth: false, authenticatedAt: new Date(now + 2_000).toISOString() }, now + 3_000);
+    assert.equal(settings().gemini_requires_reauth, 0);
+    assert.equal(readExternalWorkerStatus(dir)?.requiresReauth, false);
+    const stopped = updateExternalWorkerHeartbeat(db, dir, { workerId: "w", requiresReauth: true, state: "stopped" }, now + 4_000);
+    assert.equal(isExternalWorkerConnected(stopped.status, now + 4_000), false, "stopped reauth worker must never look connected");
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });

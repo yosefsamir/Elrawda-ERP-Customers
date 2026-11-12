@@ -72,9 +72,9 @@ function extractBearerToken(req: FastifyRequest): string | undefined {
   return match?.[1]?.trim();
 }
 
-function clearExternalCurrentJob(dataDir: string, workerId: string, state: ExternalWorkerStatus["state"] = "idle"): void {
+function clearExternalCurrentJob(dataDir: string, workerId: string, jobId: string, state: ExternalWorkerStatus["state"] = "idle"): void {
   const ext = readExternalWorkerStatus(dataDir);
-  if (!ext || (ext.workerId && ext.workerId !== workerId)) return;
+  if (!ext || (ext.workerId && ext.workerId !== workerId) || ext.currentJobId !== jobId) return;
   writeExternalWorkerStatus(dataDir, {
     ...ext,
     currentJobId: null,
@@ -259,7 +259,7 @@ export function registerGeminiWorkerBridge(app: FastifyInstance, options: Gemini
           }
 
           const result = await options.worker.completeClaimedJob(jobId, workerId, req.body);
-          clearExternalCurrentJob(options.dataDir, workerId, "idle");
+          clearExternalCurrentJob(options.dataDir, workerId, jobId, "idle");
           if (!result.ok && result.reason === "not_found_or_not_owner") {
             return reply.code(409).send(result);
           }
@@ -283,6 +283,7 @@ export function registerGeminiWorkerBridge(app: FastifyInstance, options: Gemini
         clearExternalCurrentJob(
           options.dataDir,
           workerId,
+          jobId,
           result.outcome === "paused_reauth" ? "paused_reauth" : "idle",
         );
         if (!result.ok) {

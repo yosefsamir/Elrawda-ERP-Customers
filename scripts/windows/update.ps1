@@ -115,6 +115,9 @@ try {
     if (-not $config.PSObject.Properties['GeminiWorkerTaskName']) {
         Add-Member -InputObject $config -NotePropertyName 'GeminiWorkerTaskName' -NotePropertyValue $workerTask -Force
     }
+    # From the first persisted activation change onward, failures require rollback.
+    # Task registration and ACL setup can throw before readiness is checked.
+    $switched = $true
     Write-JsonFile (Join-Path $StateRoot 'service.json') $config
 
     Copy-Item (Join-Path $target 'scripts\windows\launcher.ps1') (Join-Path $StateRoot 'launcher.ps1') -Force
@@ -126,7 +129,6 @@ try {
     Register-ApplicationTasks $config $StateRoot
     Register-GeminiWorkerTask $config $StateRoot $workerAccount.Credential
 
-    $switched = $true
     Remove-Item $flag -Force
     Write-InstallStage 'service'
     Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
@@ -158,6 +160,7 @@ try {
         Remove-Item $flag -Force -ErrorAction SilentlyContinue
         if ($stopped) {
             Start-ScheduledTask -TaskName $config.TaskName -ErrorAction SilentlyContinue
+            Start-ScheduledTask -TaskName $workerTask -ErrorAction SilentlyContinue
         }
         throw "Update aborted before activation. The existing release has been retained. Error: $err"
     } else {
@@ -182,6 +185,8 @@ try {
             $oldWorkerLauncher = Join-Path $oldRelease 'scripts\windows\gemini-worker-launcher.ps1'
             if (Test-Path -LiteralPath $oldWorkerLauncher) {
                 Copy-Item $oldWorkerLauncher (Join-Path $StateRoot 'gemini-worker-launcher.ps1') -Force
+                # Write-JsonFile replaces service.json and loses its explicit worker ACE.
+                Set-GeminiWorkerAcl $StateRoot $config.TaskName $workerAccount.Sid
             } else {
                 Unregister-ScheduledTask -TaskName $workerTask -Confirm:$false -ErrorAction SilentlyContinue
             }

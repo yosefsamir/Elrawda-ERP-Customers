@@ -221,6 +221,19 @@ export function updateExternalWorkerHeartbeat(
   const clearLocalReauth = Boolean(existing?.clearLocalReauthPending);
   const reportedRequiresReauth = clearLocalReauth ? false : Boolean(payload.requiresReauth);
   const reportedReason = clearLocalReauth ? null : payload.reauthReason ?? null;
+  // Login can finish while the server is offline, so its one-shot notification
+  // is not sufficient. Only a NEW authenticated session may clear a reauth pause.
+  const authenticatedAtMs = Date.parse(payload.authenticatedAt ?? "");
+  const previousAuthenticatedAtMs = Date.parse(existing?.authenticatedAt ?? "");
+  if (
+    !reportedRequiresReauth &&
+    Number.isFinite(authenticatedAtMs) &&
+    (!Number.isFinite(previousAuthenticatedAtMs) || authenticatedAtMs > previousAuthenticatedAtMs)
+  ) {
+    db.prepare(
+      "UPDATE portal_settings SET gemini_paused=0, gemini_requires_reauth=0, gemini_pause_reason=NULL WHERE id=1 AND gemini_requires_reauth=1",
+    ).run();
+  }
 
   if (reportedRequiresReauth) {
     db.prepare(
@@ -239,7 +252,7 @@ export function updateExternalWorkerHeartbeat(
     authenticatedAt: payload.authenticatedAt ?? existing?.authenticatedAt ?? null,
     chromeAvailable: payload.chromeAvailable !== false,
     currentJobId: payload.currentJobId ?? null,
-    state: payload.state ?? (reportedRequiresReauth ? "paused_reauth" : "idle"),
+    state: payload.state === "stopped" ? "stopped" : reportedRequiresReauth ? "paused_reauth" : payload.state === "paused_reauth" ? "idle" : payload.state ?? "idle",
     lastHeartbeatAt: nowIso,
     clearLocalReauthPending: clearLocalReauth && Boolean(payload.requiresReauth),
   };
@@ -473,6 +486,9 @@ export class ImageProcessingWorker {
    * Recovers any jobs left in `processing` after a server crash or abrupt restart.
    */
   recoverStaleJobs(): number {
+    // The dedicated process survives backend restarts. Its lease must remain
+    // valid until it actually disconnects, otherwise a valid result is lost.
+    if (this.config.workerMode === "external") return this.recoverAbandonedExternalJobs();
     const nowIso = new Date(this.nowMs()).toISOString();
     const stale = this.db
       .prepare("SELECT * FROM image_processing_jobs WHERE status='processing'")

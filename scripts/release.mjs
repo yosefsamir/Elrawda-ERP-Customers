@@ -11,8 +11,20 @@ import {
   writeThirdPartyNotices,
 } from './bundle-runtime.mjs';
 
-const build = spawnSync(process.execPath, ['scripts/build.mjs'], { stdio: 'inherit' });
-if (build.status !== 0) process.exit(build.status || 1);
+if (process.argv.includes('--skip-build')) {
+  for (const output of [
+    'dist/runtime/apps/server/index.js',
+    'dist/runtime/apps/server/image-processing/worker-runner.js',
+    'dist/runtime/apps/server/image-processing/cli.js',
+    'dist/web/index.html',
+    'dist/portal/index.html',
+  ]) {
+    if (!existsSync(output)) throw new Error(`Cannot reuse build: missing ${output}. Run npm run build first.`);
+  }
+} else {
+  const build = spawnSync(process.execPath, ['scripts/build.mjs'], { stdio: 'inherit' });
+  if (build.status !== 0) process.exit(build.status || 1);
+}
 
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 const name = `whatsapp-erp-windows-${pkg.version}`;

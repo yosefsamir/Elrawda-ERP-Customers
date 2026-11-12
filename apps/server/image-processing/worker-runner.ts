@@ -44,13 +44,16 @@ export async function runExternalGeminiWorker(options?: {
   heartbeatIntervalMs?: number;
   pollIntervalMs?: number;
 }): Promise<void> {
-  const root = resolve(options?.root ?? getArgValue("--root") ?? process.cwd());
+  const root = resolve(options?.root ?? getArgValue("--root") ?? process.env.EMOJI_APP_ROOT ?? process.cwd());
   const profileDirArg = options?.dataDir ?? getArgValue("--profile-root") ?? process.env.GEMINI_PROFILE_DIR ?? resolve(root, "gemini-worker");
   const dataDir = resolve(profileDirArg);
   const baseCfg = getImageProcessingConfig({ dataDir, root });
   const cfg = {
     ...baseCfg,
     directProfile: true,
+    profileRoot: dataDir,
+    profileDir: join(dataDir, "profile"),
+    loginProfileDir: join(dataDir, "login-profile"),
     bridgeUrl: (options?.bridgeUrl ?? baseCfg.bridgeUrl).replace(/\/+$/, ""),
     bridgeTokenFile: resolve(options?.bridgeTokenFile ?? baseCfg.bridgeTokenFile),
   };

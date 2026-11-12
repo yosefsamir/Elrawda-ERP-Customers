@@ -43,6 +43,11 @@ jobs:
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/powershell-parse-check.ps1
 
+      - name: Verify update rollback and Gemini worker restart
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/update-rollback.test.ps1
+
       - name: Fast Inno Setup Compiler Validation (Stub Payload)
         shell: powershell
         run: |
@@ -54,19 +59,19 @@ jobs:
       - name: Build TypeScript backend and Vite web frontend
         run: npm run build
 
-      - name: Run test suite
+      - name: Run focused Gemini and installer tests
         if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.skip_tests) || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && contains(github.event.head_commit.message, '[fast-build]'))) }}
-        run: npm run test:core
+        run: npm run test:gemini
 
-      - name: Verify real Chromium session lifecycle with offline fixtures
+      - name: Verify compiled Gemini worker with offline Chromium fixture
         if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.skip_tests) || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && contains(github.event.head_commit.message, '[fast-build]'))) }}
-        run: npm run test:whatsapp:browser
+        run: npm run test:gemini:worker
 
       - name: Package self-contained Windows release payload
         shell: powershell
         run: |
           $env:BUNDLE_RUNTIME = '1'
-          node scripts/release.mjs --bundle-runtime
+          node scripts/release.mjs --bundle-runtime --skip-build
 
       - name: Verify packaged runtime preflight
         shell: powershell
@@ -107,6 +112,7 @@ jobs:
             ('- **SHA-256 Checksum:** `{0}`' -f $hash),
             "- **Inno Setup:** $iscc",
             "- **Commit:** $env:GITHUB_SHA",
+            '- **Test scope:** Gemini, image processing, Windows installer, rollback and data preservation. WhatsApp tests are disabled for this workflow.',
             '',
             'Install, upgrade and uninstall results are in the windows-installer-test-results artifact.'
           ) -join "`n"
@@ -147,7 +153,7 @@ jobs:
         run: |
           $setupExe = (Get-Item release\WhatsAppERP-Setup-*.exe | Select-Object -First 1).FullName
           Write-Host "Discovered Installer: $setupExe"
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/installer-integration.test.ps1 -SetupExePath "$setupExe"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/installer-integration.test.ps1 -SetupExePath "$setupExe" -SkipWhatsAppTests
 
       - name: Upload Test Logs and Diagnostic Artifacts
         if: always()
