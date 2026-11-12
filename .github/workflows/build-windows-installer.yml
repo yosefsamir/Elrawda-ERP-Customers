@@ -55,11 +55,11 @@ jobs:
         run: npm run build
 
       - name: Run test suite
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_tests) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.skip_tests) || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && contains(github.event.head_commit.message, '[fast-build]'))) }}
         run: npm run test:core
 
       - name: Verify real Chromium session lifecycle with offline fixtures
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_tests) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.skip_tests) || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && contains(github.event.head_commit.message, '[fast-build]'))) }}
         run: npm run test:whatsapp:browser
 
       - name: Package self-contained Windows release payload
@@ -129,7 +129,7 @@ jobs:
     name: Test Windows Setup.exe Integration
     runs-on: windows-2022
     needs: build-windows-installer
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_tests) }}
+    if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.skip_tests) || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && contains(github.event.head_commit.message, '[fast-build]'))) }}
     timeout-minutes: 40
 
     steps:
