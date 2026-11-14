@@ -344,7 +344,7 @@ test("Happy path: Playwright headless Chromium + persistent profile processes up
       const db = fixture.db;
       cleanups.push(() => db.close());
       const versionRow = db.prepare("SELECT MAX(version) v FROM schema_migrations").get() as { v: number };
-      assert.equal(versionRow.v, 4);
+      assert.equal(versionRow.v, 5);
 
       const profileRoot = join(root, "gemini-profile");
       process.env.GEMINI_WEB_URL = url;
@@ -427,7 +427,7 @@ test("Happy path: Playwright headless Chromium + persistent profile processes up
       const backupDir = join(root, "backup-out");
       await createBackup(fixture.dataDir, backupDir, true);
       const verifiedVersion = verifyBackup(backupDir);
-      assert.equal(verifiedVersion, 4);
+      assert.equal(verifiedVersion, 5);
     });
   } finally {
     for (const cleanup of cleanups.reverse()) {
@@ -1909,7 +1909,7 @@ test("Admin watermark logo API, worker end-to-end stamping with reader fallback,
     // 6. Backup preserves watermark_logo across deletion & restore
     const backupDir = join(root, "backup-dir");
     await createBackup(fixture.dataDir, backupDir, true);
-    assert.equal(verifyBackup(backupDir), 4);
+    assert.equal(verifyBackup(backupDir), 5);
 
     const delRes = await fetch(`${adminUrl}/api/portal/image-processing/watermark-logo`, { method: "DELETE" });
     assert.equal(delRes.status, 200);
@@ -2351,7 +2351,7 @@ test("Stamp options independently control Logo & Code on processed images and st
     // 5. Verify schema stays at v4 and backup/restore preserves stamp option booleans
     const backupDir = join(root, "backup-toggles");
     await createBackup(fixture.dataDir, backupDir, true);
-    assert.equal(verifyBackup(backupDir), 4);
+    assert.equal(verifyBackup(backupDir), 5);
     await fetch(`${adminUrl}/api/portal/image-processing/stamp-options`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

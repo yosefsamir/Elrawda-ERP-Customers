@@ -42,7 +42,7 @@ export function verifyBackup(folder: string) {
       for (const row of configs) secrets.decrypt(row.config);
     }
     const row = db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as {version:number};
-    if (row.version > 4) throw new Error("Backup schema is newer than this release");
+    if (row.version > 5) throw new Error("Backup schema is newer than this release");
     if (row.version >= 3) {
       const hasStateTable =
         row.version >= 4 &&
