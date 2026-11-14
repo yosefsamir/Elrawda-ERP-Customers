@@ -27,7 +27,7 @@ async function fixture(t:any) {
   db.prepare("INSERT INTO sources(company_id,kind,identity,label,config) VALUES(?,'sql','fixture-source','ERP',?)").run(company,secrets.encrypt({server:"fixture",password:"fixture"}));
   db.prepare("UPDATE portal_settings SET enabled=1,company_id=?,origin='https://prices.example.com'").run(company);
   const userId=randomUUID();
-  db.prepare("INSERT INTO photo_users VALUES(?,?,?,?,1,?)").run(userId,company,'photos',hashPassword('password-123'),new Date().toISOString());
+  db.prepare("INSERT INTO photo_users(id,company_id,username,password_hash,enabled,created_at) VALUES(?,?,?,?,1,?)").run(userId,company,'photos',hashPassword('password-123'),new Date().toISOString());
   const calls:string[]=[];
   const reader:ProductReader={search:async(id,code)=>{assert.equal(id,company);calls.push(code);return product.code.includes(code.toUpperCase()) || code===product.id?[product]:[];},suggest:async(id,code)=>{assert.equal(id,company);return product.code.includes(code.toUpperCase())?[product]:[];},get:async(id,p,u)=>{assert.equal(id,company);return p===product.id && u===product.unitId?product:undefined;},close:async()=>{}};
   const portal=await createPortal({db,dataDir:dir,root:process.cwd(),reader});
@@ -137,7 +137,7 @@ test('admin reset and disabling revoke sessions; cross-company account editing i
  assert.equal((await f.portal.inject({url:'/api/session',headers:f.headers,cookies:{emoji_photo_session:token}})).json().authenticated,true);
  const reset=await f.admin.inject({method:'PUT',url:`/api/portal/users/${f.userId}`,payload:{enabled:true,password:'another-password'}});assert.equal(reset.statusCode,200,reset.body);
  assert.equal((await f.portal.inject({url:'/api/session',headers:f.headers,cookies:{emoji_photo_session:token}})).json().authenticated,false);
- const otherId=randomUUID();f.db.prepare("INSERT INTO photo_users VALUES(?,?,?,?,1,?)").run(otherId,f.other,'other',hashPassword('password-123'),new Date().toISOString());
+ const otherId=randomUUID();f.db.prepare("INSERT INTO photo_users(id,company_id,username,password_hash,enabled,created_at) VALUES(?,?,?,?,1,?)").run(otherId,f.other,'other',hashPassword('password-123'),new Date().toISOString());
  assert.equal((await f.admin.inject({method:'PUT',url:`/api/portal/users/${otherId}`,payload:{enabled:false}})).statusCode,404);
 });
 test('administrator settings validate HTTPS origin and do not expose password hashes',async t=>{
