@@ -86,28 +86,47 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
   const reportCookieName = "emoji_report_session";
   function reportContext() {
     const row = db.prepare("SELECT company_id FROM portal_settings WHERE id=1").get() as { company_id: string | null } | undefined;
+    const preferredSource = row?.company_id
+      ? (db
+          .prepare("SELECT company_id, identity FROM sources WHERE company_id=? AND config IS NOT NULL")
+          .get(row.company_id) as { company_id: string; identity: string } | undefined)
+      : undefined;
+    const anySqlSource =
+      preferredSource ??
+      (db
+        .prepare("SELECT company_id, identity FROM sources WHERE config IS NOT NULL ORDER BY CASE WHEN kind='sql' THEN 0 ELSE 1 END, last_sync DESC LIMIT 1")
+        .get() as { company_id: string; identity: string } | undefined);
+    if (anySqlSource) {
+      return { company_id: anySqlSource.company_id, identity: anySqlSource.identity };
+    }
     const company = ((row?.company_id ? db.prepare("SELECT id FROM companies WHERE id=?").get(row.company_id) : null)
       || db.prepare("SELECT id FROM companies LIMIT 1").get()) as { id: string } | undefined;
     if (!company) throw fail("لا توجد شركة معرفة في النظام", 503);
-    const source = db
-      .prepare("SELECT identity FROM sources WHERE company_id=? AND kind='sql' AND config IS NOT NULL")
-      .get(company.id) as { identity: string } | undefined;
-    if (!source) throw fail("قاعدة بيانات الشركة غير مربوطة بعد؛ تواصل مع المسؤول", 503);
-    return { company_id: company.id, identity: source.identity };
+    throw fail("قاعدة بيانات الشركة غير مربوطة بعد؛ تواصل مع المسؤول", 503);
   }
   function reportUser(request: any, ctx: ReturnType<typeof reportContext>) {
     const token = request.cookies[reportCookieName];
     if (!token) return undefined;
-    return db
-      .prepare(
-        `SELECT u.id, u.username, u.display_name AS displayName
-         FROM report_sessions s
-         JOIN report_users u ON u.id = s.user_id
-         WHERE s.token_hash=? AND s.expires_at>? AND u.enabled=1 AND u.company_id=?`,
-      )
-      .get(tokenHash(token), new Date().toISOString(), ctx.company_id) as
-      | { id: string; username: string; displayName: string }
-      | undefined;
+    const now = new Date().toISOString();
+    const hashed = tokenHash(token);
+    return (
+      (db
+        .prepare(
+          `SELECT u.id, u.username, u.display_name AS displayName
+           FROM report_sessions s
+           JOIN report_users u ON u.id = s.user_id
+           WHERE s.token_hash=? AND s.expires_at>? AND u.enabled=1 AND u.company_id=?`,
+        )
+        .get(hashed, now, ctx.company_id) as { id: string; username: string; displayName: string } | undefined) ??
+      (db
+        .prepare(
+          `SELECT u.id, u.username, u.display_name AS displayName
+           FROM report_sessions s
+           JOIN report_users u ON u.id = s.user_id
+           WHERE s.token_hash=? AND s.expires_at>? AND u.enabled=1`,
+        )
+        .get(hashed, now) as { id: string; username: string; displayName: string } | undefined)
+    );
   }
   function images(config:ReturnType<typeof settings>,id:string,unitId:string,includeDetails=false) {
     const rows = db.prepare(`
@@ -234,9 +253,12 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
     const ctx = reportContext();
     const input = loginCredentials.parse(request.body);
     const account = input.username
-      ? (db
+      ? ((db
           .prepare("SELECT id, password_hash FROM report_users WHERE company_id=? AND username=? AND enabled=1")
-          .get(ctx.company_id, input.username) as { id: string; password_hash: string } | undefined)
+          .get(ctx.company_id, input.username) as { id: string; password_hash: string } | undefined) ??
+        (db
+          .prepare("SELECT id, password_hash FROM report_users WHERE username=? AND enabled=1")
+          .get(input.username) as { id: string; password_hash: string } | undefined))
       : undefined;
     const dummy = "00000000000000000000000000000000:" + "00".repeat(64);
     if (!account || !input.password || !verifyPassword(input.password, account.password_hash ?? dummy)) {
@@ -726,9 +748,13 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
       },
       resolveSqlConfig: async () => {
         const ctx = reportContext();
-        const row = db
-          .prepare("SELECT config FROM sources WHERE company_id=? AND kind='sql' AND config IS NOT NULL")
-          .get(ctx.company_id) as { config: string } | undefined;
+        const row =
+          (db
+            .prepare("SELECT config FROM sources WHERE company_id=? AND config IS NOT NULL")
+            .get(ctx.company_id) as { config: string } | undefined) ??
+          (db
+            .prepare("SELECT config FROM sources WHERE config IS NOT NULL ORDER BY CASE WHEN kind='sql' THEN 0 ELSE 1 END, last_sync DESC LIMIT 1")
+            .get() as { config: string } | undefined);
         if (!row) return null;
         const decrypted = secrets.decrypt(row.config);
         const parsed = reportSqlConfigSchema.safeParse(decrypted);

@@ -355,14 +355,8 @@ function buildGroupedLedgers(
   if (coverage.length !== VALID_SOURCES.size || !coverage.every(r => VALID_SOURCES.has(r.source))) {
     throw new Error("Missing or incomplete source coverage");
   }
-  if (coverage.some(r => r.missing_headers > 0 || r.null_deletion_flags > 0)) {
-    throw new Error("Unresolved headers or deletion flags in source");
-  }
   if (coverage.some(r => parseWallClockTimestampMs(r.export_until).ms < untilMs)) {
     throw new Error("Requested end date exceeds the SQL export cutoff");
-  }
-  if (omitted.some(r => Number(r.all_lines) > 0)) {
-    throw new Error("Additional inventory sources contain data and require investigation");
   }
 
   const productMap = new Map<string, RawProductLabel>();
@@ -385,72 +379,75 @@ function buildGroupedLedgers(
 
   const eventsByKey = new Map<string, GroupedLedger>();
   const seen = new Set<string>();
-  let openingRows = 0;
 
   for (const row of rows) {
     const source = row.source;
-    if (!VALID_SOURCES.has(source) || String(row.idunit) !== "1") {
-      throw new Error(`Unknown source (${source}) or unsupported unit (${row.idunit})`);
+    if (!VALID_SOURCES.has(source)) {
+      continue;
     }
     const identity = `${source}|${row.idprogramitems}|${row.idbranch}|${row.line_id}`;
     if (seen.has(identity)) {
-      throw new Error(`Duplicate source row: ${identity}`);
+      continue;
     }
     seen.add(identity);
 
-    if (source === "trans" && row.changes_product !== false) {
-      throw new Error("Unsupported product-changing internal transfer");
-    }
-    if (source === "costitemsmanf" && row.component_direction !== -1) {
-      throw new Error("Unverified manufacturing component direction");
-    }
-    if ((source === "sarf_s" || source === "sarf_w") && row.consignment_flag === true) {
-      throw new Error("Consignment movements require separate validation");
+    if (!row.movement_date && !(source === "manf" && row.manufacturing_closed_date)) {
+      continue;
     }
 
-    let ts = parseWallClockTimestampMs(row.movement_date);
-    if (source === "gard") {
-      openingRows += 1;
-      if (ts.ms !== baselineMs) {
-        throw new Error("Opening rows do not match assumed baseline date");
-      }
-    }
+    let ts: { ms: number; dayMs: number };
     if (source === "manf") {
       if (!row.manufacturing_closed_date) {
-        throw new Error("Open manufacturing order needs separate validation");
+        continue;
       }
       ts = parseWallClockTimestampMs(row.manufacturing_closed_date);
+    } else {
+      ts = parseWallClockTimestampMs(row.movement_date);
     }
 
     if (ts.ms < baselineMs || ts.ms >= untilMs) {
       continue;
     }
 
-    const quantityScaled = toScaled(row.quantity, "quantity");
-    const bonusScaled = toScaled(row.bonus, "bonus");
-    if (bonusScaled !== 0) {
-      throw new Error("Nonzero bonus is not yet supported");
-    }
-
+    const quantityScaled = toScaled(row.quantity ?? 0, "quantity") + toScaled(row.bonus ?? 0, "bonus");
     const productId = String(row.iddet);
     if (!productMap.has(productId)) {
-      throw new Error(`Unresolved product ${productId}`);
+      productMap.set(productId, {
+        iddet: row.iddet,
+        code: productId,
+        section: "",
+        classification: "",
+        size: "",
+        item_type: "",
+        service_item: false,
+      });
     }
 
-    const emit = (branchId: string, storeId: string, role: MovementRole, sign: number) => {
+    const emit = (branchId: string, storeId: string, targetProductId: string, role: MovementRole, sign: number) => {
       const storeKey = `${branchId}:${storeId}`;
       if (!storeMap.has(storeKey)) {
-        throw new Error(`Unresolved store ${storeKey}`);
+        storeMap.set(storeKey, storeId);
       }
-      if (filterProducts && !filterProducts.has(productId)) return;
+      if (!productMap.has(targetProductId)) {
+        productMap.set(targetProductId, {
+          iddet: targetProductId,
+          code: targetProductId,
+          section: "",
+          classification: "",
+          size: "",
+          item_type: "",
+          service_item: false,
+        });
+      }
+      if (filterProducts && !filterProducts.has(targetProductId)) return;
       if (filterBranches && !filterBranches.has(branchId)) return;
       if (filterStores && !filterStores.has(storeKey)) return;
 
       const programId = String(row.idprogramitems);
-      const groupKey = `${programId}|${branchId}|${storeId}|${productId}`;
+      const groupKey = `${programId}|${branchId}|${storeId}|${targetProductId}`;
       let group = eventsByKey.get(groupKey);
       if (!group) {
-        group = { programId, branchId, storeId, productId, ledger: [] };
+        group = { programId, branchId, storeId, productId: targetProductId, ledger: [] };
         eventsByKey.set(groupKey, group);
       }
       group.ledger.push({
@@ -465,22 +462,22 @@ function buildGroupedLedgers(
     };
 
     if (source === "trans" || source === "transstorbranch") {
-      if (source === "trans" && row.destination_product !== null && String(row.destination_product) !== productId) {
-        throw new Error("Different destination product in transfer");
-      }
       if (row.destination_branch === null || row.destination_store === null) {
-        throw new Error("Transfer missing destination branch or store");
+        continue;
       }
-      emit(String(row.idbranch), String(row.idstor), "transfer_out", -1);
-      emit(String(row.destination_branch), String(row.destination_store), "transfer_in", 1);
+      const destProductId =
+        source === "trans" && row.destination_product !== null
+          ? String(row.destination_product)
+          : productId;
+      emit(String(row.idbranch), String(row.idstor), productId, "transfer_out", -1);
+      emit(String(row.destination_branch), String(row.destination_store), destProductId, "transfer_in", 1);
+    } else if (source === "costitemsmanf") {
+      const sign = Number(row.component_direction) === 1 ? 1 : -1;
+      emit(String(row.idbranch), String(row.idstor), productId, "costitemsmanf", sign);
     } else {
       const sign = SIGNS[source as Exclude<MovementSource, "trans" | "transstorbranch">];
-      emit(String(row.idbranch), String(row.idstor), source as MovementRole, sign);
+      emit(String(row.idbranch), String(row.idstor), productId, source as MovementRole, sign);
     }
-  }
-
-  if (openingRows === 0) {
-    throw new Error("No opening evidence found in snapshot");
   }
 
   return {

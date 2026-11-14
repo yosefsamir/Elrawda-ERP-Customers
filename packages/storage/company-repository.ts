@@ -269,7 +269,7 @@ export class CompanyRepository {
       }
       this.db
         .prepare(
-          `INSERT INTO sources(company_id,kind,identity,label,config,baseline_complete,last_sync) VALUES(?,?,?,?,?,1,?) ON CONFLICT(company_id) DO UPDATE SET last_sync=excluded.last_sync,baseline_complete=1,config=COALESCE(excluded.config,sources.config)`,
+          `INSERT INTO sources(company_id,kind,identity,label,config,baseline_complete,last_sync) VALUES(?,?,?,?,?,1,?) ON CONFLICT(company_id) DO UPDATE SET kind=excluded.kind,identity=excluded.identity,label=excluded.label,last_sync=excluded.last_sync,baseline_complete=1,config=COALESCE(excluded.config,sources.config)`,
         )
         .run(companyId, kind, snapshot.identity, snapshot.label, config, now);
       if (baseline || added > 0 || changed > 0) {

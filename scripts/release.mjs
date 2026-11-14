@@ -34,7 +34,7 @@ rmSync(dir, { recursive: true, force: true });
 mkdirSync(dir, { recursive: true });
 
 // Copy core application files
-for (const path of ['dist', 'package.json', 'package-lock.json', 'scripts/windows']) {
+for (const path of ['dist', 'package.json', 'package-lock.json', 'scripts/windows', 'scripts/inspect_inventory_reports.sql']) {
   cpSync(path, resolve(dir, path), { recursive: true });
 }
 cpSync('docs/windows-deployment.ar.md', resolve(dir, 'WINDOWS-READ-ME.ar.md'));
