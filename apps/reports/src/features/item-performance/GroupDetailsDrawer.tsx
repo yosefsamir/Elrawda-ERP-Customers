@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ItemPerformanceRow } from "../../shared/api/reports";
+import type { ProductCardTarget } from "../product-card";
 import { GROUP_BY_LABELS, type DisplayPerformanceRow, type GroupByLevel } from "./grouping";
 
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
@@ -10,6 +11,7 @@ type Props = {
   suppressEscape?: boolean;
   onClose: () => void;
   onSelectItem: (row: ItemPerformanceRow) => void;
+  onInspectProduct?: (target: ProductCardTarget) => void;
 };
 
 export function GroupDetailsDrawer({
@@ -18,6 +20,7 @@ export function GroupDetailsDrawer({
   suppressEscape = false,
   onClose,
   onSelectItem,
+  onInspectProduct,
 }: Props) {
   const [query, setQuery] = useState("");
 
@@ -140,7 +143,42 @@ export function GroupDetailsDrawer({
                   >
                     <div className="ip-group-item-top">
                       <div>
-                        <strong>{title}</strong>
+                        {onInspectProduct ? (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            className="pc-code-link"
+                            onClick={e => {
+                              e.stopPropagation();
+                              onInspectProduct({
+                                productId: item.productId,
+                                code: item.code,
+                                description: item.description,
+                                itemType: item.itemType,
+                                section: item.section,
+                                classification: item.classification,
+                              });
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                onInspectProduct({
+                                  productId: item.productId,
+                                  code: item.code,
+                                  description: item.description,
+                                  itemType: item.itemType,
+                                  section: item.section,
+                                  classification: item.classification,
+                                });
+                              }
+                            }}
+                          >
+                            {title}
+                          </span>
+                        ) : (
+                          <strong>{title}</strong>
+                        )}
                         <span className="ip-group-item-sub">
                           {item.description || item.classification || item.section}
                           {item.branchName ? ` · ${item.branchName}` : ""}

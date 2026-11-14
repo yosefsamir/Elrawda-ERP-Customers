@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ItemPerformanceRow } from "../../shared/api/reports";
+import type { ProductCardTarget } from "../product-card";
 import { exportItemPerformanceCsv } from "./csvExport";
 import { GROUP_BY_LABELS, groupItemPerformanceRows, type DisplayPerformanceRow, type GroupByLevel } from "./grouping";
 
@@ -20,6 +21,7 @@ type Props = {
   onClearGroupByBranch?: () => void;
   onSelectRow?: (row: ItemPerformanceRow) => void;
   onSelectGroup?: (row: DisplayPerformanceRow) => void;
+  onInspectProduct?: (target: ProductCardTarget) => void;
 };
 
 function matchesStatus(r: DisplayPerformanceRow, status: StatusFilter): boolean {
@@ -49,6 +51,7 @@ export function ItemPerformanceTable({
   onClearGroupByBranch,
   onSelectRow,
   onSelectGroup,
+  onInspectProduct,
 }: Props) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortBy, setSortBy] = useState<SortOption>("netSold-desc");
@@ -260,7 +263,27 @@ export function ItemPerformanceTable({
                             </>
                           ) : (
                             <>
-                              <strong>{row.code && row.code !== "*" ? row.code : `#${row.productId}`}</strong>
+                              {onInspectProduct ? (
+                                <button
+                                  type="button"
+                                  className="pc-code-link"
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    onInspectProduct({
+                                      productId: row.productId,
+                                      code: row.code,
+                                      description: row.description,
+                                      itemType: row.itemType,
+                                      section: row.section,
+                                      classification: row.classification,
+                                    });
+                                  }}
+                                >
+                                  {row.code && row.code !== "*" ? row.code : `#${row.productId}`}
+                                </button>
+                              ) : (
+                                <strong>{row.code && row.code !== "*" ? row.code : `#${row.productId}`}</strong>
+                              )}
                               <span className="ip-item-desc">{row.description || row.classification || row.section}</span>
                               <span className="ip-item-path">{[row.itemType, row.section, row.classification].filter(Boolean).join(" / ")} · #{row.productId}</span>
                             </>

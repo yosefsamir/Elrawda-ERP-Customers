@@ -128,7 +128,7 @@ export async function registerReportsPreview(
         return cachedInventory.snapshot;
       }
       const snapshot = await loadInventoryFromSql(sqlEntry.config, root, untilExclusive);
-      cachedInventory = { key: cacheKey, mtimeMs: 0, expiresAt: now + 60_000, snapshot };
+      cachedInventory = { key: cacheKey, mtimeMs: 0, expiresAt: now + 5 * 60_000, snapshot };
       return snapshot;
     }
     if (!inventoryFile) {
@@ -158,7 +158,7 @@ export async function registerReportsPreview(
             return reply.send(cachedCatalog.payload);
           }
           const payload = catalogSchema.parse(await loadReportCatalogFromSql(sqlEntry.config));
-          cachedCatalog = { key: sqlEntry.key, expiresAt: now + 5 * 60_000, payload };
+          cachedCatalog = { key: sqlEntry.key, expiresAt: now + 15 * 60_000, payload };
           return reply.send(payload);
         }
       } catch {
@@ -232,6 +232,10 @@ export async function registerReportsPreview(
 
     await scope.register(staticFiles, { root: directory, prefix: "/reports/", index: false, decorateReply: false });
     scope.get("/reports", async (_request, reply) => reply.redirect("/reports/"));
-    scope.get("/reports/", async (_request, reply) => reply.type("text/html; charset=utf-8").send(await readFile(resolve(directory, "index.html"), "utf8")));
+    const sendReportsHtml = async (_request: FastifyRequest, reply: any) =>
+      reply.type("text/html; charset=utf-8").send(await readFile(resolve(directory, "index.html"), "utf8"));
+    scope.get("/reports/", sendReportsHtml);
+    scope.get("/reports/transfers", sendReportsHtml);
+    scope.get("/reports/transfers/", sendReportsHtml);
   });
 }

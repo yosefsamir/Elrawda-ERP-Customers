@@ -266,6 +266,93 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
     reply.clearCookie(reportCookieName, { path: "/" });
     return { ok: true };
   });
+  app.get("/api/reports/products/:productId", async (request) => {
+    const ctx = reportContext();
+    const current = reportUser(request, ctx);
+    if (!current) throw fail("سجّل الدخول أولًا", 401);
+    const { productId } = z.object({ productId: z.string().trim().min(1).max(60) }).parse(request.params);
+    const query = z.object({ code: z.string().trim().max(80).optional() }).parse(request.query);
+
+    const imageRows = db
+      .prepare(
+        `SELECT pi.id, s.original_image_id, s.processed_image_id
+         FROM product_images pi
+         LEFT JOIN product_image_state s ON s.product_image_id = pi.id
+         WHERE pi.company_id=? AND pi.source_identity=? AND pi.product_id=? AND pi.deleted_at IS NULL
+         ORDER BY pi.created_at, pi.id`,
+      )
+      .all(ctx.company_id, ctx.identity, productId) as Array<{
+      id: string;
+      original_image_id: string | null;
+      processed_image_id: string | null;
+    }>;
+
+    const productImages = imageRows.map((row) => {
+      const version =
+        row.processed_image_id ??
+        (row.original_image_id && row.original_image_id !== row.id ? row.original_image_id : null);
+      return {
+        id: row.id,
+        url: version ? `/api/reports/images/${row.id}?v=${version}` : `/api/reports/images/${row.id}`,
+      };
+    });
+
+    let erpProduct: {
+      unit: string;
+      price: number | null;
+      kind?: string;
+      name: string;
+      category: string;
+      description: string;
+    } | null = null;
+    if (query.code && query.code !== "*") {
+      try {
+        const matches = await reader.search(ctx.company_id, query.code);
+        const exact = matches.find((item) => item.id === productId);
+        if (exact) {
+          erpProduct = {
+            unit: exact.unit,
+            price: exact.price,
+            kind: exact.kind,
+            name: exact.name,
+            category: exact.category,
+            description: exact.description,
+          };
+        }
+      } catch {
+        // Return images and basic info even if ERP product lookup fails
+      }
+    }
+
+    return {
+      productId,
+      images: productImages,
+      erp: erpProduct,
+    };
+  });
+  app.get("/api/reports/images/:imageId", async (request, reply) => {
+    const ctx = reportContext();
+    const current = reportUser(request, ctx);
+    if (!current) throw fail("سجّل الدخول أولًا", 401);
+    const { imageId } = z.object({ imageId: z.uuid() }).parse(request.params);
+    const row = db
+      .prepare(
+        `SELECT pi.id, s.original_image_id, s.processed_image_id
+         FROM product_images pi
+         LEFT JOIN product_image_state s ON s.product_image_id = pi.id
+         WHERE pi.id=? AND pi.company_id=? AND pi.source_identity=? AND pi.deleted_at IS NULL`,
+      )
+      .get(imageId, ctx.company_id, ctx.identity) as
+      | { id: string; original_image_id: string | null; processed_image_id: string | null }
+      | undefined;
+    if (!row) throw fail("الصورة غير موجودة", 404);
+    const blobId = row.processed_image_id || row.original_image_id || row.id;
+    try {
+      return reply.type("image/webp").send(await readFile(resolve(directory, `${blobId}.webp`)));
+    } catch {
+      throw fail("الصورة غير متاحة", 404);
+    }
+  });
   async function decodeBarcodeFromBuffer(buffer: Buffer): Promise<string | null> {
     const hints = new Map();
     hints.set(DecodeHintType.TRY_HARDER, true);

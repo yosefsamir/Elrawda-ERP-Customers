@@ -31,6 +31,8 @@ import {
   ItemPerformanceTable,
 } from "./features/item-performance";
 import { BranchComparisonTable } from "./features/branch-comparison";
+import { ProductCardModal, type ProductCardTarget } from "./features/product-card";
+import { StockTransfersPage } from "./features/stock-transfers";
 import "./styles.css";
 import "./features/item-performance/item-performance.css";
 
@@ -109,6 +111,9 @@ function App() {
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState<string>();
   const [activeTab, setActiveTab] = useState<"items" | "branches">("items");
+  const [activePage, setActivePage] = useState<"performance" | "transfers">(() =>
+    window.location.pathname.startsWith("/reports/transfers") ? "transfers" : "performance",
+  );
   const [groupBy, setGroupBy] = useState<GroupByLevel | null>(() => loadSavedGroupBy());
   const [groupByBranch, setGroupByBranch] = useState<boolean>(() => loadSavedGroupByBranch());
   const [filterOpen, setFilterOpen] = useState(() => {
@@ -122,6 +127,7 @@ function App() {
 
   const [selectedRow, setSelectedRow] = useState<ItemPerformanceRow | null>(null);
   const [selectedGroupRow, setSelectedGroupRow] = useState<DisplayPerformanceRow | null>(null);
+  const [productCardTarget, setProductCardTarget] = useState<ProductCardTarget | null>(null);
   const [ledger, setLedger] = useState<ItemLedgerReport | null>(null);
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [ledgerError, setLedgerError] = useState<string>();
@@ -135,6 +141,7 @@ function App() {
     setLedger(null);
     setSelectedRow(null);
     setSelectedGroupRow(null);
+    setProductCardTarget(null);
     setReportError(undefined);
     setLedgerError(undefined);
     setError(undefined);
@@ -384,13 +391,55 @@ function App() {
     handleUnauthorized();
   };
 
+  useEffect(() => {
+    const onPopState = () => {
+      setActivePage(window.location.pathname.startsWith("/reports/transfers") ? "transfers" : "performance");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  const navigatePage = (e: React.MouseEvent<HTMLAnchorElement>, page: "performance" | "transfers", href: string) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    e.preventDefault();
+    if (window.location.pathname !== href) {
+      window.history.pushState(null, "", href);
+    }
+    setActivePage(page);
+  };
+
   return (
     <div className="rf-app" dir="rtl">
       <header className="rf-topbar">
         <div className="rf-topbar-inner">
-          <a className="rf-brand" href="/reports/" aria-label="EMOJI Store">
-            <img src={`${import.meta.env.BASE_URL}emoji-logo.png`} alt="EMOJI Store" />
-          </a>
+          <div className="rf-topbar-start">
+            <a
+              className="rf-brand"
+              href="/reports/"
+              aria-label="EMOJI Store"
+              onClick={e => navigatePage(e, "performance", "/reports/")}
+            >
+              <img src={`${import.meta.env.BASE_URL}emoji-logo.png`} alt="EMOJI Store" />
+            </a>
+            {session?.authenticated && (
+              <nav className="rf-nav" aria-label="صفحات التقارير">
+                <a
+                  href="/reports/"
+                  className={`rf-nav-link ${activePage === "performance" ? "is-active" : ""}`}
+                  onClick={e => navigatePage(e, "performance", "/reports/")}
+                >
+                  أداء الأصناف
+                </a>
+                <a
+                  href="/reports/transfers"
+                  className={`rf-nav-link ${activePage === "transfers" ? "is-active" : ""}`}
+                  onClick={e => navigatePage(e, "transfers", "/reports/transfers")}
+                >
+                  إعادة توزيع المخزون
+                </a>
+              </nav>
+            )}
+          </div>
           <div className="rf-topbar-actions">
             <span>
               {session?.authenticated && (session.displayName || session.username)
@@ -451,7 +500,7 @@ function App() {
       <main className="rf-main">
         <div className={`rf-source ${error ? "is-error" : ""}`}>
           <strong>
-            {loading ? "جارٍ تحميل بيانات ERP…" : error ? "تعذر تحديث المصدر" : catalog?.source.label}
+            {loading ? "جارٍ تحميل البيانات…" : error ? "تعذر تحديث المصدر" : ""}
           </strong>
           {catalog && (
             <span>
@@ -463,6 +512,20 @@ function App() {
           )}
         </div>
 
+        {activePage === "transfers" ? (
+          <StockTransfersPage
+            report={report}
+            reportLoading={reportLoading}
+            reportError={reportError}
+            locations={locations}
+            from={value.from}
+            through={value.through}
+            onRunReport={() => runReport(value, index, locations)}
+            onOpenFilter={() => setFilterOpen(true)}
+            onInspectProduct={setProductCardTarget}
+          />
+        ) : (
+        <>
         <div className="rf-filter-toggle-bar">
           <div>
             {report ? (
@@ -543,6 +606,7 @@ function App() {
                   onClearGroupByBranch={() => handleGroupByBranchChange(false)}
                   onSelectRow={handleSelectRow}
                   onSelectGroup={setSelectedGroupRow}
+                  onInspectProduct={setProductCardTarget}
                 />
               ) : (
                 <BranchComparisonTable
@@ -555,6 +619,8 @@ function App() {
             </>
           )}
         </div>
+        </>
+        )}
       </main>
 
       <button
@@ -563,8 +629,12 @@ function App() {
         onClick={() => setFilterOpen(v => !v)}
         aria-expanded={filterOpen}
         aria-label="فتح أو إغلاق الفلاتر"
+        title="الفلاتر"
       >
-        <span>الفلاتر</span>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <line x1="20" y1="20" x2="16" y2="16" />
+        </svg>
       </button>
 
       {filterOpen && (
@@ -613,9 +683,10 @@ function App() {
       <GroupDetailsDrawer
         groupRow={selectedGroupRow}
         groupBy={groupBy}
-        suppressEscape={Boolean(selectedRow)}
+        suppressEscape={Boolean(selectedRow || productCardTarget)}
         onClose={() => setSelectedGroupRow(null)}
         onSelectItem={handleSelectRow}
+        onInspectProduct={setProductCardTarget}
       />
       <ItemLedgerDrawer
         selectedRow={selectedRow}
@@ -623,6 +694,12 @@ function App() {
         loading={ledgerLoading}
         error={ledgerError}
         onClose={handleCloseLedger}
+      />
+      <ProductCardModal
+        target={productCardTarget}
+        reportRows={report?.rows ?? []}
+        onClose={() => setProductCardTarget(null)}
+        onUnauthorized={handleUnauthorized}
       />
       </>
       )}

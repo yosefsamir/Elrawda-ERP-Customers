@@ -1,0 +1,274 @@
+.pc-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(24, 28, 22, 0.45);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.pc-modal {
+  background: #fff;
+  border: 1px solid #e1e3dc;
+  border-radius: 14px;
+  width: 100%;
+  max-width: 780px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.16);
+  display: flex;
+  flex-direction: column;
+}
+
+.pc-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #eceee7;
+}
+
+.pc-header-title h2 {
+  font-size: 17px;
+  font-weight: 700;
+  color: #24251f;
+}
+
+.pc-header-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #5a6156;
+}
+
+.pc-code-tag {
+  font-weight: 700;
+  color: #314c25;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.pc-close-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #dfe2d9;
+  border-radius: 8px;
+  background: #fff;
+  color: #4f564a;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.pc-close-btn:hover {
+  background: #f5f6f3;
+  color: #24251f;
+}
+
+.pc-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.pc-top-grid {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.pc-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pc-main-img-box {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border: 1px solid #e4e7df;
+  border-radius: 10px;
+  background: #fafbf8;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pc-main-img-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pc-img-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: #7c8276;
+  font-size: 12px;
+  text-align: center;
+  padding: 16px;
+}
+
+.pc-thumbs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pc-thumb-btn {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 7px;
+  overflow: hidden;
+  background: #fafbf8;
+}
+
+.pc-thumb-btn.is-active {
+  border-color: #314c25;
+}
+
+.pc-thumb-btn img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pc-info-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pc-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #f6f9f4;
+  border: 1px solid #dfe6da;
+  border-radius: 10px;
+}
+
+.pc-price-val {
+  font-size: 18px;
+  font-weight: 700;
+  color: #27441b;
+}
+
+.pc-unit-label {
+  font-size: 12px;
+  color: #51574d;
+}
+
+.pc-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pc-kpi {
+  border: 1px solid #eceee7;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fafbf8;
+}
+
+.pc-kpi-label {
+  font-size: 11px;
+  color: #5a6156;
+}
+
+.pc-kpi-val {
+  font-size: 16px;
+  font-weight: 700;
+  color: #24251f;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-branches-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #24251f;
+  margin-bottom: 8px;
+}
+
+.pc-branches-wrap {
+  border: 1px solid #e4e7df;
+  border-radius: 10px;
+  overflow-x: auto;
+}
+
+.pc-branches-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-branches-table th,
+.pc-branches-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #eceee7;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pc-branches-table th {
+  background: #fafbf8;
+  font-size: 12px;
+  font-weight: 600;
+  color: #51574d;
+}
+
+.pc-branches-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.pc-code-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: #27441b;
+  font-weight: 600;
+  text-align: right;
+  align-self: flex-start;
+  text-decoration: underline;
+  text-decoration-color: #c5d0be;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.pc-code-link:hover {
+  color: #1a3011;
+  text-decoration-color: #314c25;
+}
+
+@media (max-width: 640px) {
+  .pc-top-grid {
+    grid-template-columns: 1fr;
+  }
+  .pc-main-img-box {
+    max-height: 260px;
+  }
+}

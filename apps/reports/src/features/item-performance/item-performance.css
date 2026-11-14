@@ -90,7 +90,7 @@
 .rf-content{min-width:0}
 
 /* Floating Filter Button (bottom-left) */
-.rf-fab{position:fixed;bottom:22px;left:22px;z-index:40;display:inline-flex;align-items:center;gap:8px;padding:12px 18px;border-radius:999px;border:2px solid #ffc400;background:#24251f;color:#fff;font-size:14px;font-weight:600;box-shadow:0 10px 28px rgba(20,24,16,0.28);transition:transform .15s ease,background .15s ease}
+.rf-fab{position:fixed;bottom:22px;left:22px;z-index:40;width:48px;height:48px;display:inline-flex;align-items:center;justify-content:center;padding:0;border-radius:50%;border:2px solid #ffc400;background:#24251f;color:#fff;box-shadow:0 10px 28px rgba(20,24,16,0.28);transition:transform .15s ease,background .15s ease}
 .rf-fab:hover{background:#32342c;transform:translateY(-2px)}
 .rf-fab:active{transform:translateY(0)}
 
@@ -143,7 +143,7 @@
 @media(max-width:640px){
   .rf-drawer-backdrop{align-items:flex-end;justify-content:stretch}
   .rf-drawer{width:100vw;height:92dvh;border-radius:16px 16px 0 0}
-  .rf-fab{bottom:calc(16px + env(safe-area-inset-bottom));left:16px;padding:11px 16px;font-size:13px}
+  .rf-fab{bottom:calc(16px + env(safe-area-inset-bottom));left:16px;width:44px;height:44px}
   .ip-status-pills{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding-bottom:2px}
   .ip-status-pills::-webkit-scrollbar{display:none}
   .ip-group-item-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}

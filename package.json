@@ -31,7 +31,7 @@
     "gemini:verify": "tsx apps/server/image-processing/cli.ts verify",
     "gemini:status": "tsx apps/server/image-processing/cli.ts status",
     "dev:reports": "vite --config vite.reports.config.ts",
-    "test:reports": "tsx --test tests/catalog-filter.test.ts tests/reports-preview.test.ts tests/report-catalog.test.ts tests/inventory-performance.test.ts",
+    "test:reports": "tsx --test tests/catalog-filter.test.ts tests/reports-preview.test.ts tests/report-catalog.test.ts tests/inventory-performance.test.ts tests/stock-transfers.test.ts",
     "test:reports:browser": "node --import tsx tests/catalog-filter-browser-smoke.mjs"
   },
   "dependencies": {

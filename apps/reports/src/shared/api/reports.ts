@@ -253,3 +253,36 @@ export function fetchItemLedger(
 ): Promise<ItemLedgerReport> {
   return postReportApi<ItemLedgerReport>("/api/reports/item-ledger", payload, signal);
 }
+
+export type ProductCardResponse = {
+  productId: string;
+  images: Array<{ id: string; url: string }>;
+  erp: {
+    unit: string;
+    price: number | null;
+    kind?: string;
+    name: string;
+    category: string;
+    description: string;
+  } | null;
+};
+
+export async function fetchProductCard(
+  productId: string,
+  code?: string,
+  signal?: AbortSignal,
+): Promise<ProductCardResponse> {
+  const qs = code ? `?code=${encodeURIComponent(code)}` : "";
+  const response = await fetch(`/api/reports/products/${encodeURIComponent(productId)}${qs}`, {
+    signal,
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (response.status === 401 || response.status === 403) {
+    throw new UnauthorizedError("انتهت الجلسة أو ليست لديك صلاحية الوصول للتقارير.");
+  }
+  if (!response.ok) {
+    throw new Error("تعذر تحميل بطاقة الصنف.");
+  }
+  return (await response.json()) as ProductCardResponse;
+}
