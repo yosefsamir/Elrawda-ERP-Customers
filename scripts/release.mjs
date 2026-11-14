@@ -18,6 +18,7 @@ if (process.argv.includes('--skip-build')) {
     'dist/runtime/apps/server/image-processing/cli.js',
     'dist/web/index.html',
     'dist/portal/index.html',
+    'dist/reports/index.html',
   ]) {
     if (!existsSync(output)) throw new Error(`Cannot reuse build: missing ${output}. Run npm run build first.`);
   }

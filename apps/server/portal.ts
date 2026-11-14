@@ -19,6 +19,8 @@ import {
 import { z, ZodError } from "zod";
 import type { AppDatabase } from "../../packages/storage/database.js";
 import { createProductReader, type ProductReader } from "../../packages/erp/products.js";
+import { registerReportsPreview } from "./reports/index.js";
+import { reportSqlConfigSchema } from "./reports/sql-source.js";
 import { isLocalOrLanHost, localSecretStore, tokenHash, verifyPassword } from "./security.js";
 import { auditPortal } from "./portal-admin.js";
 import {
@@ -51,7 +53,8 @@ export function createLimiter() {
 }
 export async function createPortal(options:{db:AppDatabase;dataDir:string;root:string;reader?:ProductReader;logger?:boolean;onJobQueued?:()=>void}) {
   const {db}=options;
-  const reader=options.reader??createProductReader(db,localSecretStore(options.dataDir));
+  const secrets=localSecretStore(options.dataDir);
+  const reader=options.reader??createProductReader(db,secrets);
   const app=Fastify({logger:options.logger??false,bodyLimit:6*1024*1024,disableRequestLogging:true});
   await app.register(cookie);
   await app.register(multipart,{limits:{fileSize:5*1024*1024,files:1,fields:0,parts:1}});
@@ -73,12 +76,38 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
   function user(request:any,config:ReturnType<typeof settings>) {
     const token=request.cookies[cookieName];
     if(!token) return undefined;
-    return db.prepare(`SELECT u.id,u.username FROM photo_sessions s JOIN photo_users u ON u.id=s.user_id
+    return db.prepare(`SELECT u.id,u.username,u.reports_enabled FROM photo_sessions s JOIN photo_users u ON u.id=s.user_id
       WHERE s.token_hash=? AND s.expires_at>? AND u.enabled=1 AND u.company_id=?`)
-      .get(tokenHash(token),new Date().toISOString(),config.company_id) as {id:string;username:string}|undefined;
+      .get(tokenHash(token),new Date().toISOString(),config.company_id) as {id:string;username:string;reports_enabled:number}|undefined;
   }
   function requireUser(request:any,config:ReturnType<typeof settings>) {
     const found=user(request,config);if(!found) throw fail("سجّل الدخول لإدارة الصور",401);return found;
+  }
+  const reportCookieName = "emoji_report_session";
+  function reportContext() {
+    const row = db.prepare("SELECT company_id FROM portal_settings WHERE id=1").get() as { company_id: string | null } | undefined;
+    const company = ((row?.company_id ? db.prepare("SELECT id FROM companies WHERE id=?").get(row.company_id) : null)
+      || db.prepare("SELECT id FROM companies LIMIT 1").get()) as { id: string } | undefined;
+    if (!company) throw fail("لا توجد شركة معرفة في النظام", 503);
+    const source = db
+      .prepare("SELECT identity FROM sources WHERE company_id=? AND kind='sql' AND config IS NOT NULL")
+      .get(company.id) as { identity: string } | undefined;
+    if (!source) throw fail("قاعدة بيانات الشركة غير مربوطة بعد؛ تواصل مع المسؤول", 503);
+    return { company_id: company.id, identity: source.identity };
+  }
+  function reportUser(request: any, ctx: ReturnType<typeof reportContext>) {
+    const token = request.cookies[reportCookieName];
+    if (!token) return undefined;
+    return db
+      .prepare(
+        `SELECT u.id, u.username, u.display_name AS displayName
+         FROM report_sessions s
+         JOIN report_users u ON u.id = s.user_id
+         WHERE s.token_hash=? AND s.expires_at>? AND u.enabled=1 AND u.company_id=?`,
+      )
+      .get(tokenHash(token), new Date().toISOString(), ctx.company_id) as
+      | { id: string; username: string; displayName: string }
+      | undefined;
   }
   function images(config:ReturnType<typeof settings>,id:string,unitId:string,includeDetails=false) {
     const rows = db.prepare(`
@@ -151,13 +180,16 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
         if(request.headers.origin!==expected) throw fail("مصدر الطلب غير مسموح",403);
         limit(`write:${ip}`, local ? 120 : 60);
       }
-      if(request.url.split('?')[0]==="/api/login") limit(`login:${ip}`, local ? 60 : 30, local ? 60000 : 120000);
+      const pathOnly = request.url.split("?")[0];
+      if(pathOnly==="/api/login" || pathOnly==="/api/reports/login") limit(`login:${ip}`, local ? 60 : 30, local ? 60000 : 120000);
       if(request.url.startsWith("/api/products") || request.url.startsWith("/api/suggestions")) limit(`search:${ip}`, local ? 1200 : 300);
     }
   });
   app.setErrorHandler((error:any,request,reply)=>{
     if(error instanceof ZodError) {
-      if(request.url?.startsWith("/api/login")) return reply.code(400).send({error:"يرجى إدخال اسم المستخدم وكلمة المرور"});
+      if(request.url?.startsWith("/api/login") || request.url?.startsWith("/api/reports/login")) {
+        return reply.code(400).send({error:"يرجى إدخال اسم المستخدم وكلمة المرور"});
+      }
       return reply.code(400).send({error:"يرجى مراجعة البيانات المدخلة وكود الموديل"});
     }
     if(error.code==="FST_REQ_FILE_TOO_LARGE" || error.statusCode===413) return reply.code(413).send({error:"الحد الأقصى للصورة 5 ميجابايت"});
@@ -167,7 +199,11 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
   });
   app.get("/api/session",async request=>{
     const config=settings(),current=user(request,config);
-    return {authenticated:Boolean(current),username:current?.username??null};
+    return {
+      authenticated:Boolean(current),
+      username:current?.username??null,
+      reportsEnabled:Boolean(current?.reports_enabled),
+    };
   });
   app.post("/api/login",async(request,reply)=>{
     const config=settings(),input=loginCredentials.parse(request.body);
@@ -184,6 +220,51 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
   app.post("/api/logout",async(request,reply)=>{
     if(request.cookies[cookieName]) db.prepare("DELETE FROM photo_sessions WHERE token_hash=?").run(tokenHash(request.cookies[cookieName]!));
     reply.clearCookie(cookieName,{path:"/"});return {ok:true};
+  });
+  app.get("/api/reports/session", async (request) => {
+    const ctx = reportContext();
+    const current = reportUser(request, ctx);
+    return {
+      authenticated: Boolean(current),
+      username: current?.username ?? null,
+      displayName: current?.displayName ?? null,
+    };
+  });
+  app.post("/api/reports/login", async (request, reply) => {
+    const ctx = reportContext();
+    const input = loginCredentials.parse(request.body);
+    const account = input.username
+      ? (db
+          .prepare("SELECT id, password_hash FROM report_users WHERE company_id=? AND username=? AND enabled=1")
+          .get(ctx.company_id, input.username) as { id: string; password_hash: string } | undefined)
+      : undefined;
+    const dummy = "00000000000000000000000000000000:" + "00".repeat(64);
+    if (!account || !input.password || !verifyPassword(input.password, account.password_hash ?? dummy)) {
+      throw fail("اسم المستخدم أو كلمة المرور غير صحيحة", 401);
+    }
+    const token = randomBytes(32).toString("hex");
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 8 * 3600000).toISOString();
+    db.prepare("DELETE FROM report_sessions WHERE expires_at<=?").run(now);
+    db.prepare(
+      "INSERT INTO report_sessions(token_hash,user_id,company_id,source_identity,created_at,expires_at) VALUES(?,?,?,?,?,?)",
+    ).run(tokenHash(token), account.id, ctx.company_id, ctx.identity, now, expiresAt);
+    db.prepare("UPDATE report_users SET last_login_at=?, updated_at=? WHERE id=?").run(now, now, account.id);
+    reply.setCookie(reportCookieName, token, {
+      path: "/",
+      httpOnly: true,
+      sameSite: "strict",
+      secure: !isLocalOrLanHost(request.hostname),
+      maxAge: 8 * 3600,
+    });
+    return { ok: true };
+  });
+  app.post("/api/reports/logout", async (request, reply) => {
+    if (request.cookies[reportCookieName]) {
+      db.prepare("DELETE FROM report_sessions WHERE token_hash=?").run(tokenHash(request.cookies[reportCookieName]!));
+    }
+    reply.clearCookie(reportCookieName, { path: "/" });
+    return { ok: true };
   });
   async function decodeBarcodeFromBuffer(buffer: Buffer): Promise<string | null> {
     const hints = new Map();
@@ -542,6 +623,32 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
     // Retain immutable blobs for consistent concurrent online backups. Deleted images are not served.
     return {ok:true};
   });
+  await registerReportsPreview(
+    app,
+    options.root,
+    process.env.EMOJI_REPORT_FILTER_CATALOG_FILE,
+    process.env.EMOJI_REPORT_INVENTORY_FILE,
+    process.env.EMOJI_REPORT_SQL_CONFIG,
+    false,
+    {
+      authorize: (request) => {
+        const ctx = reportContext();
+        const current = reportUser(request, ctx);
+        if (!current) return { statusCode: 401, error: "سجّل الدخول أولًا" };
+        return null;
+      },
+      resolveSqlConfig: async () => {
+        const ctx = reportContext();
+        const row = db
+          .prepare("SELECT config FROM sources WHERE company_id=? AND kind='sql' AND config IS NOT NULL")
+          .get(ctx.company_id) as { config: string } | undefined;
+        if (!row) return null;
+        const decrypted = secrets.decrypt(row.config);
+        const parsed = reportSqlConfigSchema.safeParse(decrypted);
+        return parsed.success ? parsed.data : null;
+      },
+    },
+  );
   const dist=resolve(options.root,"dist/portal");
   if(existsSync(dist)) await app.register(staticFiles,{root:dist,index:false});
   app.get("/",async(_request,reply)=>existsSync(dist)?reply.sendFile("index.html"):reply.code(503).send({error:"ابنِ واجهة الاستعلام أولًا"}));

@@ -116,7 +116,7 @@ export function registerPortalAdmin(
       defaultImagePrompt: DEFAULT_IMAGE_PROMPT,
       geminiStatus: statusSummary(id),
       interactiveLogin: getLoginStatusPayload(),
-      users:db.prepare("SELECT id,username,enabled,created_at FROM photo_users WHERE company_id=? ORDER BY created_at").all(id) };
+      users:db.prepare("SELECT id,username,enabled,reports_enabled,created_at FROM photo_users WHERE company_id=? ORDER BY created_at").all(id) };
   });
   app.put("/api/portal/settings", async request => {
     const id=company(request);
@@ -463,26 +463,104 @@ export function registerPortalAdmin(
     return { ok: true, jobId: newJobId };
   });
   app.post("/api/portal/users",async request=>{
-    const id=company(request),input=photoCredentials.parse(request.body),userId=randomUUID();
+    const id=company(request),input=photoCredentials.extend({reportsEnabled:z.boolean().optional().default(false)}).parse(request.body),userId=randomUUID();
     if(db.prepare("SELECT 1 FROM photo_users WHERE username=?").get(input.username))
       throw Object.assign(new Error("اسم المستخدم مستخدم بالفعل"),{statusCode:409});
     db.transaction(()=>{
-      db.prepare("INSERT INTO photo_users VALUES(?,?,?,?,1,?)").run(userId,id,input.username,hashPassword(input.password),new Date().toISOString());
-      auditPortal(db,id,"portal.user.created",{userId,operatorId:request.operatorId});
+      db.prepare("INSERT INTO photo_users(id,company_id,username,password_hash,enabled,reports_enabled,created_at) VALUES(?,?,?,?,1,?,?)")
+        .run(userId,id,input.username,hashPassword(input.password),Number(input.reportsEnabled),new Date().toISOString());
+      auditPortal(db,id,"portal.user.created",{userId,reportsEnabled:input.reportsEnabled,operatorId:request.operatorId});
     })();
     return {ok:true};
   });
   app.put("/api/portal/users/:id",async request=>{
     const id=company(request),{id:userId}=z.object({id:z.uuid()}).parse(request.params);
-    const input=z.object({enabled:z.boolean(),password:z.string().min(10).max(200).optional()}).parse(request.body);
+    const input=z.object({enabled:z.boolean(),reportsEnabled:z.boolean().optional(),password:z.string().min(10).max(200).optional()}).parse(request.body);
     if(!db.prepare("SELECT 1 FROM photo_users WHERE id=? AND company_id=?").get(userId,id))
       throw Object.assign(new Error("الحساب غير موجود"),{statusCode:404});
     const hash=input.password?hashPassword(input.password):null;
+    const reportsFlag=input.reportsEnabled===undefined?null:Number(input.reportsEnabled);
     db.transaction(()=>{
-      db.prepare("UPDATE photo_users SET enabled=?,password_hash=COALESCE(?,password_hash) WHERE id=? AND company_id=?").run(Number(input.enabled),hash,userId,id);
+      db.prepare("UPDATE photo_users SET enabled=?,reports_enabled=COALESCE(?,reports_enabled),password_hash=COALESCE(?,password_hash) WHERE id=? AND company_id=?")
+        .run(Number(input.enabled),reportsFlag,hash,userId,id);
       db.prepare("DELETE FROM photo_sessions WHERE user_id=?").run(userId);
-      auditPortal(db,id,"portal.user.updated",{userId,enabled:input.enabled,passwordChanged:Boolean(hash),operatorId:request.operatorId});
+      auditPortal(db,id,"portal.user.updated",{userId,enabled:input.enabled,reportsEnabled:input.reportsEnabled,passwordChanged:Boolean(hash),operatorId:request.operatorId});
     })();
     return {ok:true};
+  });
+  app.get("/api/reports-admin/users", async (request) => {
+    const id = company(request);
+    const users = db
+      .prepare(
+        `SELECT id, username, display_name AS displayName, enabled, created_at AS createdAt, last_login_at AS lastLoginAt
+         FROM report_users WHERE company_id=? ORDER BY created_at DESC`,
+      )
+      .all(id);
+    return { users };
+  });
+  app.post("/api/reports-admin/users", async (request) => {
+    const id = company(request);
+    const input = photoCredentials
+      .extend({ displayName: z.string().trim().min(1).max(100).optional() })
+      .parse(request.body);
+    if (db.prepare("SELECT 1 FROM report_users WHERE company_id=? AND username=?").get(id, input.username)) {
+      throw Object.assign(new Error("اسم المستخدم مستخدم بالفعل في التقارير"), { statusCode: 409 });
+    }
+    const userId = randomUUID();
+    const now = new Date().toISOString();
+    const displayName = input.displayName || input.username;
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO report_users(id,company_id,username,display_name,password_hash,enabled,branch_policy,preferences,created_at,updated_at)
+         VALUES(?,?,?,?,?,1,'all','{}',?,?)`,
+      ).run(userId, id, input.username, displayName, hashPassword(input.password), now, now);
+      auditPortal(db, id, "reports.user.created", { userId, operatorId: request.operatorId });
+    })();
+    return { ok: true, id: userId };
+  });
+  app.put("/api/reports-admin/users/:id", async (request) => {
+    const id = company(request);
+    const { id: userId } = z.object({ id: z.uuid() }).parse(request.params);
+    const input = z
+      .object({
+        enabled: z.boolean(),
+        displayName: z.string().trim().min(1).max(100).optional(),
+        password: z.string().min(10).max(200).optional(),
+      })
+      .parse(request.body);
+    if (!db.prepare("SELECT 1 FROM report_users WHERE id=? AND company_id=?").get(userId, id)) {
+      throw Object.assign(new Error("حساب التقارير غير موجود"), { statusCode: 404 });
+    }
+    const hash = input.password ? hashPassword(input.password) : null;
+    const now = new Date().toISOString();
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE report_users
+         SET enabled=?, display_name=COALESCE(?,display_name), password_hash=COALESCE(?,password_hash), updated_at=?
+         WHERE id=? AND company_id=?`,
+      ).run(Number(input.enabled), input.displayName ?? null, hash, now, userId, id);
+      db.prepare("DELETE FROM report_sessions WHERE user_id=?").run(userId);
+      auditPortal(db, id, "reports.user.updated", {
+        userId,
+        enabled: input.enabled,
+        passwordChanged: Boolean(hash),
+        operatorId: request.operatorId,
+      });
+    })();
+    return { ok: true };
+  });
+  app.delete("/api/reports-admin/users/:id", async (request) => {
+    const id = company(request);
+    const { id: userId } = z.object({ id: z.uuid() }).parse(request.params);
+    const existing = db.prepare("SELECT 1 FROM report_users WHERE id=? AND company_id=?").get(userId, id);
+    if (!existing) {
+      throw Object.assign(new Error("حساب التقارير غير موجود"), { statusCode: 404 });
+    }
+    db.transaction(() => {
+      db.prepare("DELETE FROM report_sessions WHERE user_id=?").run(userId);
+      db.prepare("DELETE FROM report_users WHERE id=? AND company_id=?").run(userId, id);
+      auditPortal(db, id, "reports.user.deleted", { userId, operatorId: request.operatorId });
+    })();
+    return { ok: true };
   });
 }

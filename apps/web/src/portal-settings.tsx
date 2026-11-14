@@ -66,6 +66,15 @@ type PhotoUser = {
   created_at?: string;
 };
 
+type ReportUser = {
+  id: string;
+  username: string;
+  displayName: string;
+  enabled: number;
+  createdAt?: string;
+  lastLoginAt?: string | null;
+};
+
 export function PortalSettings({
   companyId,
   notify,
@@ -93,15 +102,25 @@ export function PortalSettings({
   const [password, setPassword] = useState("");
   const [resetId, setResetId] = useState<string | null>(null);
   const [resetPassword, setResetPassword] = useState("");
+  const [reportUsers, setReportUsers] = useState<ReportUser[]>([]);
+  const [reportUsername, setReportUsername] = useState("");
+  const [reportDisplayName, setReportDisplayName] = useState("");
+  const [reportPassword, setReportPassword] = useState("");
+  const [reportResetId, setReportResetId] = useState<string | null>(null);
+  const [reportResetPassword, setReportResetPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   async function load() {
-    const result = await api("/portal/settings");
+    const [result, reportsResult] = await Promise.all([
+      api("/portal/settings"),
+      api("/reports-admin/users").catch(() => ({ users: [] })),
+    ]);
     setEnabled(Boolean(result.enabled));
     setOrigin(result.origin || "");
     setUsers(result.users || []);
+    setReportUsers(reportsResult.users || []);
     setImagePrompt(result.imagePrompt || result.defaultImagePrompt || "");
     setDefaultImagePrompt(result.defaultImagePrompt || "");
     setProcessingEnabled(
@@ -326,14 +345,56 @@ export function PortalSettings({
       await post("/portal/users", { username: username.trim(), password });
       setUsername("");
       setPassword("");
-    }, "تم إنشاء حساب مسؤول الصور بنجاح.");
+    }, "تم إنشاء الحساب بنجاح.");
   }
 
   async function toggleUser(user: PhotoUser) {
     const next = !user.enabled;
     await action(
       () => put(`/portal/users/${user.id}`, { enabled: next }),
-      next ? "تم تفعيل حساب مسؤول الصور." : "تم تعطيل الحساب وإلغاء جلساته.",
+      next ? "تم تفعيل الحساب." : "تم تعطيل الحساب وإلغاء جلساته.",
+    );
+  }
+
+  async function createReportUser(e: FormEvent) {
+    e.preventDefault();
+    await action(async () => {
+      await post("/reports-admin/users", {
+        username: reportUsername.trim(),
+        displayName: reportDisplayName.trim() || undefined,
+        password: reportPassword,
+      });
+      setReportUsername("");
+      setReportDisplayName("");
+      setReportPassword("");
+    }, "تم إنشاء حساب التقارير بنجاح.");
+  }
+
+  async function toggleReportUser(user: ReportUser) {
+    const next = !user.enabled;
+    await action(
+      () => put(`/reports-admin/users/${user.id}`, { enabled: next }),
+      next ? "تم تفعيل حساب التقارير." : "تم تعطيل حساب التقارير وإلغاء جلساته.",
+    );
+  }
+
+  async function submitResetReportPassword(e: FormEvent, userId: string) {
+    e.preventDefault();
+    await action(async () => {
+      const user = reportUsers.find((u) => u.id === userId);
+      await put(`/reports-admin/users/${userId}`, {
+        enabled: Boolean(user?.enabled ?? 1),
+        password: reportResetPassword,
+      });
+      setReportResetId(null);
+      setReportResetPassword("");
+    }, "تم تغيير كلمة مرور حساب التقارير وإلغاء جلساته.");
+  }
+
+  async function deleteReportUser(user: ReportUser) {
+    await action(
+      () => api(`/reports-admin/users/${user.id}`, { method: "DELETE" }),
+      "تم حذف حساب التقارير.",
     );
   }
 
@@ -915,6 +976,194 @@ export function PortalSettings({
                           onClick={() => {
                             setResetId(null);
                             setResetPassword("");
+                          }}
+                        >
+                          إلغاء
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* 5. Management Reports Accounts */}
+      <section className="panel form-panel">
+        <div className="section-header-row">
+          <div>
+            <h2 className="section-title">حسابات تقارير الإدارة (/reports/)</h2>
+            <p className="panel-subtitle">
+              حسابات مستقلة تمامًا للوصول إلى تقارير الإدارة والأرصدة والمبيعات على منفذ البوابة، ومعزولة عن حسابات موظفي الصور.
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={createReportUser} className="portal-create-user-card">
+          <h3 className="card-inner-title">
+            <UserPlus size={18} />
+            إضافة حساب تقارير جديد
+          </h3>
+          <div className="form-grid">
+            <Field label="اسم المستخدم">
+              <input
+                value={reportUsername}
+                onChange={(e) => setReportUsername(e.target.value)}
+                placeholder="مثال: manager_1"
+                minLength={3}
+                maxLength={80}
+                required
+                autoComplete="off"
+                disabled={busy}
+              />
+            </Field>
+            <Field label="الاسم الظاهر (اختياري)">
+              <input
+                value={reportDisplayName}
+                onChange={(e) => setReportDisplayName(e.target.value)}
+                placeholder="مثال: أ. أحمد - الإدارة"
+                maxLength={100}
+                autoComplete="off"
+                disabled={busy}
+              />
+            </Field>
+            <Field
+              label="كلمة المرور"
+              hint="10 أحرف على الأقل؛ لا تُعرض بعد الحفظ."
+            >
+              <input
+                type="password"
+                value={reportPassword}
+                onChange={(e) => setReportPassword(e.target.value)}
+                placeholder="••••••••••••"
+                minLength={10}
+                maxLength={200}
+                required
+                autoComplete="new-password"
+                disabled={busy}
+              />
+            </Field>
+          </div>
+          <div className="form-inline-action">
+            <Button busy={busy}>
+              <Plus size={16} />
+              إضافة حساب تقارير
+            </Button>
+          </div>
+        </form>
+
+        <div className="portal-user-list-section">
+          <h3 className="card-inner-title">
+            <User size={18} />
+            حسابات التقارير المسجلة ({reportUsers.length})
+          </h3>
+
+          {reportUsers.length === 0 ? (
+            <div className="portal-empty-users">
+              <p>لم تُنشأ أي حسابات تقارير بعد. أضف حسابًا أعلاه ليتمكن المسؤول من فتح /reports/.</p>
+            </div>
+          ) : (
+            <div className="portal-users-grid">
+              {reportUsers.map((user) => (
+                <div key={user.id} className="portal-user-card">
+                  <div className="portal-user-header">
+                    <div className="portal-user-avatar">
+                      <User size={20} />
+                    </div>
+                    <div className="portal-user-meta">
+                      <strong className="portal-username">
+                        {user.displayName && user.displayName !== user.username
+                          ? `${user.displayName} (${user.username})`
+                          : user.username}
+                      </strong>
+                      <span className={`portal-user-badge ${user.enabled ? "active" : "inactive"}`}>
+                        {user.enabled ? "مفعّل" : "معطّل"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {user.createdAt && (
+                    <div className="portal-user-date">
+                      تاريخ الإنشاء: {dateTime(user.createdAt)}
+                      {user.lastLoginAt ? ` · آخر دخول: ${dateTime(user.lastLoginAt)}` : ""}
+                    </div>
+                  )}
+
+                  <div className="portal-user-actions">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="portal-user-btn"
+                      onClick={() => {
+                        setReportResetId(reportResetId === user.id ? null : user.id);
+                        setReportResetPassword("");
+                      }}
+                    >
+                      <KeyRound size={14} />
+                      تغيير كلمة المرور
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className={`portal-user-btn ${user.enabled ? "danger" : "success"}`}
+                      onClick={() => void toggleReportUser(user)}
+                    >
+                      {user.enabled ? (
+                        <>
+                          <UserX size={14} />
+                          تعطيل الحساب
+                        </>
+                      ) : (
+                        <>
+                          <UserCheck size={14} />
+                          تفعيل الحساب
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="portal-user-btn danger"
+                      onClick={() => void deleteReportUser(user)}
+                    >
+                      <Trash2 size={14} />
+                      حذف
+                    </button>
+                  </div>
+
+                  {reportResetId === user.id && (
+                    <form
+                      className="portal-reset-form"
+                      onSubmit={(e) => void submitResetReportPassword(e, user.id)}
+                    >
+                      <Field
+                        label="كلمة المرور الجديدة"
+                        hint="10 أحرف على الأقل؛ تلغي كافة الجلسات الحالية فورًا."
+                      >
+                        <input
+                          type="password"
+                          value={reportResetPassword}
+                          onChange={(e) => setReportResetPassword(e.target.value)}
+                          placeholder="كلمة المرور الجديدة…"
+                          minLength={10}
+                          maxLength={200}
+                          required
+                          autoComplete="new-password"
+                          disabled={busy}
+                        />
+                      </Field>
+                      <div className="portal-reset-actions">
+                        <Button busy={busy}>حفظ كلمة المرور</Button>
+                        <button
+                          type="button"
+                          className="button secondary"
+                          onClick={() => {
+                            setReportResetId(null);
+                            setReportResetPassword("");
                           }}
                         >
                           إلغاء
