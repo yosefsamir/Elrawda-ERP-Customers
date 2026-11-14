@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-erp",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "private": true,
   "description": "Local multi-company customer operations and WhatsApp onboarding",
   "engines": {
