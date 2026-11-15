@@ -179,11 +179,16 @@ export function GroupDetailsDrawer({
                         ) : (
                           <strong>{title}</strong>
                         )}
-                        <span className="ip-group-item-sub">
-                          {item.description || item.classification || item.section}
-                          {item.branchName ? ` · ${item.branchName}` : ""}
-                          {item.storeName ? ` (${item.storeName})` : ""}
-                        </span>
+                        <div className="ip-item-name-row">
+                          <span className="ip-group-item-sub">
+                            {item.description || item.classification || item.section}
+                            {item.branchName ? ` · ${item.branchName}` : ""}
+                            {item.storeName ? ` (${item.storeName})` : ""}
+                          </span>
+                          {item.price != null && item.price > 0 && (
+                            <span className="ip-item-price">{fmt.format(item.price)} ج.م</span>
+                          )}
+                        </div>
                       </div>
                       {item.sellThroughPct !== null ? (
                         <span className={`ip-sell-badge ${sellBadgeClass}`}>

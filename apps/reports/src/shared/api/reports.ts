@@ -28,6 +28,7 @@ export type ItemPerformanceRow = {
   classification: string;
   description: string;
   serviceItem: boolean;
+  price?: number | null;
   opening: number;
   rawOpening: number;
   inbound: number;
@@ -44,7 +45,8 @@ export type ItemPerformanceRow = {
   periodDays: number;
   ratePerDay: number | null;
   coverDays: number | null;
-  needsReview: boolean;
+  hasExtraMovements: boolean;
+  inboundByDaysAgo?: Array<{ daysAgo: number; qty: number }>;
 };
 
 export type ItemPerformanceSummary = {

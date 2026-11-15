@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { LocationOption } from "../../components/catalog-filter/model";
 import type { ItemPerformanceReport } from "../../shared/api/reports";
 import type { ProductCardTarget } from "../product-card";
@@ -6,10 +6,80 @@ import { exportTransfersCsv } from "./csvExport";
 import {
   computeTransferPlan,
   DEFAULT_TRANSFER_SETTINGS,
+  sanitizeTransferSettings,
   type BranchTransferRole,
   type TransferSettings,
 } from "./model";
 import "./stock-transfers.css";
+
+const SETTINGS_STORAGE_KEY = "emoji.reports.stockTransfers.settings.v1";
+
+function loadSavedSettings(): TransferSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (raw) return sanitizeTransferSettings(JSON.parse(raw) as Partial<TransferSettings>);
+  } catch {
+    // Ignore storage / parse errors and fall back to defaults
+  }
+  return DEFAULT_TRANSFER_SETTINGS;
+}
+
+function saveSettings(settings: TransferSettings) {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+type NumericSettingKey = Exclude<keyof TransferSettings, "branchRoles">;
+
+type NumericFieldDef = { key: NumericSettingKey; label: string; hint: string; min: number; max: number };
+
+const NUMERIC_FIELDS: NumericFieldDef[] = [
+  {
+    key: "targetCoverDays",
+    label: "مدة التغطية المطلوبة (أيام)",
+    hint: "الفرع المحتاج يتكمّل لحد المدة دي، والفرع المرسِل يحتفظ بيها.",
+    min: 1,
+    max: 180,
+  },
+  {
+    key: "receiveBelowCoverDays",
+    label: "يستقبل لو تغطيته أقل من (أيام)",
+    hint: "الفرع اللي بيبيع مايطلبش غير لما رصيده ينزل تحت الحد ده أو يخلص.",
+    min: 0,
+    max: 180,
+  },
+  {
+    key: "sendAboveCoverDays",
+    label: "يرسِل لو تغطيته أكبر من (أيام)",
+    hint: "الفرع اللي بيبيع مايتسحبش منه غير لو رصيده القديم يكفي أكتر من كده.",
+    min: 1,
+    max: 365,
+  },
+  {
+    key: "newStockGraceDays",
+    label: "مهلة البضاعة الجديدة قبل السحب (أيام)",
+    hint: "لا تنطبق على الفروع «مُرسِل فقط» زي المخزن الرئيسي.",
+    min: 0,
+    max: 90,
+  },
+  {
+    key: "minLineQty",
+    label: "أقل كمية للسطر الواحد (قطعة)",
+    hint: "السطر الأقل من كده مايتقترحش، إلا لو الفرع المستقبِل خالص من الصنف.",
+    min: 1,
+    max: 100,
+  },
+  {
+    key: "minRouteQty",
+    label: "أقل حمولة للمسار (قطعة)",
+    hint: "المسار الأقل من كده بيتلغي ويتعاد التوزيع من فروع تانية. 0 = بدون حد.",
+    min: 0,
+    max: 1000,
+  },
+];
 
 type StockTransfersPageProps = {
   report: ItemPerformanceReport | null;
@@ -49,10 +119,26 @@ export function StockTransfersPage({
   onOpenFilter,
   onInspectProduct,
 }: StockTransfersPageProps) {
-  const [settings, setSettings] = useState<TransferSettings>(DEFAULT_TRANSFER_SETTINGS);
+  const [settings, setSettings] = useState<TransferSettings>(loadSavedSettings);
   const [viewMode, setViewMode] = useState<"routes" | "items">("routes");
   const [searchQuery, setSearchQuery] = useState("");
   const [showBranchRoles, setShowBranchRoles] = useState(false);
+
+  useEffect(() => {
+    saveSettings(settings);
+  }, [settings]);
+
+  // Cover thresholds must stay ordered (receive <= target <= send); apply the model's normalization on blur.
+  const normalizeSettings = () => setSettings(prev => sanitizeTransferSettings(prev));
+
+  const updateNumericSetting = (key: NumericSettingKey, rawValue: string, min: number) => {
+    const parsed = Number(rawValue);
+    const value = rawValue.trim() === "" || !Number.isFinite(parsed) ? min : Math.max(min, Math.floor(parsed));
+    setSettings(prev => ({ ...prev, [key]: value }));
+  };
+
+  const resetSettings = () =>
+    setSettings(prev => ({ ...DEFAULT_TRANSFER_SETTINGS, branchRoles: prev.branchRoles }));
 
   const plan = useMemo(() => {
     if (!report) return null;
@@ -146,77 +232,26 @@ export function StockTransfersPage({
 
       <section className="st-settings-card">
         <div className="st-settings-grid">
-          <label className="st-field">
-            ابعت للفرع لو البضاعة تكفيه أقل من (أيام)
-            <input
-              type="number"
-              min={0}
-              max={60}
-              value={settings.shortageCoverDays}
-              onChange={e =>
-                setSettings(prev => ({ ...prev, shortageCoverDays: Number(e.target.value) || 0 }))
-              }
-            />
-          </label>
-          <label className="st-field">
-            كمّله بضاعة تكفيه (أيام)
-            <input
-              type="number"
-              min={1}
-              max={120}
-              value={settings.targetCoverDays}
-              onChange={e =>
-                setSettings(prev => ({ ...prev, targetCoverDays: Number(e.target.value) || 1 }))
-              }
-            />
-          </label>
-          <label className="st-field">
-            اسحب من الفرع لو بضاعته تكفي أكتر من (أيام)
-            <input
-              type="number"
-              min={1}
-              max={365}
-              value={settings.surplusCoverDays}
-              onChange={e =>
-                setSettings(prev => ({ ...prev, surplusCoverDays: Number(e.target.value) || 1 }))
-              }
-            />
-          </label>
-          <label className="st-field">
-            سيب في الفرع المسحوب منه (أيام)
-            <input
-              type="number"
-              min={0}
-              max={180}
-              value={settings.safetyKeepDays}
-              onChange={e =>
-                setSettings(prev => ({ ...prev, safetyKeepDays: Number(e.target.value) || 0 }))
-              }
-            />
-          </label>
-          <label className="st-field">
-            لو الصنف راكد سيب منه (قطعة)
-            <input
-              type="number"
-              min={0}
-              max={10}
-              value={settings.stagnantKeepQty}
-              disabled={!settings.includeStagnantSurplus}
-              onChange={e =>
-                setSettings(prev => ({ ...prev, stagnantKeepQty: Number(e.target.value) || 0 }))
-              }
-            />
-          </label>
-          <label className="st-checkbox-field">
-            <input
-              type="checkbox"
-              checked={settings.includeStagnantSurplus}
-              onChange={e =>
-                setSettings(prev => ({ ...prev, includeStagnantSurplus: e.target.checked }))
-              }
-            />
-            <span>اسحب من الأصناف الراكدة (مبيعاتها 0)</span>
-          </label>
+          {NUMERIC_FIELDS.map(field => (
+            <label key={field.key} className="st-field" title={field.hint}>
+              {field.label}
+              <input
+                type="number"
+                min={field.min}
+                max={field.max}
+                value={settings[field.key]}
+                onChange={e => updateNumericSetting(field.key, e.target.value, field.min)}
+                onBlur={normalizeSettings}
+              />
+              <span className="st-field-hint">{field.hint}</span>
+            </label>
+          ))}
+        </div>
+        <div className="st-settings-actions">
+          <button type="button" className="st-btn-secondary" onClick={resetSettings}>
+            استرجاع القيم الافتراضية
+          </button>
+          <span className="st-field-hint">الإعدادات وأدوار الفروع بتتحفظ تلقائياً على الجهاز ده.</span>
         </div>
 
         {locations.length > 0 && (
@@ -273,21 +308,42 @@ export function StockTransfersPage({
           <section className="st-kpis">
             <div className="st-kpi">
               <div className="st-kpi-label">عدد التحويلات المقترحة</div>
-              <div className="st-kpi-value">{formatNum(plan.totalSuggestions)}</div>
+              <div className="st-kpi-value">{formatNum(filteredSuggestions.length)}</div>
             </div>
             <div className="st-kpi">
               <div className="st-kpi-label">إجمالي القطع المقترح نقلها</div>
-              <div className="st-kpi-value">{formatNum(plan.totalQuantity)}</div>
+              <div className="st-kpi-value">
+                {formatNum(filteredSuggestions.reduce((acc, item) => acc + item.quantity, 0))}
+              </div>
             </div>
             <div className="st-kpi">
               <div className="st-kpi-label">الأصناف المتأثرة</div>
-              <div className="st-kpi-value">{formatNum(plan.uniqueProductCount)}</div>
+              <div className="st-kpi-value">
+                {formatNum(new Set(filteredSuggestions.map(item => item.productId)).size)}
+              </div>
             </div>
             <div className="st-kpi">
               <div className="st-kpi-label">عدد المسارات (من فرع ← إلى فرع)</div>
-              <div className="st-kpi-value">{formatNum(plan.routeCount)}</div>
+              <div className="st-kpi-value">{formatNum(filteredRoutes.length)}</div>
             </div>
           </section>
+
+          {plan.skippedRoutes.length > 0 && (
+            <details className="st-skipped-note">
+              <summary>
+                تم استبعاد {formatNum(plan.skippedRoutes.length)} مسار لأن حمولتها أقل من{" "}
+                {formatNum(sanitizeTransferSettings(settings).minRouteQty)} قطعة (وتمت إعادة التوزيع من فروع تانية لو أمكن)
+              </summary>
+              <ul>
+                {plan.skippedRoutes.map(route => (
+                  <li key={route.routeKey}>
+                    {route.fromBranchName} ← {route.toBranchName}: {formatNum(route.totalQuantity)} قطعة في{" "}
+                    {formatNum(route.itemCount)} صنف
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
 
           <div className="st-toolbar">
             <div className="st-view-switch" role="tablist">

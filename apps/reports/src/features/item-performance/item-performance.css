@@ -49,7 +49,8 @@
 .ip-group-item-card:hover{border-color:#98b687;background:#fbfcf9}
 .ip-group-item-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .ip-group-item-top strong{display:block;font-size:14px;color:#24251f}
-.ip-group-item-sub{display:block;font-size:12px;color:#51574d;margin-top:2px}
+.ip-group-item-top .ip-item-name-row{margin-top:2px}
+.ip-group-item-sub{display:block;font-size:12px;color:#51574d;margin-top:0}
 .ip-group-item-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;background:#f7f8f4;border-radius:8px;padding:8px}
 .ip-group-item-stats>div{display:flex;flex-direction:column;gap:2px}
 .ip-group-item-stats span{font-size:11px;color:#6c7267}
@@ -73,7 +74,10 @@
 .ip-table th.num,.ip-table td.num{text-align:left;direction:ltr;white-space:nowrap}
 
 .ip-item-cell{display:flex;flex-direction:column;gap:2px;min-width:170px}
+.ip-item-name-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
 .ip-item-desc{font-size:13px;color:#24251f}
+.ip-item-price{display:inline-flex;align-items:center;padding:1px 7px;border-radius:6px;background:#f1f6ed;border:1px solid #cfe0c5;color:#27441b;font-size:11.5px;font-weight:700;line-height:1.4;white-space:nowrap;font-variant-numeric:tabular-nums}
+.ip-table tbody tr.is-clickable:hover .ip-item-price{background:#e5f0de;border-color:#b8d1aa}
 .ip-item-path{font-size:11px;color:#6c7267}
 .ip-loc-cell{display:flex;flex-direction:column;gap:2px;min-width:120px}
 .ip-loc-cell small{font-size:11px;color:#6c7267}

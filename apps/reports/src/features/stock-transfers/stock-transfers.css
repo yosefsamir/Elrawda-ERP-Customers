@@ -91,9 +91,45 @@
 
 .st-settings-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 12px;
-  align-items: end;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.st-field-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: #6b7264;
+  line-height: 1.5;
+}
+
+.st-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.st-skipped-note {
+  border: 1px solid #e8dcb5;
+  background: #fbf7ea;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #5a4a1c;
+}
+
+.st-skipped-note summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.st-skipped-note ul {
+  margin: 8px 0 0;
+  padding-inline-start: 20px;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .st-field {
@@ -118,20 +154,9 @@
   font-weight: 400;
 }
 
-.st-checkbox-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #2f362a;
-  cursor: pointer;
-  min-height: 36px;
-}
-
 .st-roles-section {
-  margin-top: 14px;
-  padding-top: 14px;
+  margin-top: 12px;
+  padding-top: 12px;
   border-top: 1px solid #eceee7;
 }
 

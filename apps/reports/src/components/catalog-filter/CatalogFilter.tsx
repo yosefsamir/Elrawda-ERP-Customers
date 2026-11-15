@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { Autocomplete } from "../ui/Autocomplete";
 import { MultiSelect } from "../ui/MultiSelect";
 import { TreePicker } from "./TreePicker";
-import { ancestors, buildCatalogIndex, cairoDate, catalogLevels, changeBranches, defaultFilterValue, isWithin, selectedLeaves, selectedLocationIds, storeOptions, validateFilter, type CatalogFilterValue, type CatalogNode, type GroupByLevel, type LocationOption } from "./model";
+import { ancestors, buildCatalogIndex, cairoDate, catalogLevels, changeBranches, defaultFilterValue, isWithin, selectedIdsAtLevel, selectedLeaves, selectedLocationIds, setCascadeLevelIds, storeOptions, validateFilter, type CatalogFilterValue, type CatalogNode, type GroupByLevel, type LocationOption } from "./model";
 export type CatalogFilterProps = {
   nodes: CatalogNode[]; locations: LocationOption[]; value: CatalogFilterValue;
   onChange: (next: CatalogFilterValue) => void; onApply: (value: CatalogFilterValue) => void;
@@ -59,9 +59,14 @@ export function CatalogFilter({ nodes, locations, value, onChange, onApply, grou
         <div className="rf-cascade">{levelLabels.map((label, i) => {
           const level = catalogLevels[i] as GroupByLevel;
           const isGrouped = groupBy === level;
-          const parent = path.filter(n => catalogLevels.indexOf(n.level) < i).at(-1);
-          const options = nodes.filter(n => n.level === level && (!parent || isWithin(index, n.id, parent.id))).map(n => ({ id: n.id, label: n.label, description: !i || parent?.level === catalogLevels[i - 1] ? undefined : ancestors(index, n.id).slice(0, -1).map(p => p.label).join(" / ") }));
-          return <div className="rf-cascade-field" key={label}><Autocomplete label={label} labelAction={onGroupByChange ? <button type="button" className={`rf-group-btn ${isGrouped ? "is-active" : ""}`} aria-pressed={isGrouped} title={`تجميع التقرير حسب ${label}`} onClick={() => onGroupByChange(isGrouped ? null : level)}>تجميع</button> : undefined} placeholder={`كل ${i === 0 ? "الأنواع" : i === 1 ? "الأقسام" : i === 2 ? "التصنيفات" : i === 3 ? "المقاسات والأوصاف" : "الموديلات"}`} options={options} value={path.find(n => n.level === level)?.id ?? null} onChange={id => chooseNode(id, i)} /></div>;
+          const selectedAtLevel = selectedIdsAtLevel(index, value.items, i);
+          const parentLevel = [...Array(i).keys()].reverse().find(p => selectedIdsAtLevel(index, value.items, p).length > 0);
+          const parentIds = parentLevel !== undefined ? selectedIdsAtLevel(index, value.items, parentLevel) : null;
+          const options = nodes
+            .filter(n => n.level === level && (!parentIds || parentIds.some(pid => isWithin(index, n.id, pid))))
+            .map(n => ({ id: n.id, label: n.label, description: !i || parentLevel === i - 1 ? undefined : ancestors(index, n.id).slice(0, -1).map(p => p.label).join(" / ") }));
+          const allLabel = `كل ${i === 0 ? "الأنواع" : i === 1 ? "الأقسام" : i === 2 ? "التصنيفات" : i === 3 ? "المقاسات والأوصاف" : "الموديلات"}`;
+          return <div className="rf-cascade-field" key={label}><MultiSelect label={label} labelAction={onGroupByChange ? <button type="button" className={`rf-group-btn ${isGrouped ? "is-active" : ""}`} aria-pressed={isGrouped} title={`تجميع التقرير حسب ${label}`} onClick={() => onGroupByChange(isGrouped ? null : level)}>تجميع</button> : undefined} allLabel={allLabel} emptyMeansAll options={options} value={selectedAtLevel.length ? { mode: "selected", ids: selectedAtLevel } : { mode: "all", ids: [] }} onChange={next => update({ ...value, items: setCascadeLevelIds(index, value.items, i, next.mode === "all" ? [] : next.ids) })} /></div>;
         })}</div>
       </section>
       <section className="rf-section rf-locations-section" aria-labelledby="rf-locations-title">

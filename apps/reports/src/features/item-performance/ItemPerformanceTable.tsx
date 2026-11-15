@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import type { ItemPerformanceRow } from "../../shared/api/reports";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { fetchProductCard, UnauthorizedError, type ItemPerformanceRow } from "../../shared/api/reports";
 import type { ProductCardTarget } from "../product-card";
 import { exportItemPerformanceCsv } from "./csvExport";
 import { GROUP_BY_LABELS, groupItemPerformanceRows, type DisplayPerformanceRow, type GroupByLevel } from "./grouping";
@@ -41,6 +41,16 @@ function matchesStatus(r: DisplayPerformanceRow, status: StatusFilter): boolean 
   }
 }
 
+function getSingleProductTarget(row: DisplayPerformanceRow): { productId: string; code: string } | null {
+  if (row.groupCount === undefined) {
+    return { productId: row.productId, code: row.code };
+  }
+  if (row.groupCount === 1 && row.memberRows?.[0]) {
+    return { productId: row.memberRows[0].productId, code: row.memberRows[0].code };
+  }
+  return null;
+}
+
 export function ItemPerformanceTable({
   rows,
   from,
@@ -58,6 +68,9 @@ export function ItemPerformanceTable({
   const [search, setSearch] = useState("");
   const [showDetails, setShowDetails] = useState(false);
   const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
+  const [fallbackPrices, setFallbackPrices] = useState<Record<string, number | null>>({});
+  const loadedPricesRef = useRef<Record<string, number | null>>({});
+  const inFlightPricesRef = useRef<Map<string, AbortController>>(new Map());
 
   const groupedRows = useMemo(
     () => groupItemPerformanceRows(rows, groupBy, groupByBranch),
@@ -107,7 +120,68 @@ export function ItemPerformanceTable({
     return sorted;
   }, [groupedRows, statusFilter, sortBy, search]);
 
-  const visibleRows = filteredAndSorted.slice(0, visibleLimit);
+  const visibleRows = useMemo(
+    () => filteredAndSorted.slice(0, visibleLimit),
+    [filteredAndSorted, visibleLimit],
+  );
+
+  useEffect(() => {
+    const queue: Array<{ productId: string; code: string }> = [];
+    const queuedIds = new Set<string>();
+    for (const row of visibleRows) {
+      if (row.price !== undefined) continue;
+      const target = getSingleProductTarget(row);
+      if (!target) continue;
+      if (target.productId in loadedPricesRef.current) continue;
+      if (inFlightPricesRef.current.has(target.productId)) continue;
+      if (queuedIds.has(target.productId)) continue;
+      queuedIds.add(target.productId);
+      queue.push(target);
+    }
+    if (queue.length === 0) return;
+
+    const controller = new AbortController();
+    let idx = 0;
+    const workerCount = Math.min(6, queue.length);
+
+    async function worker() {
+      while (!controller.signal.aborted && idx < queue.length) {
+        const target = queue[idx++];
+        if (!target || inFlightPricesRef.current.has(target.productId)) continue;
+        inFlightPricesRef.current.set(target.productId, controller);
+        try {
+          const card = await fetchProductCard(target.productId, target.code, controller.signal);
+          if (controller.signal.aborted) return;
+          const p = card.erp?.price ?? null;
+          loadedPricesRef.current[target.productId] = p;
+          setFallbackPrices(prev => ({ ...prev, [target.productId]: p }));
+        } catch (err) {
+          if (controller.signal.aborted) return;
+          if (err instanceof UnauthorizedError) {
+            controller.abort();
+            return;
+          }
+          loadedPricesRef.current[target.productId] = null;
+          setFallbackPrices(prev => ({ ...prev, [target.productId]: null }));
+        } finally {
+          if (inFlightPricesRef.current.get(target.productId) === controller) {
+            inFlightPricesRef.current.delete(target.productId);
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < workerCount; i += 1) {
+      void worker();
+    }
+
+    return () => {
+      controller.abort();
+      for (const [id, ctrl] of inFlightPricesRef.current) {
+        if (ctrl === controller) inFlightPricesRef.current.delete(id);
+      }
+    };
+  }, [visibleRows]);
 
   return (
     <section className="ip-results-section" aria-label="نتائج تقرير أداء الأصناف">
@@ -244,6 +318,13 @@ export function ItemPerformanceTable({
               <tbody>
                 {visibleRows.map((row: DisplayPerformanceRow) => {
                   const isGrouped = row.groupCount !== undefined;
+                  const targetProduct = getSingleProductTarget(row);
+                  const effectivePrice =
+                    row.price !== undefined
+                      ? row.price
+                      : targetProduct
+                        ? (fallbackPrices[targetProduct.productId] ?? null)
+                        : null;
                   const clickable = Boolean(isGrouped ? onSelectGroup : onSelectRow);
                   const key = `${row.programId}-${row.branchId}-${row.storeId}-${row.productId}`;
                   const totalIn = row.inbound + row.transferIn;
@@ -258,7 +339,12 @@ export function ItemPerformanceTable({
                           {isGrouped ? (
                             <>
                               <strong>{row.groupTitle}</strong>
-                              <span className="ip-item-desc">{row.groupSubtitle}</span>
+                              <div className="ip-item-name-row">
+                                <span className="ip-item-desc">{row.groupSubtitle}</span>
+                                {effectivePrice !== null && effectivePrice > 0 && (
+                                  <span className="ip-item-price">{fmtNum.format(effectivePrice)} ج.م</span>
+                                )}
+                              </div>
                               {row.groupPath && <span className="ip-item-path">{row.groupPath}</span>}
                             </>
                           ) : (
@@ -284,7 +370,12 @@ export function ItemPerformanceTable({
                               ) : (
                                 <strong>{row.code && row.code !== "*" ? row.code : `#${row.productId}`}</strong>
                               )}
-                              <span className="ip-item-desc">{row.description || row.classification || row.section}</span>
+                              <div className="ip-item-name-row">
+                                <span className="ip-item-desc">{row.description || row.classification || row.section}</span>
+                                {effectivePrice !== null && effectivePrice > 0 && (
+                                  <span className="ip-item-price">{fmtNum.format(effectivePrice)} ج.م</span>
+                                )}
+                              </div>
                               <span className="ip-item-path">{[row.itemType, row.section, row.classification].filter(Boolean).join(" / ")} · #{row.productId}</span>
                             </>
                           )}

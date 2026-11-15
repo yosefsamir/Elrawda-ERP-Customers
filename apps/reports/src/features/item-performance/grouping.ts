@@ -86,6 +86,7 @@ export function groupItemPerformanceRows(
       products: Set<string>;
       branches: Set<string>;
       stores: Set<string>;
+      prices: Set<number>;
       opening: number;
       rawOpening: number;
       inbound: number;
@@ -100,7 +101,7 @@ export function groupItemPerformanceRows(
       rawClosing: number;
       availableDays: number;
       periodDays: number;
-      needsReview: boolean;
+      hasExtraMovements: boolean;
     }
   >();
 
@@ -118,6 +119,7 @@ export function groupItemPerformanceRows(
         products: new Set<string>(),
         branches: new Set<string>(),
         stores: new Set<string>(),
+        prices: new Set<number>(),
         opening: 0,
         rawOpening: 0,
         inbound: 0,
@@ -132,7 +134,7 @@ export function groupItemPerformanceRows(
         rawClosing: 0,
         availableDays: 0,
         periodDays: r.periodDays,
-        needsReview: false,
+        hasExtraMovements: false,
       };
       groups.set(mapKey, entry);
     }
@@ -141,6 +143,9 @@ export function groupItemPerformanceRows(
     entry.products.add(r.productId);
     entry.branches.add(r.branchName || r.branchId);
     entry.stores.add(r.storeName || r.storeId);
+    if (typeof r.price === "number" && r.price > 0) {
+      entry.prices.add(r.price);
+    }
     entry.opening += r.opening;
     entry.rawOpening += r.rawOpening;
     entry.inbound += r.inbound;
@@ -155,7 +160,7 @@ export function groupItemPerformanceRows(
     entry.rawClosing += r.rawClosing;
     entry.availableDays = Math.max(entry.availableDays, r.availableDays);
     entry.periodDays = Math.max(entry.periodDays, r.periodDays);
-    entry.needsReview = entry.needsReview || r.needsReview;
+    entry.hasExtraMovements = entry.hasExtraMovements || r.hasExtraMovements;
   }
 
   return [...groups.entries()].map(([mapKey, g]) => {
@@ -171,7 +176,8 @@ export function groupItemPerformanceRows(
 
     const denominator = opening + inbound + transferIn + g.otherInbound;
     const sellThroughPct = denominator > 0 ? roundTo((netSold * 100) / denominator, 2) : null;
-    const ratePerDay = g.availableDays > 0 && netSold >= 0 ? roundTo(netSold / g.availableDays, 4) : null;
+    const effectiveRateDays = Math.max(g.availableDays, Math.min(7, Math.max(1, g.periodDays || 7)));
+    const ratePerDay = g.availableDays > 0 && netSold >= 0 ? roundTo(netSold / effectiveRateDays, 4) : null;
     const coverDays = ratePerDay && ratePerDay > 0 ? roundTo(closing / ratePerDay, 1) : null;
 
     const countLabel = `${g.products.size} صنف`;
@@ -202,6 +208,7 @@ export function groupItemPerformanceRows(
       section: groupBy === "type" ? "" : g.sample.section,
       classification: groupBy === "type" || groupBy === "section" ? "" : g.sample.classification,
       description: groupSubtitle,
+      price: g.prices.size === 1 ? [...g.prices][0] : (g.members.every(m => m.price === undefined) ? undefined : null),
       opening,
       rawOpening: roundTo(g.rawOpening, 2),
       inbound,
@@ -218,7 +225,7 @@ export function groupItemPerformanceRows(
       periodDays: g.periodDays,
       ratePerDay,
       coverDays,
-      needsReview: g.needsReview,
+      hasExtraMovements: g.hasExtraMovements,
       groupCount: g.products.size,
       groupTitle,
       groupSubtitle,

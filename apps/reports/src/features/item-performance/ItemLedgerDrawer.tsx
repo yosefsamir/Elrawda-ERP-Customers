@@ -47,7 +47,12 @@ export function ItemLedgerDrawer({ selectedRow, ledger, loading, error, onClose 
 
         <div className="rf-drawer-body">
           <div className="ip-ledger-meta">
-            <strong>{selectedRow.description || selectedRow.classification || selectedRow.section}</strong>
+            <div className="ip-item-name-row">
+              <strong>{selectedRow.description || selectedRow.classification || selectedRow.section}</strong>
+              {selectedRow.price != null && selectedRow.price > 0 && (
+                <span className="ip-item-price">{fmt.format(selectedRow.price)} ج.م</span>
+              )}
+            </div>
             <span>
               {[selectedRow.itemType, selectedRow.section, selectedRow.classification].filter(Boolean).join(" / ")} · #{selectedRow.productId}
             </span>

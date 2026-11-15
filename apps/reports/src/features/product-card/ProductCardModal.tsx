@@ -112,9 +112,12 @@ export function ProductCardModal({ target, reportRows, onClose, onUnauthorized }
       }
     }
 
+    const periodDays = matching[0]?.periodDays ?? 7;
+    const minRateDays = Math.min(7, Math.max(1, periodDays));
     const branches = Array.from(byBranch.values())
       .map(b => {
-        const rate = b.netSold > 0 && b.availableDays > 0 ? b.netSold / b.availableDays : 0;
+        const effDays = Math.max(b.availableDays, minRateDays);
+        const rate = b.netSold > 0 && b.availableDays > 0 ? b.netSold / effDays : 0;
         const coverDays = rate > 0 ? Math.max(0, b.closing) / rate : null;
         return { ...b, coverDays };
       })
@@ -122,7 +125,8 @@ export function ProductCardModal({ target, reportRows, onClose, onUnauthorized }
 
     const sellThroughPct =
       totalOpeningAndInbound > 0 ? (totalNetSold / totalOpeningAndInbound) * 100 : null;
-    const ratePerDay = maxAvailableDays > 0 && totalNetSold >= 0 ? totalNetSold / maxAvailableDays : null;
+    const effectiveMaxDays = Math.max(maxAvailableDays, minRateDays);
+    const ratePerDay = maxAvailableDays > 0 && totalNetSold >= 0 ? totalNetSold / effectiveMaxDays : null;
 
     return { branches, totalClosing, totalNetSold, sellThroughPct, ratePerDay };
   }, [target, reportRows]);

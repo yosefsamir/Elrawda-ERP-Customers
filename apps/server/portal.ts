@@ -327,23 +327,26 @@ export async function createPortal(options:{db:AppDatabase;dataDir:string;root:s
       category: string;
       description: string;
     } | null = null;
-    if (query.code && query.code !== "*") {
-      try {
-        const matches = await reader.search(ctx.company_id, query.code);
-        const exact = matches.find((item) => item.id === productId);
-        if (exact) {
-          erpProduct = {
-            unit: exact.unit,
-            price: exact.price,
-            kind: exact.kind,
-            name: exact.name,
-            category: exact.category,
-            description: exact.description,
-          };
-        }
-      } catch {
-        // Return images and basic info even if ERP product lookup fails
+    try {
+      let exact =
+        query.code && query.code !== "*"
+          ? (await reader.search(ctx.company_id, query.code)).find((item) => item.id === productId)
+          : undefined;
+      if (!exact) {
+        exact = (await reader.search(ctx.company_id, productId)).find((item) => item.id === productId);
       }
+      if (exact) {
+        erpProduct = {
+          unit: exact.unit,
+          price: exact.price,
+          kind: exact.kind,
+          name: exact.name,
+          category: exact.category,
+          description: exact.description,
+        };
+      }
+    } catch {
+      // Return images and basic info even if ERP product lookup fails
     }
 
     return {

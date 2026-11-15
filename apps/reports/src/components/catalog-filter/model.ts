@@ -71,6 +71,37 @@ export function addScope(index: CatalogIndex, selection: CatalogSelection, id: s
   const combined: CatalogSelection = { mode: "selected", includeIds: [...include, id], excludeIds: selection.excludeIds.filter(x => !isWithin(index, x, id) && !isWithin(index, id, x)) };
   return { ...combined, includeIds: combined.includeIds.filter((nodeId, i, all) => all.indexOf(nodeId) === i && !all.some(other => other !== nodeId && isWithin(index, nodeId, other))) };
 }
+export function selectedIdsAtLevel(index: CatalogIndex, selection: CatalogSelection, levelIndex: number): string[] {
+  if (selection.mode === "all" || selection.includeIds.length === 0 || selection.excludeIds.length > 0) return [];
+  const level = catalogLevels[levelIndex];
+  const ids: string[] = [];
+  for (const id of selection.includeIds) {
+    const match = ancestors(index, id).find(n => n.level === level);
+    if (match && !ids.includes(match.id)) ids.push(match.id);
+  }
+  return ids;
+}
+export function setCascadeLevelIds(index: CatalogIndex, selection: CatalogSelection, levelIndex: number, nextIds: string[]): CatalogSelection {
+  const unique = nextIds.filter((id, i, all) => all.indexOf(id) === i);
+  if (unique.length === 0) {
+    for (let p = levelIndex - 1; p >= 0; p--) {
+      const parentIds = selectedIdsAtLevel(index, selection, p);
+      if (parentIds.length > 0) return { mode: "selected", includeIds: parentIds, excludeIds: [] };
+    }
+    return { mode: "all", includeIds: [], excludeIds: [] };
+  }
+  const keptDeeper = selection.mode === "selected"
+    ? selection.includeIds.filter(id => {
+        const node = index.byId.get(id);
+        return node && catalogLevels.indexOf(node.level) > levelIndex && unique.some(nid => isWithin(index, id, nid));
+      })
+    : [];
+  const includeIds = [
+    ...keptDeeper,
+    ...unique.filter(nid => !keptDeeper.some(deeperId => isWithin(index, deeperId, nid))),
+  ];
+  return { mode: "selected", includeIds, excludeIds: [] };
+}
 export const selectedLocationIds = (options: { id: string }[], selection: ScopeSelection) =>
   selection.mode === "all" || selection.ids.length === 0
     ? options.map(x => x.id)

@@ -222,7 +222,7 @@ export async function createApp(options: {
   const version = JSON.parse(readFileSync(resolve(options.root,"package.json"),"utf8")).version;
   app.get("/healthz", async () => ({
     ok: true,
-    schemaVersion: 4,
+    schemaVersion: 5,
     version,
     whatsapp: {
       status: wa.state.status,

@@ -276,13 +276,19 @@ WHERE d.idprogramitems=@program AND d.deleted=0 AND h.deleted=0
  AND d.fdate<@until;
 
 SELECT d.iddet,f.ffarz code,n.fname section,c.fcolor classification,s.fsize size,
- k.fkind item_type,d.fservice service_item
+ k.fkind item_type,d.fservice service_item,u.price
 FROM dbo.maindet d
 JOIN dbo.mainfarz f ON f.idfarz=d.idfarz
 JOIN dbo.mainsize s ON s.idsize=f.idsize
 JOIN dbo.maincolor c ON c.idcolor=s.idcolor
 JOIN dbo.main n ON n.idname=c.idname
-JOIN dbo.kind k ON k.idkind=n.idkind AND k.idprogramitems=@program;
+JOIN dbo.kind k ON k.idkind=n.idkind AND k.idprogramitems=@program
+OUTER APPLY (
+ SELECT TOP (1) mu.fpr_r1 price
+ FROM dbo.mainunits mu
+ WHERE mu.iddet=d.iddet
+ ORDER BY CASE WHEN mu.fpr_r1>0 THEN 0 ELSE 1 END, mu.idunit
+) u;
 
 SELECT b.idbranch,bm.fbranch branch_name
 FROM dbo.branch b JOIN dbo.branchmain bm ON bm.idbranch=b.idbranch

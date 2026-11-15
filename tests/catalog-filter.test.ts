@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addScope, ancestors, buildCatalogIndex, cairoDate, changeBranches, defaultFilterValue, selectedLeaves, storeOptions, toggleCatalogNode, validateFilter, type CatalogNode, type LocationOption } from "../apps/reports/src/components/catalog-filter/model.js";
+import { addScope, ancestors, buildCatalogIndex, cairoDate, changeBranches, defaultFilterValue, selectedIdsAtLevel, selectedLeaves, setCascadeLevelIds, storeOptions, toggleCatalogNode, validateFilter, type CatalogNode, type LocationOption } from "../apps/reports/src/components/catalog-filter/model.js";
 import { groupItemPerformanceRows } from "../apps/reports/src/features/item-performance/grouping.js";
 import type { ItemPerformanceRow } from "../apps/reports/src/shared/api/reports.js";
 const nodes: CatalogNode[] = [
@@ -59,7 +59,7 @@ test("default dates use Cairo, even around UTC midnight",()=>{
   assert.equal(cairoDate(new Date("2026-11-12T23:30:00Z")),"2026-11-13");
 });
 test("groupItemPerformanceRows aggregates quantities per branch and recalculates rates from totals",()=>{
-  const base:ItemPerformanceRow={programId:"1",branchId:"10",branchName:"فرع 1",storeId:"1",storeName:"رئيسي",productId:"101",code:"M1",itemType:"ملابس",section:"شتوي",classification:"هودي",description:"L",serviceItem:false,opening:10,rawOpening:10,inbound:0,transferIn:0,sold:5,returnSold:0,netSold:5,transferOut:0,otherMovements:0,closing:5,rawClosing:5,sellThroughPct:50,availableDays:10,periodDays:10,ratePerDay:0.5,coverDays:10,needsReview:false};
+  const base:ItemPerformanceRow={programId:"1",branchId:"10",branchName:"فرع 1",storeId:"1",storeName:"رئيسي",productId:"101",code:"M1",itemType:"ملابس",section:"شتوي",classification:"هودي",description:"L",serviceItem:false,opening:10,rawOpening:10,inbound:0,transferIn:0,sold:5,returnSold:0,netSold:5,transferOut:0,otherMovements:0,closing:5,rawClosing:5,sellThroughPct:50,availableDays:10,periodDays:10,ratePerDay:0.5,coverDays:10,hasExtraMovements:false};
   const rows:ItemPerformanceRow[]=[
     base,
     {...base,storeId:"2",storeName:"مخزن 2",productId:"102",code:"M2",description:"XL",opening:10,rawOpening:10,sold:5,netSold:5,closing:5,rawClosing:5,availableDays:5},
@@ -87,4 +87,19 @@ test("groupItemPerformanceRows aggregates quantities per branch and recalculates
   assert.equal(allBranches[0].memberRows?.length,3);
   const byProductAcrossBranches=groupItemPerformanceRows(rows,null,true);
   assert.equal(byProductAcrossBranches.length,2);
+});
+test("cascade multi-select supports multiple choices per level, preserves deeper selections, and clears back to parent",()=>{
+  assert.deepEqual(selectedIdsAtLevel(index,all,0),[]);
+  const bothTypes=setCascadeLevelIds(index,all,0,["clothes","shoes"]);
+  assert.deepEqual(selectedIdsAtLevel(index,bothTypes,0),["clothes","shoes"]);
+  assert.deepEqual(ids(bothTypes),["cotton","jeans","shirt","shoe"]);
+  const pantsOnly=setCascadeLevelIds(index,bothTypes,1,["pants"]);
+  assert.deepEqual(selectedIdsAtLevel(index,pantsOnly,0),["clothes"]);
+  assert.deepEqual(selectedIdsAtLevel(index,pantsOnly,1),["pants"]);
+  assert.deepEqual(ids(pantsOnly),["cotton","jeans"]);
+  const clearedSection=setCascadeLevelIds(index,pantsOnly,1,[]);
+  assert.deepEqual(selectedIdsAtLevel(index,clearedSection,0),["clothes"]);
+  assert.deepEqual(selectedIdsAtLevel(index,clearedSection,1),[]);
+  assert.deepEqual(ids(clearedSection),["cotton","jeans","shirt"]);
+  assert.equal(setCascadeLevelIds(index,clearedSection,0,[]).mode,"all");
 });

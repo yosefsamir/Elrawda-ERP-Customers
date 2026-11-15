@@ -46,6 +46,7 @@ export type RawProductLabel = {
   size: string | null;
   item_type: string | null;
   service_item: boolean | null;
+  price?: number | string | null;
 };
 
 export type RawBranchLabel = {
@@ -108,6 +109,7 @@ export type ItemPerformanceRow = {
   classification: string;
   description: string;
   serviceItem: boolean;
+  price?: number | null;
   opening: number;
   rawOpening: number;
   inbound: number;
@@ -124,7 +126,8 @@ export type ItemPerformanceRow = {
   periodDays: number;
   ratePerDay: number | null;
   coverDays: number | null;
-  needsReview: boolean;
+  hasExtraMovements: boolean;
+  inboundByDaysAgo?: Array<{ daysAgo: number; qty: number }>;
 };
 
 export type ItemPerformanceSummary = {
@@ -569,16 +572,27 @@ export function computeItemPerformance(
       }
     }
 
-    // Daily availability loop
+    // Daily availability & recent inbound tracking loop
     let dailyBalanceScaled = rawOpeningScaled;
     let availableDays = 0;
+    const inboundByDaysAgo: Array<{ daysAgo: number; qty: number }> = [];
     for (let dayMs = startMs; dayMs < untilMs; dayMs = addDaysMs(dayMs, 1)) {
       let available = dailyBalanceScaled > 0;
+      let dayInboundScaled = 0;
       const dayList = dailyEvents.get(dayMs);
       if (dayList) {
         const byTimestamp = new Map<number, number>();
         for (const ev of dayList) {
           byTimestamp.set(ev.tsMs, (byTimestamp.get(ev.tsMs) ?? 0) + ev.deltaScaled);
+          if (
+            (ev.role === "ward" ||
+              ev.role === "transfer_in" ||
+              ev.role === "manf" ||
+              ev.role === "sarf_w") &&
+            ev.deltaScaled > 0
+          ) {
+            dayInboundScaled += ev.deltaScaled;
+          }
         }
         const sortedTimes = [...byTimestamp.keys()].sort((a, b) => a - b);
         for (const t of sortedTimes) {
@@ -587,6 +601,10 @@ export function computeItemPerformance(
         }
       }
       if (available) availableDays += 1;
+      if (dayInboundScaled > 0) {
+        const daysAgo = Math.max(1, Math.round((untilMs - dayMs) / 86_400_000));
+        inboundByDaysAgo.push({ daysAgo, qty: fromScaled(dayInboundScaled) });
+      }
     }
 
     const reportedOpeningScaled = Math.max(rawOpeningScaled, 0);
@@ -627,7 +645,8 @@ export function computeItemPerformance(
     const otherInbound = fromScaled(Math.max(0, movementsScaled.sarf_w) + Math.max(0, movementsScaled.manf));
     const denominator = opening + inbound + transferIn + otherInbound;
     const sellThroughPct = denominator > 0 ? roundTo((netSold * 100) / denominator, 2) : null;
-    const ratePerDay = availableDays > 0 && netSold >= 0 ? roundTo(netSold / availableDays, 4) : null;
+    const effectiveRateDays = Math.max(availableDays, Math.min(7, Math.max(1, periodDays)));
+    const ratePerDay = availableDays > 0 && netSold >= 0 ? roundTo(netSold / effectiveRateDays, 4) : null;
     const coverDays = ratePerDay && ratePerDay > 0 ? roundTo(closing / ratePerDay, 1) : null;
 
     const prod = productMap.get(group.productId)!;
@@ -640,7 +659,9 @@ export function computeItemPerformance(
       movementsScaled.costitemsmanf !== 0 ||
       movementsScaled.gard !== 0;
 
-    const needsReview = contextual || hasPositiveSadr || Boolean(prod.service_item);
+    const hasExtraMovements = contextual || hasPositiveSadr || Boolean(prod.service_item);
+    const rawPrice = prod.price !== null && prod.price !== undefined && prod.price !== "" ? Number(prod.price) : NaN;
+    const price = Number.isFinite(rawPrice) && rawPrice > 0 ? roundTo(rawPrice, 2) : null;
 
     resultRows.push({
       programId: group.programId,
@@ -655,6 +676,7 @@ export function computeItemPerformance(
       classification: String(prod.classification ?? "").trim(),
       description: String(prod.size ?? "").trim(),
       serviceItem: Boolean(prod.service_item),
+      price,
       opening,
       rawOpening,
       inbound,
@@ -671,7 +693,8 @@ export function computeItemPerformance(
       periodDays,
       ratePerDay,
       coverDays,
-      needsReview,
+      hasExtraMovements,
+      inboundByDaysAgo: inboundByDaysAgo.length > 0 ? inboundByDaysAgo : undefined,
     });
 
     uniqueProducts.add(group.productId);

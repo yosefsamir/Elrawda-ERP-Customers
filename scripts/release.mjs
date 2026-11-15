@@ -78,7 +78,7 @@ const files = (folder) =>
 const allFiles = files(dir);
 const manifest = {
   version: pkg.version,
-  schemaVersion: 4,
+  schemaVersion: 5,
   node: shouldBundleRuntime
     ? '22.23.4 (Windows x64 bundled portable runtime)'
     : '22.22.x or newer 22.x (Windows x64)',
